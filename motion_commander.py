@@ -5,20 +5,22 @@ from threading import Event
 
 import cflib.crtp
 from cflib.crazyflie import Crazyflie
-from cflib.crazyflie.log import LogConfig
 from cflib.crazyflie.syncCrazyflie import SyncCrazyflie
 from cflib.positioning.motion_commander import MotionCommander
 from cflib.utils import uri_helper
 
 URI = uri_helper.uri_from_env(default='radio://0/80/2M/E7E7E7E7E7')
 
-logging.basicConfig(level = logging.ERROR)
+DEFAULT_HEIGHT = 0.5
 
 deck_attached_event = Event()
 
+logging.basicConfig(level=logging.ERROR)
 
-DEFAULT_HEIGHT = 0.5
-BOX_LIMIT = 0.5
+def take_off_simple(scf):
+    with MotionCommander(scf, default_height=DEFAULT_HEIGHT) as mc:
+        time.sleep(3)
+        mc.stop()
 
 
 def param_deck_flow(_, value_str):
@@ -26,14 +28,9 @@ def param_deck_flow(_, value_str):
     print(value)
     if value:
         deck_attached_event.set()
-        print("Flow deck is attached! - Woohoo")
+        print('Deck is attached!')
     else:
-        print("Deck is NOT attached!")
-
-def take_off_simple(scf):
-    with MotionCommander(scf, default_height=DEFAULT_HEIGHT) as mc:
-        time.sleep(3)
-        mc.stop()
+        print('Deck is NOT attached!')
 
 if __name__ == '__main__':
     cflib.crtp.init_drivers()
@@ -52,4 +49,3 @@ if __name__ == '__main__':
             sys.exit(1)
 
         take_off_simple(scf)
-
