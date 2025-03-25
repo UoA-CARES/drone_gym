@@ -11,6 +11,9 @@ from cflib.positioning.motion_commander import MotionCommander
 from cflib.utils import uri_helper
 
 URI = uri_helper.uri_from_env(default='radio://0/80/2M/E7E7E7E7E7')
+
+logging.basicConfig(level = logging.ERROR)
+
 deck_attached_event = Event()
 
 
@@ -32,15 +35,21 @@ def take_off_simple(scf):
         time.sleep(3)
         mc.stop()
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     cflib.crtp.init_drivers()
+
     with SyncCrazyflie(URI, cf=Crazyflie(rw_cache='./cache')) as scf:
+        # Arm the Crazyflie
         scf.cf.platform.send_arming_request(True)
         time.sleep(1.0)
 
-        scf.cf.add_update_callback(group="deck", name="bcFlow2", cb=param_deck_flow)
-        
-        time.sleep(1.0)
+        scf.cf.param.add_update_callback(group='deck', name='bcFlow2',
+                                         cb=param_deck_flow)
+        time.sleep(1)
+
+        if not deck_attached_event.wait(timeout=5):
+            print('No flow deck detected!')
+            sys.exit(1)
 
         take_off_simple(scf)
 
