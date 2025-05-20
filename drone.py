@@ -103,6 +103,8 @@ class Drone:
                 pass  # No command received; keep running
             # Display current position
             print(f"[Drone] Current position: {self.position}")
+            print(f"[Drone] Target position: {self.target_position}")
+
             time.sleep(0.5)
 
     def _handle_command(self, command):
@@ -171,7 +173,6 @@ class Drone:
         # Join the safety thread
         self.safety_thread.join()
 
-    
 
 def decide_next_action():
     # Simulate decision-making logic (e.g., from a policy or sensor input)
@@ -191,5 +192,8 @@ def decide_next_action():
 if __name__ == "__main__":
     
     drone = Drone()
-
+    time.sleep(2)
+    drone.set_target_position(1,2,3)
+    time.sleep(5)
+    drone.set_target_position(9,9,9)
     
