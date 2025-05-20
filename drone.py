@@ -22,7 +22,7 @@ class Drone:
         self.position_thread.start()
 
         # Drone Safety
-        self.boundaries = {"x": 3, "y": 3, "z": 3} 
+        self.boundaries = {"x": 6, "y": 5.5, "z": 4} 
         self.safety_thread = threading.Thread(target=self._check_boundaries)
         self.safety_thread.start()
         self.in_boundaries = True
@@ -32,6 +32,7 @@ class Drone:
         
 
     def _check_boundaries(self):
+        time.sleep(5)
         while self.running:
             try:
                 # Check if position is within boundaries for each axis
@@ -49,8 +50,8 @@ class Drone:
                     else:
                         print(f"[Drone] WARNING: Out of bounds!")
 
-                        self.stop()
-                
+                        print("placeholder emergency landing")
+
                 time.sleep(0.01)
                 
             except Exception as e:
@@ -61,6 +62,8 @@ class Drone:
     def _update_position(self):
         # It takes some time for the vicon to get values
         time.sleep(3)
+        vicon_thread = threading.Thread(target=self.vicon.main_loop)
+        vicon_thread.start()
         while self.running:
             try:
                 position_array = self.vicon.getPos(self.drone_name)
@@ -70,11 +73,15 @@ class Drone:
                         "y": position_array[1],
                         "z": position_array[2]
                     }
+                else:
+                    print("Drone position is not being updated")
 
-                time.sleep(0.01)
+                time.sleep(0.090) # 90 Hz
             except Exception as e:
                 print(f"[Drone] Error: Position data could not be parsed correctly - {str(e)}")
         # Signal the thread to join
+        self.vicon.run_interface = False
+        vicon_thread.join()
 
     def _run(self):
         while self.running:
@@ -89,14 +96,14 @@ class Drone:
             except queue.Empty:
                 pass  # No command received; keep running
             # Simulate ongoing drone operation
-            print(f"[Drone] Current velocity: {self.velocity}")
+            print(f"[Drone] Current position: {self.position}")
             time.sleep(0.5)
 
     def _handle_command(self, command):
         if isinstance(command, dict):
             if "velocity" in command:
                 self.velocity = command["velocity"]
-                print(f"[Drone] Velocity set to: {self.velocity}")
+                # print(f"[Drone] Velocity set to: {self.velocity}")
             elif "command_type" in command and command["command_type"] == "target_position":
                 # Extract position data
                 pos = command.get("position", {})
@@ -136,10 +143,14 @@ class Drone:
                 "z": z
             }
         }
-        
+    
         # Send the command to the queue
         self.send_command(position_command)
         print(f"[Drone] Target position command sent: x={x}, y={y}, z={z}")
+
+    def get_position(self):
+        
+        return list(self.postion)
 
 
     def send_command(self, command):
@@ -150,10 +161,11 @@ class Drone:
         # Join the run thread
         self.thread.join()
         # Join the vicon thread
-        self.vicon.run_interface = False
         self.position_thread.join()
         # Join the safety thread
         self.safety_thread.join()
+
+    
 
 def decide_next_action():
     # Simulate decision-making logic (e.g., from a policy or sensor input)
@@ -173,5 +185,5 @@ def decide_next_action():
 if __name__ == "__main__":
     
     drone = Drone()
-    print("Drone object instantiated ")
+
     
