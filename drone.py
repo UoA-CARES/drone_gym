@@ -3,6 +3,7 @@ import queue
 import time
 import random
 from vicon_connection_class import ViconInterface as vi
+from djitellopy import Tello
 
 
 class Drone:
@@ -14,6 +15,10 @@ class Drone:
         self.thread = threading.Thread(target=self._run)
         self.thread.start()
 
+        # Drone Properties
+        self.tello = Tello()
+        self.tello.connect()
+        
         # Vicon Integration
         self.position = {"x": 0.0, "y": 0.0, "z": 0.0}
         self.drone_name = "AtlasCrazyflie" 
@@ -49,18 +54,16 @@ class Drone:
                         print("Drone currently in bounds")
                     else:
                         print(f"[Drone] WARNING: Out of bounds!")
-                        
                         # Instead of calling stop() directly, send a special emergency command
+                        # This avoids the self join thread issue
                         self.send_command("emergency_stop")
                         print("Emergency stop command sent")
-
                 time.sleep(0.01)
                 
             except Exception as e:
                 print(f"[Drone] Error in boundary checking: {str(e)}")
                 time.sleep(0.1)  # Longer delay on error
             
- 
     def _update_position(self):
         # It takes some time for the vicon to get values
         time.sleep(3)
@@ -81,7 +84,7 @@ class Drone:
                 time.sleep(0.090) # 90 Hz
             except Exception as e:
                 print(f"[Drone] Error: Position data could not be parsed correctly - {str(e)}")
-        # Signal the thread to join
+        # Signal the vicon thread to join
         self.vicon.run_interface = False
         vicon_thread.join()
 
@@ -95,7 +98,7 @@ class Drone:
                 elif command == "emergency_stop":
                     self.running = False
                     print("[Drone] EMERGENCY STOP initiated. Shutting down.")
-                    print("placeholder emergency landing")
+                    self.tello.land()
                 else:
                     self._handle_command(command)
                 self.command_queue.task_done()
@@ -108,30 +111,47 @@ class Drone:
             time.sleep(0.5)
 
     def _handle_command(self, command):
-        if isinstance(command, dict):
-            if "velocity" in command:
-                self.velocity = command["velocity"]
-                # print(f"[Drone] Velocity set to: {self.velocity}")
-            elif "command_type" in command and command["command_type"] == "target_position":
-                # Extract position data
-                pos = command.get("position", {})
-                x = pos.get("x", self.position["x"])
-                y = pos.get("y", self.position["y"])
-                z = pos.get("z", self.position["z"])
-                
-            else:
-                print(f"[Drone] Unknown command: {command}")
+        # Handle string commands first
+        if not isinstance(command, dict):
+            print(f"[Drone] String command received: {command}")
+            return
+            
+        # From here on, we know command is a dictionary
+        
+        if "velocity" in command:
+            self.velocity = command["velocity"]
+            print(f"[Drone] Velocity set to: {self.velocity}")
+        elif "position" in command:
+            # This is a position command
+            x = command["position"].get("x", self.position["x"])
+            y = command["position"].get("y", self.position["y"])
+            z = command["position"].get("z", self.position["z"])
+            self.target_position = {"x": x, "y": y, "z": z}
+            print(f"[Drone] Target position set: x={x}, y={y}, z={z}")
+        elif "take_off" in command:
+            try:
+                print("[Drone] Executing take-off command")
+                self.tello.takeoff()
+                print("[Drone] Take-off successful")
+            except Exception as e:
+                print(f"[Drone] Take-off failed: {str(e)}")
+        elif "land" in command:
+            try:
+                print("[Drone] Landing drone")
+                self.tello.land()
+                print("[Drone] Landing successful")
+            except Exception as e:
+                print(f"[Drone] Landing failed: {str(e)}")
         else:
             print(f"[Drone] Unknown command: {command}")
 
-    def take_off(self, command):
-        pass
+    def take_off(self):
+        self.send_command({"take_off": True})
 
     def land(self, command):
-        pass
-
+        self.send_command({"land": True})
+    
     def set_target_position(self, x: float, y: float, z: float) -> None:
- 
         # Check the target position is within boundaries
         if not (0 <= x <= self.boundaries["x"] and 
                 0 <= y <= self.boundaries["y"] and 
@@ -139,27 +159,24 @@ class Drone:
             print(f"[Drone] WARNING: Target position {x}, {y}, {z} is outside safe boundaries. Command rejected.")
             return
             
-        # Update the target position attribute
-        self.target_position = {"x": x, "y": y, "z": z}
-        
-        # Create and send a target position command
+        # Create and send a position command
         position_command = {
-            "command_type": "target_position",
             "position": {
                 "x": x,
                 "y": y,
                 "z": z
             }
         }
-    
+
         # Send the command to the queue
         self.send_command(position_command)
         print(f"[Drone] Target position command sent: x={x}, y={y}, z={z}")
 
-    def get_position(self):
-        
-        return list(self.postion)
+    def safety_landing_check(self):
+        self.tello.move_right(60)
 
+    def get_position(self):
+        return list(self.position)
 
     def send_command(self, command):
         self.command_queue.put(command)
@@ -174,9 +191,9 @@ class Drone:
         self.safety_thread.join()
 
 
-def decide_next_action():
-    # Simulate decision-making logic (e.g., from a policy or sensor input)
-    return {"velocity": random.uniform(-2.0, 2.0)}
+# def decide_next_action():
+#     # Simulate decision-making logic (e.g., from a policy or sensor input)
+#     return {"velocity": random.uniform(-2.0, 2.0)}
 # Instantiate and control the drone
 # drone = Drone()
 # try:
@@ -190,10 +207,29 @@ def decide_next_action():
 #     print("[Controller] Drone stopped.")
 
 if __name__ == "__main__":
+
+    # Testing instructions
+    # Face the drone away from you towards the windows
+    # The window should continously move to the right and stop when it's out of bounds
+    # Read the console for it's position
     
     drone = Drone()
-    time.sleep(2)
-    drone.set_target_position(1,2,3)
     time.sleep(5)
-    drone.set_target_position(9,9,9)
     
+    print("Taking off")
+    drone.take_off()
+    time.sleep(3)
+
+    print("Starting boundary test - going to continuously move to the right")
+    for i in range(10):
+        drone.safety_landing_check()
+        time.sleep(1.5)
+
+        if not drone.in_boundaries:
+            print("the drone is now out of bounds - check fo landing behaviour")
+            break
+    
+    time.sleep(10)
+
+    
+
