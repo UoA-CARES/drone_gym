@@ -49,8 +49,10 @@ class Drone:
                         print("Drone currently in bounds")
                     else:
                         print(f"[Drone] WARNING: Out of bounds!")
-
-                        print("placeholder emergency landing")
+                        
+                        # Instead of calling stop() directly, send a special emergency command
+                        self.send_command("emergency_stop")
+                        print("Emergency stop command sent")
 
                 time.sleep(0.01)
                 
@@ -90,12 +92,16 @@ class Drone:
                 if command == "exit":
                     self.running = False
                     print("[Drone] Shutting down.")
+                elif command == "emergency_stop":
+                    self.running = False
+                    print("[Drone] EMERGENCY STOP initiated. Shutting down.")
+                    print("placeholder emergency landing")
                 else:
                     self._handle_command(command)
                 self.command_queue.task_done()
             except queue.Empty:
                 pass  # No command received; keep running
-            # Simulate ongoing drone operation
+            # Display current position
             print(f"[Drone] Current position: {self.position}")
             time.sleep(0.5)
 
