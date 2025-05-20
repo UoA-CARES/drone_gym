@@ -92,22 +92,22 @@ class Drone:
             print(f"[Drone] Current velocity: {self.velocity}")
             time.sleep(0.5)
 
-def _handle_command(self, command):
-    if isinstance(command, dict):
-        if "velocity" in command:
-            self.velocity = command["velocity"]
-            print(f"[Drone] Velocity set to: {self.velocity}")
-        elif "command_type" in command and command["command_type"] == "target_position":
-            # Extract position data
-            pos = command.get("position", {})
-            x = pos.get("x", self.position["x"])
-            y = pos.get("y", self.position["y"])
-            z = pos.get("z", self.position["z"])
-            
+    def _handle_command(self, command):
+        if isinstance(command, dict):
+            if "velocity" in command:
+                self.velocity = command["velocity"]
+                print(f"[Drone] Velocity set to: {self.velocity}")
+            elif "command_type" in command and command["command_type"] == "target_position":
+                # Extract position data
+                pos = command.get("position", {})
+                x = pos.get("x", self.position["x"])
+                y = pos.get("y", self.position["y"])
+                z = pos.get("z", self.position["z"])
+                
+            else:
+                print(f"[Drone] Unknown command: {command}")
         else:
             print(f"[Drone] Unknown command: {command}")
-    else:
-        print(f"[Drone] Unknown command: {command}")
 
     def take_off(self, command):
         pass
