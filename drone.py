@@ -16,8 +16,8 @@ class Drone:
         self.thread.start()
 
         # Drone Properties
-        self.tello = Tello()
-        self.tello.connect()
+        # self.tello = Tello()
+        # self.tello.connect()
         
         # Vicon Integration
         self.position = {"x": 0.0, "y": 0.0, "z": 0.0}
@@ -27,7 +27,7 @@ class Drone:
         self.position_thread.start()
 
         # Drone Safety
-        self.boundaries = {"x": 6, "y": 5.5, "z": 4} 
+        self.boundaries = {"x": 3, "y": 3, "z": 3} 
         self.safety_thread = threading.Thread(target=self._check_boundaries)
         self.safety_thread.start()
         self.in_boundaries = True
@@ -41,9 +41,9 @@ class Drone:
         while self.running:
             try:
                 # Check if position is within boundaries for each axis
-                x_in_bounds = 0 <= self.position["x"] <= self.boundaries["x"]
-                y_in_bounds = 0 <= self.position["y"] <= self.boundaries["y"]
-                z_in_bounds = 0 <= self.position["z"] <= self.boundaries["z"]
+                x_in_bounds = self.boundaries["x"] >= abs(self.position["x"])
+                y_in_bounds = self.boundaries["y"] >= abs(self.position["y"])
+                z_in_bounds = self.boundaries["z"] >= abs(self.position["z"])
                 
                 # Set in_boundaries status
                 current_status = x_in_bounds and y_in_bounds and z_in_bounds
@@ -98,7 +98,7 @@ class Drone:
                 elif command == "emergency_stop":
                     self.running = False
                     print("[Drone] EMERGENCY STOP initiated. Shutting down.")
-                    self.tello.land()
+                    # self.tello.land()
                 else:
                     self._handle_command(command)
                 self.command_queue.task_done()
@@ -106,7 +106,7 @@ class Drone:
                 pass  # No command received; keep running
             # Display current position
             print(f"[Drone] Current position: {self.position}")
-            print(f"[Drone] Target position: {self.target_position}")
+            # print(f"[Drone] Target position: {self.target_position}")
 
             time.sleep(0.5)
 
@@ -131,14 +131,14 @@ class Drone:
         elif "take_off" in command:
             try:
                 print("[Drone] Executing take-off command")
-                self.tello.takeoff()
+                # self.tello.takeoff()
                 print("[Drone] Take-off successful")
             except Exception as e:
                 print(f"[Drone] Take-off failed: {str(e)}")
         elif "land" in command:
             try:
                 print("[Drone] Landing drone")
-                self.tello.land()
+                # self.tello.land()
                 print("[Drone] Landing successful")
             except Exception as e:
                 print(f"[Drone] Landing failed: {str(e)}")
@@ -172,8 +172,6 @@ class Drone:
         self.send_command(position_command)
         print(f"[Drone] Target position command sent: x={x}, y={y}, z={z}")
 
-    def safety_landing_check(self):
-        self.tello.move_right(60)
 
     def get_position(self):
         return list(self.position)
@@ -214,22 +212,21 @@ if __name__ == "__main__":
     # Read the console for it's position
     
     drone = Drone()
-    time.sleep(5)
-    
-    print("Taking off")
-    drone.take_off()
-    time.sleep(3)
+    print("drone class initiated")
+    # print("Taking off")
+    # drone.take_off()
+    # time.sleep(3)
 
-    print("Starting boundary test - going to continuously move to the right")
-    for i in range(10):
-        drone.safety_landing_check()
-        time.sleep(1.5)
+    # print("Starting boundary test - going to continuously move to the right")
+    # for i in range(10):
+    #     drone.safety_landing_check()
+    #     time.sleep(1.5)
 
-        if not drone.in_boundaries:
-            print("the drone is now out of bounds - check fo landing behaviour")
-            break
+    #     if not drone.in_boundaries:
+    #         print("the drone is now out of bounds - check fo landing behaviour")
+    #         break
     
-    time.sleep(10)
+    # time.sleep(10)
 
     
 
