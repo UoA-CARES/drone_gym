@@ -21,7 +21,7 @@ class Drone:
         
         # Vicon Integration
         self.position = {"x": 0.0, "y": 0.0, "z": 0.0}
-        self.drone_name = "AtlasCrazyflie" 
+        self.drone_name = "BaronCrazyflie" 
         self.vicon = vi()
         self.position_thread = threading.Thread(target=self._update_position)
         self.position_thread.start()
