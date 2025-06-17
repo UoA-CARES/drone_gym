@@ -57,7 +57,7 @@ class Drone:
         self.position_lock = threading.Lock()
 
         # Drone Safety
-        self.boundaries = {"x": 3, "y": 3, "z": 3}
+        self.boundaries = {"x": 3, "y": 3, "z": 1.5}
         self.safety_thread = threading.Thread(target=self._check_boundaries)
         self.safety_thread.start()
         self.in_boundaries = True
@@ -273,6 +273,7 @@ class Drone:
                 if self.flying and self.mc:
                     print("[Drone] Landing drone")
                     self.mc.land()
+                    
                     self.mc.stop()
                     self.mc = None
                     self.flying = False
@@ -425,8 +426,6 @@ class Drone:
             self.mc.start_linear_motion(x, y, z)
             
 
-
-
     def set_target_position(self, x: float, y: float, z: float) -> None:
         """Set target position with boundary checking"""
         # Check the target position is within boundaries
@@ -520,27 +519,24 @@ if __name__ == "__main__":
     # Wait for initialization
     time.sleep(10)
     drone.take_off()
-
-    # Wait for takeoff to complete
     time.sleep(10)
-
-    # drone.test_velocity(0, 0.5, 0)
-    # time.sleep(10)
-    # drone.test_velocity(0. -0.5, 0 )
-    # time.sleep(10)
-    print("Setting target position")
-    drone.set_target_position(0, 1.0, 0.5)  # Move 1m forward on x-axis
+    drone.set_target_position(1, 1, 1)  # Move 1m forward on x-axis
     drone.start_position_control()
-    # Let the position controller run for 15 seconds
-    time.sleep(35)
+    time.sleep(10)
+    drone.set_target_position(0.5, 0.5, 0.5)  # Move 1m forward on x-axis
+    time.sleep(10)
+    drone.stop_position_control()
+    drone.land()
+    time.sleep(5)
+
     # # Move to another position
     # # print("Setting new target position")
-    print("post 35 seconds pause")
-    drone.set_target_position(0.0, 0.0, 0.5)  # Return to origin (x,y)
-    time.sleep(20)
+    # print("post 35 seconds pause")
+    # drone.set_target_position(0.0, 0.0, 0.5)  # Return to origin (x,y)
+    # time.sleep(20)
     # # Try a more complex position
     # # print("Setting final test position")
-    drone.set_target_position(1.0, 1.0, 0.5)  # Move along y-axis and change height
+    # drone.set_target_position(1.0, 1.0, 0.5)  # Move along y-axis and change height
     # time.sleep(20)
     # # Land and stop
     # drone.land()
