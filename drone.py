@@ -27,6 +27,20 @@ class Drone:
         self.running = True
         self.running_lock = threading.Lock()
 
+        # Controller parameters
+        self.controller_active = False
+        self.controller_thread = None
+        # PID gains - separate for each axis for better tuning
+        self.gains = {
+            "x": {"kp": 0.5, "kd": 0, "ki": 0},
+            "y": {"kp": 0.5, "kd": 0, "ki": 0},
+            "z": {"kp": 0.3, "kd": 0, "ki": 0}
+        }
+        self.last_error = {"x": 0.0, "y": 0.0, "z": 0.0}
+        self.integral = {"x": 0.0, "y": 0.0, "z": 0.0}
+        self.max_velocity = 0.5  # Maximum velocity in m/s
+        self.position_deadband = 0.15  # Position error below which velocity will be zero (in meters)
+
         # Crazyflie objects - will be initialized in _run
         self.scf = None
         self.cf = None
@@ -73,7 +87,7 @@ class Drone:
                     if self.in_boundaries:
                         print("Drone currently in bounds")
                     else:
-                        print(f"[Drone] WARNING: Out of bounds!")
+                        print("[Drone] WARNING: Out of bounds!")
                         self.send_command("emergency_stop")
                         print("Emergency stop command sent")
                 time.sleep(0.01)
@@ -294,6 +308,120 @@ class Drone:
     def move(self):
         self.send_command({"move" : True})
 
+    def start_position_control(self):
+        """Start the position controller thread for automatic position tracking"""
+        if not self.controller_active:
+            self.controller_active = True
+            self.controller_thread = threading.Thread(target=self._position_control_loop)
+            self.controller_thread.start()
+            print("[Drone] Position controller started")
+        else:
+            print("[Drone] Position controller already active")
+
+    def stop_position_control(self):
+        """Stop the position controller thread"""
+        if self.controller_active:
+            self.controller_active = False
+            if self.controller_thread and self.controller_thread.is_alive():
+                self.controller_thread.join()
+            print("[Drone] Position controller stopped")
+        else:
+            print("[Drone] Position controller already stopped")
+
+    def _position_control_loop(self):
+        """Main control loop for position-based velocity control"""
+        control_rate = 0.02  # Control rate in seconds (50Hz)
+        error_threshold = 0.2  # Error threshold to consider position reached (meters)
+        position_reached = False
+
+        print("[Drone] Position control loop started")
+        while self.is_running() and self.controller_active:
+            try:
+                # Get current and target positions
+                current_pos = self.get_position_dict()
+                with self.position_lock:
+                    target_pos = self.target_position.copy()
+
+                # Calculate position error
+                error = {
+                    "x": target_pos["x"] - current_pos["x"],
+                    "y": target_pos["y"] - current_pos["y"],
+                    "z": target_pos["z"] - current_pos["z"]
+                }
+
+                # Calculate error magnitude to determine if position is reached
+                error_magnitude = (error["x"]**2 + error["y"]**2 + error["z"]**2)**0.5
+
+                if error_magnitude < error_threshold and not position_reached:
+                    print(f"[Controller] Position reached! Error: {error_magnitude:.2f}m")
+                    position_reached = True
+                elif error_magnitude >= error_threshold * 1.5 and position_reached:
+                    # Reset flag when error increases significantly (e.g., new target set)
+                    position_reached = False
+
+                # Calculate velocity command using PID control
+                velocity = self._calculate_pid_velocity(error, control_rate)
+
+                # Apply velocity command if flying
+                if self.flying and self.mc:
+                    self.mc.start_linear_motion(
+                        velocity["x"],
+                        velocity["y"],
+                        velocity["z"]
+                    )
+                    print(f"[Controller] Pos error: ({error['x']:.2f}, {error['y']:.2f}, {error['z']:.2f}) → "
+                          f"Vel: ({velocity['x']:.2f}, {velocity['y']:.2f}, {velocity['z']:.2f})")
+
+                # Sleep to maintain control rate
+                time.sleep(control_rate)
+
+            except Exception as e:
+                print(f"[Drone] Error in position control loop: {str(e)}")
+                time.sleep(0.5)  # Sleep longer on error
+
+        print("[Drone] Position control loop stopped")
+
+    def _calculate_pid_velocity(self, error, dt):
+        """Calculate velocity vector using PID control
+
+        Args:
+            error: Position error in each axis as dictionary
+            dt: Time step for derivative and integral calculations
+        """
+        velocity = {"x": 0.0, "y": 0.0, "z": 0.0}
+
+        # For each axis (x, y, z)
+        for axis in ["x", "y", "z"]:
+            # Apply deadband to reduce jitter when close to target
+            if abs(error[axis]) < self.position_deadband:
+                velocity[axis] = 0.0
+                continue
+
+            # Proportional term
+            p_term = self.gains[axis]["kp"] * error[axis]
+
+            # Derivative term (rate of change of error)
+            d_term = self.gains[axis]["kd"] * (error[axis] - self.last_error[axis]) / dt
+
+            # Integral term (accumulating error)
+            self.integral[axis] += error[axis] * dt
+            # Anti-windup: reset integral when changing direction
+            if (error[axis] * self.last_error[axis]) < 0:
+                self.integral[axis] = 0.0
+            # Apply integral term with limits to prevent windup
+            i_term = self.gains[axis]["ki"] * self.integral[axis]
+
+            # Calculate raw velocity command (sum of PID terms)
+            raw_velocity = p_term + d_term + i_term
+
+            # Apply velocity limits
+            velocity[axis] = max(-self.max_velocity, min(self.max_velocity, raw_velocity))
+
+            # Update last error for next iteration
+            self.last_error[axis] = error[axis]
+
+        return velocity
+
     def set_target_position(self, x: float, y: float, z: float) -> None:
         """Set target position with boundary checking"""
         # Check the target position is within boundaries
@@ -330,8 +458,41 @@ class Drone:
         """Send command to the command queue"""
         self.command_queue.put(command)
 
+    def set_pid_gains(self, axis, kp=None, ki=None, kd=None):
+        """Update PID gains for a specific axis"""
+        axes = ["x", "y", "z"] if axis == "all" else [axis]
+
+        for ax in axes:
+            if ax not in self.gains:
+                print(f"[Drone] Invalid axis '{ax}'. Use 'x', 'y', 'z', or 'all'")
+                continue
+
+            if kp is not None:
+                self.gains[ax]["kp"] = kp
+            if ki is not None:
+                self.gains[ax]["ki"] = ki
+            if kd is not None:
+                self.gains[ax]["kd"] = kd
+
+            print(f"[Drone] Updated PID gains for {ax}-axis: kp={self.gains[ax]['kp']}, "
+                  f"ki={self.gains[ax]['ki']}, kd={self.gains[ax]['kd']}")
+
+    def set_max_velocity(self, velocity):
+        """Set the maximum velocity limit for the controller"""
+        self.max_velocity = float(velocity)
+        print(f"[Drone] Maximum velocity set to {self.max_velocity} m/s")
+
+    def set_deadband(self, value):
+        """Set position error deadband"""
+        self.position_deadband = float(value)
+        print(f"[Drone] Position deadband set to {self.position_deadband} meters")
+
     def stop(self):
         """Stop the drone and all threads"""
+        # Stop position controller if active
+        if self.controller_active:
+            self.stop_position_control()
+
         self.send_command("exit")
         # Ensure running is set to False so all threads can terminate
         self.set_running(False)
@@ -355,12 +516,28 @@ if __name__ == "__main__":
     time.sleep(10)
     drone.take_off()
 
-    for i in range(30):
-        drone.move()
-        time.sleep(1)
+    # Wait for takeoff to complete
+    time.sleep(5)
 
-    # time.sleep(10)
-    # drone.take_off()
-    # time.sleep(10)
+    # Example of position control usage
+    print("Setting target position")
+    drone.set_target_position(1.0, 0.0, 0.5)  # Move 1m forward on x-axis
+    drone.start_position_control()
 
-    # drone.stop()
+    # Let the position controller run for 15 seconds
+    time.sleep(15)
+
+    # Move to another position
+    print("Setting new target position")
+    drone.set_target_position(0.0, 0.0, 0.5)  # Return to origin (x,y)
+    time.sleep(15)
+
+    # Try a more complex position
+    print("Setting final test position")
+    drone.set_target_position(0.0, 1.0, 0.7)  # Move along y-axis and change height
+    time.sleep(15)
+
+    # Land and stop
+    drone.land()
+    time.sleep(5)
+    drone.stop()
