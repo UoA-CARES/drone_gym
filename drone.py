@@ -34,7 +34,7 @@ class Drone:
         self.gains = {
             "x": {"kp": 0.5, "kd": 0, "ki": 0},
             "y": {"kp": 0.5, "kd": 0, "ki": 0},
-            "z": {"kp": 0.3, "kd": 0, "ki": 0}
+            "z": {"kp": 0.5, "kd": 0, "ki": 0}
         }
         self.last_error = {"x": 0.0, "y": 0.0, "z": 0.0}
         self.integral = {"x": 0.0, "y": 0.0, "z": 0.0}
@@ -108,7 +108,7 @@ class Drone:
 
     def _update_position(self):
         # It takes some time for the vicon to get values
-        time.sleep(3)
+        time.sleep(1)
         vicon_thread = threading.Thread(target=self.vicon.main_loop)
         vicon_thread.start()
         while self.is_running():
@@ -124,7 +124,7 @@ class Drone:
                 else:
                     print("Drone position is not being updated")
 
-                time.sleep(0.090)  # 90 Hz
+                time.sleep(0.0166666)  # 60 Hz
             except Exception as e:
                 print(f"[Drone] Error: Position data could not be parsed correctly - {str(e)}")
         # Signal the vicon thread to join
@@ -330,8 +330,8 @@ class Drone:
 
     def _position_control_loop(self):
         """Main control loop for position-based velocity control"""
-        control_rate = 0.02  # Control rate in seconds (50Hz)
-        error_threshold = 0.2  # Error threshold to consider position reached (meters)
+        control_rate = 0.05  # Control rate in seconds (50Hz)
+        error_threshold = 0.1  # Error threshold to consider position reached (meters)
         position_reached = False
 
         print("[Drone] Position control loop started")
@@ -348,13 +348,14 @@ class Drone:
                     "y": target_pos["y"] - current_pos["y"],
                     "z": target_pos["z"] - current_pos["z"]
                 }
-
+                print(f"[Controller]: Position({current_pos['x']}, {current_pos['y']}, {current_pos['z']})")
                 # Calculate error magnitude to determine if position is reached
                 error_magnitude = (error["x"]**2 + error["y"]**2 + error["z"]**2)**0.5
 
                 if error_magnitude < error_threshold and not position_reached:
                     print(f"[Controller] Position reached! Error: {error_magnitude:.2f}m")
                     position_reached = True
+
                 elif error_magnitude >= error_threshold * 1.5 and position_reached:
                     # Reset flag when error increases significantly (e.g., new target set)
                     position_reached = False
@@ -390,7 +391,7 @@ class Drone:
         """
         velocity = {"x": 0.0, "y": 0.0, "z": 0.0}
 
-        # For each axis (x, y, z)
+        # For each axis (x, y, z)``
         for axis in ["x", "y", "z"]:
             # Apply deadband to reduce jitter when close to target
             if abs(error[axis]) < self.position_deadband:
@@ -399,10 +400,8 @@ class Drone:
 
             # Proportional term
             p_term = self.gains[axis]["kp"] * error[axis]
-
             # Derivative term (rate of change of error)
             d_term = self.gains[axis]["kd"] * (error[axis] - self.last_error[axis]) / dt
-
             # Integral term (accumulating error)
             self.integral[axis] += error[axis] * dt
             # Anti-windup: reset integral when changing direction
@@ -413,14 +412,20 @@ class Drone:
 
             # Calculate raw velocity command (sum of PID terms)
             raw_velocity = p_term + d_term + i_term
-
             # Apply velocity limits
             velocity[axis] = max(-self.max_velocity, min(self.max_velocity, raw_velocity))
-
             # Update last error for next iteration
             self.last_error[axis] = error[axis]
 
         return velocity
+
+    def test_velocity(self, x, y, z):
+        
+        if self.flying and self.mc:
+            self.mc.start_linear_motion(x, y, z)
+            
+
+
 
     def set_target_position(self, x: float, y: float, z: float) -> None:
         """Set target position with boundary checking"""
@@ -517,27 +522,27 @@ if __name__ == "__main__":
     drone.take_off()
 
     # Wait for takeoff to complete
-    time.sleep(5)
+    time.sleep(10)
 
-    # Example of position control usage
+    # drone.test_velocity(0, 0.5, 0)
+    # time.sleep(10)
+    # drone.test_velocity(0. -0.5, 0 )
+    # time.sleep(10)
     print("Setting target position")
-    drone.set_target_position(1.0, 0.0, 0.5)  # Move 1m forward on x-axis
+    drone.set_target_position(0, 1.0, 0.5)  # Move 1m forward on x-axis
     drone.start_position_control()
-
     # Let the position controller run for 15 seconds
-    time.sleep(15)
-
-    # Move to another position
-    print("Setting new target position")
+    time.sleep(35)
+    # # Move to another position
+    # # print("Setting new target position")
+    print("post 35 seconds pause")
     drone.set_target_position(0.0, 0.0, 0.5)  # Return to origin (x,y)
-    time.sleep(15)
-
-    # Try a more complex position
-    print("Setting final test position")
-    drone.set_target_position(0.0, 1.0, 0.7)  # Move along y-axis and change height
-    time.sleep(15)
-
-    # Land and stop
-    drone.land()
-    time.sleep(5)
-    drone.stop()
+    time.sleep(20)
+    # # Try a more complex position
+    # # print("Setting final test position")
+    drone.set_target_position(1.0, 1.0, 0.5)  # Move along y-axis and change height
+    # time.sleep(20)
+    # # Land and stop
+    # drone.land()
+    # time.sleep(5)
+    # drone.stop()
