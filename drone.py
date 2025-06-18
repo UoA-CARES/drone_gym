@@ -19,6 +19,9 @@ class Drone:
         self.URI = uri_helper.uri_from_env(default='radio://0/80/2M/E7E7E7E7E7')
         self.default_height = 0.3
         self.deck_attached_event = Event()
+        self.battery_lock = threading.Lock()
+        self.battery_log_config = None
+
 
         # Command processing
         self.command_queue = queue.Queue()
@@ -156,6 +159,8 @@ class Drone:
             self.armed = True
             print("[Crazyflie] Crazyflie armed.")
 
+
+            self._setup_battery_logging()
             return True
 
         except Exception as e:
@@ -224,6 +229,9 @@ class Drone:
             if self.scf:
                 self.scf.close_link()
                 self.scf = None
+
+            if self.battery_log_config:
+                self.battery_log_config.close()
 
         except Exception as e:
             print(f"[Drone] Error during shutdown: {str(e)}")
@@ -417,6 +425,33 @@ class Drone:
             self.last_error[axis] = error[axis]
 
         return velocity
+
+    def _setup_battery_logging(self):
+
+        self.battery_log_conf = LogConfig(name='Battery', period_in_ms = 10000)
+        self.battery_log_conf.add_variable('pm.vbat', 'float')
+
+        try:
+            self.cf.log.add_config(self.battery_log_conf)
+            # Register the callback function that will receive the data
+            self.battery_log_conf.data_received_cb.add_callback(self._battery_callback)
+            # Start the logging
+            self.battery_log_conf.start()
+            print("[Drone] Battery logging started.")
+        except KeyError as e:
+            print(f'[Drone] Could not start battery logging: {e}')
+        except AttributeError:
+            print('[Drone] Could not start battery logging, Crazyflie object not available.')
+    def _battery_callback(self, timestamp, data, logconf):
+        """Callback for when new battery data is received from the drone."""
+        voltage = data['pm.vbat']
+        with self.battery_lock:
+            self.battery_level = voltage
+
+    def get_battery(self) -> float:
+        with self.battery_lock:
+            return self.battery_level
+
 
     def test_velocity(self, x, y, z):
 
