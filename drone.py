@@ -19,6 +19,7 @@ class Drone:
         self.URI = uri_helper.uri_from_env(default='radio://0/80/2M/E7E7E7E7E7')
         self.default_height = 0.3
         self.deck_attached_event = Event()
+        self.battery_level = 0
         self.battery_lock = threading.Lock()
         self.battery_log_config = None
 
@@ -428,7 +429,7 @@ class Drone:
 
     def _setup_battery_logging(self):
 
-        self.battery_log_conf = LogConfig(name='Battery', period_in_ms = 10000)
+        self.battery_log_conf = LogConfig(name='Battery', period_in_ms = 1000)
         self.battery_log_conf.add_variable('pm.vbat', 'float')
 
         try:
@@ -549,18 +550,21 @@ if __name__ == "__main__":
 
     drone = Drone()
     print("Drone class initiated")
+    while True:
+        time.sleep(10)
+        print(f"This is the DRONE BATTERY OK {drone.get_battery()}")
     # Wait for initialization
-    time.sleep(10)
-    drone.take_off()
-    time.sleep(10)
-    drone.set_target_position(1, 1, 1)  # Move 1m forward on x-axis
-    drone.start_position_control()
-    time.sleep(10)
-    drone.set_target_position(0.5, 0.5, 0.5)  # Move 1m forward on x-axis
-    time.sleep(10)
-    drone.stop_position_control()
-    drone.land()
-    time.sleep(5)
+    # time.sleep(10)
+    # drone.take_off()
+    # time.sleep(10)
+    # drone.set_target_position(1, 1, 1)  # Move 1m forward on x-axis
+    # drone.start_position_control()
+    # time.sleep(10)
+    # drone.set_target_position(0.5, 0.5, 0.5)  # Move 1m forward on x-axis
+    # time.sleep(10)
+    # drone.stop_position_control()
+    # drone.land()
+    # time.sleep(5)
 
     # # Move to another position
     # # print("Setting new target position")
