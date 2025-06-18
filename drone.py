@@ -17,7 +17,7 @@ class Drone:
     def __init__(self):
         # Drone Properties
         self.URI = uri_helper.uri_from_env(default='radio://0/80/2M/E7E7E7E7E7')
-        self.default_height = 0.5
+        self.default_height = 0.3
         self.deck_attached_event = Event()
 
         # Command processing
@@ -243,21 +243,13 @@ class Drone:
                 print(f"[Drone] Velocity set to: {self.velocity}")
 
             elif "position" in command:
-                # This is a position command
+                # Updates the target position
                 with self.position_lock:
                     x = command["position"].get("x", self.position["x"])
                     y = command["position"].get("y", self.position["y"])
                     z = command["position"].get("z", self.position["z"])
                     self.target_position = {"x": x, "y": y, "z": z}
                     print(f"[Drone] Target position set: x={x}, y={y}, z={z}")
-
-                    # Execute the movement if we have a motion commander
-                    if self.mc and self.flying:
-                        rel_x = x - self.position["x"]
-                        rel_y = y - self.position["y"]
-                        rel_z = z - self.position["z"]
-                        self.mc.move_distance(rel_x, rel_y, rel_z)
-                        print(f"[Drone] Moving to position: x={x}, y={y}, z={z}")
 
             elif "take_off" in command:
                 if not self.flying and self.armed:
@@ -273,7 +265,7 @@ class Drone:
                 if self.flying and self.mc:
                     print("[Drone] Landing drone")
                     self.mc.land()
-                    
+
                     self.mc.stop()
                     self.mc = None
                     self.flying = False
@@ -282,7 +274,12 @@ class Drone:
                     print("[Drone] Cannot land - not currently flying")
             elif "move" in command:
                 if self.flying and self.mc:
-                    self.mc.start_linear_motion(0,-0.2,0)
+                    velocity = command.get("velocity", {"x": 0, "y": 0, "z": 0})
+                    x = velocity.get("x", 0)
+                    y = velocity.get("y", 0)
+                    z = velocity.get("z", 0)
+                    print(f"[Drone] Moving with velocity: x={x}, y={y}, z={z}")
+                    self.mc.start_linear_motion(x, y, z)
             else:
                 print(f"[Drone] Unknown command: {command}")
 
@@ -306,8 +303,9 @@ class Drone:
         """Public method to land"""
         self.send_command({"land": True})
 
-    def move(self):
-        self.send_command({"move" : True})
+    def move(self, x=0, y=0, z=0):
+
+        self.send_command({"move": True, "velocity": {"x": x, "y": y, "z": z}})
 
     def start_position_control(self):
         """Start the position controller thread for automatic position tracking"""
@@ -421,10 +419,10 @@ class Drone:
         return velocity
 
     def test_velocity(self, x, y, z):
-        
+
         if self.flying and self.mc:
             self.mc.start_linear_motion(x, y, z)
-            
+
 
     def set_target_position(self, x: float, y: float, z: float) -> None:
         """Set target position with boundary checking"""
