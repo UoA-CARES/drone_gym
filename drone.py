@@ -51,7 +51,6 @@ class Drone:
         self.cf = None
         self.mc = None
         self.armed = False
-        self.flying = False
 
         # Vicon Integration
         self.position = {"x": 0.0, "y": 0.0, "z": 0.0}
@@ -213,10 +212,10 @@ class Drone:
     def _shutdown_crazyflie(self):
         """Properly shutdown Crazyflie connection"""
         try:
-            if self.flying and self.mc:
+            if self.is_flying_event.is_set() and self.mc:
                 print("[Drone] Landing before shutdown...")
                 self.mc.land()
-                self.flying = False
+                self.is_flying_event.clear()
 
             if self.mc:
                 self.mc.stop()
@@ -258,29 +257,29 @@ class Drone:
                     print(f"[Drone] Target position set: x={x}, y={y}, z={z}")
 
             elif "take_off" in command:
-                if not self.flying and self.armed:
+                if not self.is_flying_event.is_set() and self.armed:
                     print("[Drone] Executing take-off command")
                     self.mc = MotionCommander(self.scf, default_height=self.default_height)
                     self.mc.take_off()
-                    self.flying = True
+                    self.is_landed_event.clear()
                     self.is_flying_event.set()
                     print("[Drone] Take-off successful")
                 else:
                     print("[Drone] Cannot take off - already flying or not armed")
 
             elif "land" in command:
-                if self.flying and self.mc:
+                if self.is_flying_event.is_set() and self.mc:
                     print("[Drone] Landing drone")
                     self.mc.land()
                     self.mc.stop()
                     self.mc = None
-                    self.flying = False
+                    self.is_landed_event.set()
                     self.is_flying_event.clear()
                     print("[Drone] Landing successful")
                 else:
                     print("[Drone] Cannot land - not currently flying")
             elif "move" in command:
-                if self.flying and self.mc:
+                if self.is_flying_event.is_set() and self.mc:
                     self.mc.start_linear_motion(0,-0.2,0)
             else:
                 print(f"[Drone] Unknown command: {command}")
@@ -364,7 +363,7 @@ class Drone:
                 velocity = self._calculate_pid_velocity(error, control_rate)
 
                 # Apply velocity command if flying
-                if self.flying and self.mc:
+                if self.is_flying_event.is_set() and self.mc:
                     self.mc.start_linear_motion(
                         velocity["x"],
                         velocity["y"],
@@ -421,7 +420,7 @@ class Drone:
 
     def test_velocity(self, x, y, z):
 
-        if self.flying and self.mc:
+        if self.is_flying_event.is_set() and self.mc:
             self.mc.start_linear_motion(x, y, z)
 
     def set_target_position(self, x: float, y: float, z: float) -> None:
@@ -495,9 +494,12 @@ class Drone:
         if self.controller_active:
             self.stop_position_control()
 
-        self.send_command("exit")
-        # Ensure running is set to False so all threads can terminate
         self.set_running(False)
+
+        self.send_command("exit")
+
+        time.sleep(0.2)
+
         # Join the run thread
         if self.thread.is_alive():
             self.thread.join()
@@ -514,7 +516,6 @@ if __name__ == "__main__":
 
     drone = Drone()
     print("Drone class initiated")
-    drone.set_target_position(0, 1.0, 0.5)  # Move 1m forward on x-axis
     drone.take_off()
 
     drone.is_flying_event.wait(timeout=15)
@@ -522,6 +523,7 @@ if __name__ == "__main__":
     if not drone.is_flying_event.is_set():
         print("Drone failed to take off")
         drone.stop()
+    drone.set_target_position(0, 1.0, 0.5)  # Move 1m forward on x-axis
 
     print("Setting target position")
     drone.start_position_control()
