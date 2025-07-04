@@ -20,6 +20,11 @@ class Drone:
         self.default_height = 0.5
         self.deck_attached_event = Event()
 
+        # Drone Events
+        self.is_flying_event = Event()
+        self.is_landed_event = Event()
+        self.is_landed_event.set()
+
         # Command processing
         self.command_queue = queue.Queue()
         self.velocity = 0.0
@@ -75,9 +80,10 @@ class Drone:
             try:
                 # Check if position is within boundaries for each axis
                 with self.position_lock:
-                    x_in_bounds = self.boundaries["x"] >= abs(self.position["x"])
-                    y_in_bounds = self.boundaries["y"] >= abs(self.position["y"])
-                    z_in_bounds = self.boundaries["z"] >= abs(self.position["z"])
+                    current_pos = self.position.copy()
+                    x_in_bounds = self.boundaries["x"] >= abs(current_pos["x"])
+                    y_in_bounds = self.boundaries["y"] >= abs(current_pos["y"])
+                    z_in_bounds = self.boundaries["z"] >= abs(current_pos["z"])
 
                 # Set in_boundaries status
                 current_status = x_in_bounds and y_in_bounds and z_in_bounds
@@ -251,20 +257,13 @@ class Drone:
                     self.target_position = {"x": x, "y": y, "z": z}
                     print(f"[Drone] Target position set: x={x}, y={y}, z={z}")
 
-                    # Execute the movement if we have a motion commander
-                    if self.mc and self.flying:
-                        rel_x = x - self.position["x"]
-                        rel_y = y - self.position["y"]
-                        rel_z = z - self.position["z"]
-                        self.mc.move_distance(rel_x, rel_y, rel_z)
-                        print(f"[Drone] Moving to position: x={x}, y={y}, z={z}")
-
             elif "take_off" in command:
                 if not self.flying and self.armed:
                     print("[Drone] Executing take-off command")
                     self.mc = MotionCommander(self.scf, default_height=self.default_height)
                     self.mc.take_off()
                     self.flying = True
+                    self.is_flying_event.set()
                     print("[Drone] Take-off successful")
                 else:
                     print("[Drone] Cannot take off - already flying or not armed")
@@ -276,6 +275,7 @@ class Drone:
                     self.mc.stop()
                     self.mc = None
                     self.flying = False
+                    self.is_flying_event.clear()
                     print("[Drone] Landing successful")
                 else:
                     print("[Drone] Cannot land - not currently flying")
@@ -420,12 +420,9 @@ class Drone:
         return velocity
 
     def test_velocity(self, x, y, z):
-        
+
         if self.flying and self.mc:
             self.mc.start_linear_motion(x, y, z)
-            
-
-
 
     def set_target_position(self, x: float, y: float, z: float) -> None:
         """Set target position with boundary checking"""
@@ -517,32 +514,30 @@ if __name__ == "__main__":
 
     drone = Drone()
     print("Drone class initiated")
-    # Wait for initialization
-    time.sleep(10)
+    drone.set_target_position(0, 1.0, 0.5)  # Move 1m forward on x-axis
     drone.take_off()
 
-    # Wait for takeoff to complete
-    time.sleep(10)
+    drone.is_flying_event.wait(timeout=15)
 
-    # drone.test_velocity(0, 0.5, 0)
-    # time.sleep(10)
-    # drone.test_velocity(0. -0.5, 0 )
-    # time.sleep(10)
+    if not drone.is_flying_event.is_set():
+        print("Drone failed to take off")
+        drone.stop()
+
     print("Setting target position")
-    drone.set_target_position(0, 1.0, 0.5)  # Move 1m forward on x-axis
     drone.start_position_control()
     # Let the position controller run for 15 seconds
-    time.sleep(35)
-    # # Move to another position
-    # # print("Setting new target position")
+    time.sleep(15)
     print("post 35 seconds pause")
     drone.set_target_position(0.0, 0.0, 0.5)  # Return to origin (x,y)
-    time.sleep(20)
-    # # Try a more complex position
-    # # print("Setting final test position")
+    time.sleep(15)
     drone.set_target_position(1.0, 1.0, 0.5)  # Move along y-axis and change height
-    # time.sleep(20)
+    time.sleep(15)
+    drone.stop_position_control()
     # # Land and stop
-    # drone.land()
+    drone.land()
+    drone.is_landed_event.wait(timeout=15)
+    if not drone.is_landed_event.is_set():
+        print("Drone is failing to land....")
+        print("Forcing stop")
     # time.sleep(5)
-    # drone.stop()
+    drone.stop()
