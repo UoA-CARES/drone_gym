@@ -523,10 +523,11 @@ if __name__ == "__main__":
     if not drone.is_flying_event.is_set():
         print("Drone failed to take off")
         drone.stop()
-    drone.set_target_position(0, 1.0, 0.5)  # Move 1m forward on x-axis
 
-    print("Setting target position")
     drone.start_position_control()
+    time.sleep(2) # Let the controller stabilise first
+    print("Setting target position")
+    drone.set_target_position(0, 1.0, 0.5)  # Move 1m forward on x-axis
     # Let the position controller run for 15 seconds
     time.sleep(15)
     print("post 35 seconds pause")
