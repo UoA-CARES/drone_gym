@@ -214,11 +214,11 @@ class Drone:
         try:
             if self.is_flying_event.is_set() and self.mc:
                 print("[Drone] Landing before shutdown...")
-                self.mc.land()
                 self.is_flying_event.clear()
 
             if self.mc:
-                self.mc.stop()
+                print("mc")
+                # self.mc.stop()
                 self.mc = None
 
             if self.armed and self.cf:
@@ -227,6 +227,7 @@ class Drone:
                 self.armed = False
 
             if self.scf:
+                print("scf")
                 self.scf.close_link()
                 self.scf = None
 
@@ -271,8 +272,8 @@ class Drone:
                 if self.is_flying_event.is_set() and self.mc:
                     print("[Drone] Landing drone")
                     self.mc.land()
-                    self.mc.stop()
-                    self.mc = None
+                    # self.mc.stop()
+                    # self.mc = None
                     self.is_landed_event.set()
                     self.is_flying_event.clear()
                     print("[Drone] Landing successful")
@@ -517,7 +518,6 @@ if __name__ == "__main__":
     drone = Drone()
     print("Drone class initiated")
     drone.take_off()
-
     drone.is_flying_event.wait(timeout=15)
 
     if not drone.is_flying_event.is_set():
@@ -538,7 +538,7 @@ if __name__ == "__main__":
     drone.stop_position_control()
     # # Land and stop
     drone.land()
-    drone.is_landed_event.wait(timeout=15)
+    drone.is_landed_event.wait(timeout=30)
     if not drone.is_landed_event.is_set():
         print("Drone is failing to land....")
         print("Forcing stop")
