@@ -36,14 +36,14 @@ class Drone:
         self.controller_thread = None
         # PID gains - separate for each axis for better tuning
         self.gains = {
-            "x": {"kp": 0.5, "kd": 0, "ki": 0},
-            "y": {"kp": 0.5, "kd": 0, "ki": 0},
-            "z": {"kp": 0.5, "kd": 0, "ki": 0}
+            "x": {"kp": 0.85, "kd": 0, "ki": 0.15},
+            "y": {"kp": 0.7, "kd": 0, "ki": 0},
+            "z": {"kp": 0.6, "kd": 0, "ki": 0}
         }
         self.last_error = {"x": 0.0, "y": 0.0, "z": 0.0}
         self.integral = {"x": 0.0, "y": 0.0, "z": 0.0}
         self.max_velocity = 0.5  # Maximum velocity in m/s
-        self.position_deadband = 0.15  # Position error below which velocity will be zero (in meters)
+        self.position_deadband = 0.1  # Position error below which velocity will be zero (in meters)
 
         # Crazyflie objects - will be initialized in _run
         self.scf = None
@@ -536,33 +536,47 @@ class Drone:
         self.set_running(False)
         # Join the run thread
         if self.thread.is_alive():
-            self.thread.join()
+            self.thread.join(timeout=5.0)
         # Join the vicon thread
         if self.position_thread.is_alive():
-            self.position_thread.join()
+            self.position_thread.join(timeout=5.0)
         # Join the safety thread
         if self.safety_thread.is_alive():
-            self.safety_thread.join()
+            self.safety_thread.join(timeout=5.0)
 
 
 if __name__ == "__main__":
     # Testing instructions
 
     drone = Drone()
-    print("Drone class initiated")
-    while True:
-        time.sleep(10)
-        print(f"This is the DRONE BATTERY OK {drone.get_battery()}")
+    #print("Drone class initiated")
+    # while True:
+        #time.sleep(10)
+        #print(f"This is the DRONE BATTERY OK {drone.get_battery()}")
     # Wait for initialization
-    # time.sleep(10)
-    # drone.take_off()
-    # time.sleep(10)
-    # drone.set_target_position(1, 1, 1)  # Move 1m forward on x-axis
-    # drone.start_position_control()
-    # time.sleep(10)
+
+    time.sleep(10)
+    drone.take_off()
+    time.sleep(10)
+
+    drone.set_target_position(0, 1, 1)  # Move 1m forward on y-axis and 1m in z-axis
+    drone.start_position_control()
+    time.sleep(10)
+    drone.set_target_position(0, 0, 0.5)
+    time.sleep(10)
+    drone.stop_position_control()
+    # print(f"This is the DRONE BATTERY OK {drone.get_battery()}")
+    # Land and stop
+    time.sleep(5)
+    drone.stop()
+    print(1)
+    time.sleep(5)
+    drone.land()
+    print(2)
+
+
     # drone.set_target_position(0.5, 0.5, 0.5)  # Move 1m forward on x-axis
     # time.sleep(10)
-    # drone.stop_position_control()
     # drone.land()
     # time.sleep(5)
 
