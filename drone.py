@@ -3,6 +3,8 @@ import queue
 import time
 from threading import Event
 from vicon_connection_class import ViconInterface as vi
+import matplotlib.pyplot as plt
+from mpl_toolkits.mplot3d import Axes3D
 
 import cflib.crtp
 from cflib.crazyflie import Crazyflie
@@ -36,14 +38,14 @@ class Drone:
         self.controller_thread = None
         # PID gains - separate for each axis for better tuning
         self.gains = {
-            "x": {"kp": 0.85, "kd": 0, "ki": 0.15},
-            "y": {"kp": 0.7, "kd": 0, "ki": 0},
-            "z": {"kp": 0.6, "kd": 0, "ki": 0}
+            "x": {"kp": 0.6, "kd": 0, "ki": 0},
+            "y": {"kp": 0.6, "kd": 0, "ki": 0},
+            "z": {"kp": 0.2, "kd": 0, "ki": 0}
         }
         self.last_error = {"x": 0.0, "y": 0.0, "z": 0.0}
         self.integral = {"x": 0.0, "y": 0.0, "z": 0.0}
         self.max_velocity = 0.5  # Maximum velocity in m/s
-        self.position_deadband = 0.1  # Position error below which velocity will be zero (in meters)
+        self.position_deadband = 0.15  # Position error below which velocity will be zero (in meters) DON'T TOUCH THIS
 
         # Crazyflie objects - will be initialized in _run
         self.scf = None
@@ -72,6 +74,12 @@ class Drone:
         # Start the main drone thread
         self.thread = threading.Thread(target=self._run)
         self.thread.start()
+
+        # Storing position of the drone
+        self.position_history = {}  # Dictionary with timestamp as key
+        # Storing target positions for graph
+        self.targetting_positions = [] 
+
 
     def _check_boundaries(self):
         time.sleep(5)
@@ -125,6 +133,9 @@ class Drone:
                             "y": position_array[1],
                             "z": position_array[2]
                         }
+                        # Store with timestamp as key
+                        timestamp = time.time()
+                        self.position_history[timestamp] = self.position.copy()
                 else:
                     print("Drone position is not being updated")
 
@@ -219,7 +230,6 @@ class Drone:
                 self.flying = False
 
             if self.mc:
-                self.mc.stop()
                 self.mc = None
 
             if self.armed and self.cf:
@@ -274,10 +284,8 @@ class Drone:
                 if self.flying and self.mc:
                     print("[Drone] Landing drone")
                     self.mc.land()
-
-                    self.mc.stop()
-                    self.mc = None
-                    self.flying = False
+                    self.is_landed_event.set()
+                    self.is_flying_event.clear()
                     print("[Drone] Landing successful")
                 else:
                     print("[Drone] Cannot land - not currently flying")
@@ -469,6 +477,11 @@ class Drone:
             print(f"[Drone] WARNING: Target position {x}, {y}, {z} is outside safe boundaries. Command rejected.")
             return
 
+        # store the target positions for graphing
+        self.targetting_position = {"target_x": x, "target_y": y, "target_z": z}
+
+        self.targetting_positions.append({"target_x": x, "target_y": y, "target_z": z})
+
         # Create and send a position command
         position_command = {
             "position": {
@@ -544,6 +557,76 @@ class Drone:
         if self.safety_thread.is_alive():
             self.safety_thread.join(timeout=5.0)
 
+    def plot_drone_path(drone, ideal_paths=None):
+         # Extract actual drone path
+        # Extract directly from values in insertion order
+         actual_x = [pos["x"] for pos in drone.position_history.values()]
+         actual_y = [pos["y"] for pos in drone.position_history.values()]
+         actual_z = [pos["z"] for pos in drone.position_history.values()]
+    
+         # Create 3D plot
+         fig = plt.figure(figsize=(12, 8))
+         ax = fig.add_subplot(111, projection='3d')
+    
+         # Plot actual path
+         ax.plot(actual_x, actual_y, actual_z, 'b-', linewidth=2, label='Actual Path')
+         ax.scatter(actual_x[0], actual_y[0], actual_z[0], color='green', s=100, label='Start')
+         ax.scatter(actual_x[-1], actual_y[-1], actual_z[-1], color='red', s=100, label='End')
+    
+         # Plot ideal paths
+         if ideal_paths:
+             colors = ['orange', 'purple', 'brown', 'pink']
+             for i, path in enumerate(ideal_paths):
+                 color = colors[i % len(colors)]
+                 ax.plot(path["x"], path["y"], path["z"], 
+                     color=color, linewidth=2, linestyle='--', 
+                     label=f'Ideal: {path["name"]}')
+    
+         ax.set_xlabel('X Position')
+         ax.set_ylabel('Y Position')
+         ax.set_zlabel('Z Position')
+         ax.set_title('Drone Flight Path Comparison')
+         ax.legend()
+         plt.show()
+    
+    def create_ideal_path(self, num_points_per_segment=50):
+        """Creates path through all targets in order"""  
+        if not self.targetting_positions:
+            return None 
+        all_x, all_y, all_z = [],[],[]
+        current_pos = (0, 0, 0) 
+        for target in self.targetting_positions:
+        # Create segment from current position to this target
+             segment_x, segment_y, segment_z = self._create_segment(
+                 current_pos, 
+                 (target["target_x"], target["target_y"], target["target_z"]),
+                 num_points_per_segment
+             )
+        
+             all_x.extend(segment_x)
+             all_y.extend(segment_y)
+             all_z.extend(segment_z)
+        
+            # Update current position for next segment
+             current_pos = (target["target_x"], target["target_y"], target["target_z"])
+    
+        return {
+             "x": all_x,
+             "y": all_y,
+             "z": all_z,
+             "name": f"Multi-Target Path ({len(self.targetting_positions)} targets)"
+         }
+         
+    def _create_segment(self, start_pos, end_pos, num_points):
+         """Creates a straight line segment between two points"""
+         start_x, start_y, start_z = start_pos
+         end_x, end_y, end_z = end_pos
+    
+         x_points = [start_x + (end_x - start_x) * i / (num_points - 1) for i in range(num_points)]
+         y_points = [start_y + (end_y - start_y) * i / (num_points - 1) for i in range(num_points)]
+         z_points = [start_z + (end_z - start_z) * i / (num_points - 1) for i in range(num_points)]
+    
+         return x_points, y_points, z_points
 
 if __name__ == "__main__":
     # Testing instructions
@@ -561,9 +644,16 @@ if __name__ == "__main__":
 
     drone.set_target_position(0, 1, 1)  # Move 1m forward on y-axis and 1m in z-axis
     drone.start_position_control()
-    time.sleep(10)
-    drone.set_target_position(0, 0, 0.5)
-    time.sleep(10)
+    time.sleep(2) # Let the controller stabilise first
+    print("Setting target position")
+    drone.set_target_position(0, 1.0, 0.5)  # Move 1m forward on x-axis
+    # Let the position controller run for 15 seconds
+    time.sleep(15)
+    # print("post 35 seconds pause")
+    drone.set_target_position(0.0, 0.0, 0.5)  # Return to origin (x,y)
+    time.sleep(15)
+    drone.set_target_position(1.0, 1.0, 0.5)  # Move along y-axis and change height
+    time.sleep(15)
     drone.stop_position_control()
     # print(f"This is the DRONE BATTERY OK {drone.get_battery()}")
     # Land and stop
@@ -590,6 +680,13 @@ if __name__ == "__main__":
     # drone.set_target_position(1.0, 1.0, 0.5)  # Move along y-axis and change height
     # time.sleep(20)
     # # Land and stop
-    # drone.land()
+    drone.land()
+    drone.is_landed_event.wait(timeout=15)
+    if not drone.is_landed_event.is_set():
+        print("Drone is failing to land....")
+        print("Forcing stop")
     # time.sleep(5)
-    # drone.stop()
+    drone.stop()
+
+    ideal_path = drone.create_ideal_path()
+    drone.plot_drone_path([ideal_path])
