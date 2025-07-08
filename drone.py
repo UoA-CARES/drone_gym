@@ -25,6 +25,11 @@ class Drone:
         self.battery_lock = threading.Lock()
         self.battery_log_config = None
 
+        # Drone Events
+        self.is_flying_event = Event()
+        self.is_landed_event = Event()
+        self.is_landed_event.set()
+
 
         # Command processing
         self.command_queue = queue.Queue()
@@ -224,12 +229,13 @@ class Drone:
     def _shutdown_crazyflie(self):
         """Properly shutdown Crazyflie connection"""
         try:
-            if self.flying and self.mc:
+            if self.is_flying_event.is_set() and self.mc:
                 print("[Drone] Landing before shutdown...")
-                self.mc.land()
-                self.flying = False
+                self.is_flying_event.clear()
 
             if self.mc:
+                print("mc")
+                # self.mc.stop()
                 self.mc = None
 
             if self.armed and self.cf:
@@ -238,11 +244,9 @@ class Drone:
                 self.armed = False
 
             if self.scf:
+                print("scf")
                 self.scf.close_link()
                 self.scf = None
-
-            if self.battery_log_config:
-                self.battery_log_config.close()
 
         except Exception as e:
             print(f"[Drone] Error during shutdown: {str(e)}")
@@ -262,7 +266,7 @@ class Drone:
                 print(f"[Drone] Velocity set to: {self.velocity}")
 
             elif "position" in command:
-                # Updates the target position
+                # This is a position command
                 with self.position_lock:
                     x = command["position"].get("x", self.position["x"])
                     y = command["position"].get("y", self.position["y"])
@@ -271,37 +275,36 @@ class Drone:
                     print(f"[Drone] Target position set: x={x}, y={y}, z={z}")
 
             elif "take_off" in command:
-                if not self.flying and self.armed:
+                if not self.is_flying_event.is_set() and self.armed:
                     print("[Drone] Executing take-off command")
                     self.mc = MotionCommander(self.scf, default_height=self.default_height)
                     self.mc.take_off()
-                    self.flying = True
+                    self.is_landed_event.clear()
+                    self.is_flying_event.set()
                     print("[Drone] Take-off successful")
                 else:
                     print("[Drone] Cannot take off - already flying or not armed")
 
             elif "land" in command:
-                if self.flying and self.mc:
+                if self.is_flying_event.is_set() and self.mc:
                     print("[Drone] Landing drone")
                     self.mc.land()
+                    # self.mc.stop()
+                    # self.mc = None
                     self.is_landed_event.set()
                     self.is_flying_event.clear()
                     print("[Drone] Landing successful")
                 else:
                     print("[Drone] Cannot land - not currently flying")
             elif "move" in command:
-                if self.flying and self.mc:
-                    velocity = command.get("velocity", {"x": 0, "y": 0, "z": 0})
-                    x = velocity.get("x", 0)
-                    y = velocity.get("y", 0)
-                    z = velocity.get("z", 0)
-                    print(f"[Drone] Moving with velocity: x={x}, y={y}, z={z}")
-                    self.mc.start_linear_motion(x, y, z)
+                if self.is_flying_event.is_set() and self.mc:
+                    self.mc.start_linear_motion(0,-0.2,0)
             else:
                 print(f"[Drone] Unknown command: {command}")
 
         except Exception as e:
             print(f"[Drone] Error handling command {command}: {str(e)}")
+
 
     def _param_deck_flow(self, _, value_str):
         """Callback for deck detection"""
@@ -380,7 +383,7 @@ class Drone:
                 velocity = self._calculate_pid_velocity(error, control_rate)
 
                 # Apply velocity command if flying
-                if self.flying and self.mc:
+                if self.is_flying_event.is_set() and self.mc:
                     self.mc.start_linear_motion(
                         velocity["x"],
                         velocity["y"],
@@ -464,7 +467,7 @@ class Drone:
 
     def test_velocity(self, x, y, z):
 
-        if self.flying and self.mc:
+        if self.is_flying_event.is_set() and self.mc:
             self.mc.start_linear_motion(x, y, z)
 
 
@@ -632,56 +635,29 @@ if __name__ == "__main__":
     # Testing instructions
 
     drone = Drone()
-    #print("Drone class initiated")
-    # while True:
-        #time.sleep(10)
-        #print(f"This is the DRONE BATTERY OK {drone.get_battery()}")
-    # Wait for initialization
-
-    time.sleep(10)
+    print("Drone class initiated")
     drone.take_off()
-    time.sleep(10)
+    drone.is_flying_event.wait(timeout=15)
 
-    drone.set_target_position(0, 1, 1)  # Move 1m forward on y-axis and 1m in z-axis
+    if not drone.is_flying_event.is_set():
+        print("Drone failed to take off")
+        drone.stop()
+
     drone.start_position_control()
     time.sleep(2) # Let the controller stabilise first
     print("Setting target position")
     drone.set_target_position(0, 1.0, 0.5)  # Move 1m forward on x-axis
     # Let the position controller run for 15 seconds
     time.sleep(15)
-    # print("post 35 seconds pause")
+    print("post 35 seconds pause")
     drone.set_target_position(0.0, 0.0, 0.5)  # Return to origin (x,y)
     time.sleep(15)
     drone.set_target_position(1.0, 1.0, 0.5)  # Move along y-axis and change height
     time.sleep(15)
     drone.stop_position_control()
-    # print(f"This is the DRONE BATTERY OK {drone.get_battery()}")
-    # Land and stop
-    time.sleep(5)
-    drone.stop()
-    print(1)
-    time.sleep(5)
-    drone.land()
-    print(2)
-
-
-    # drone.set_target_position(0.5, 0.5, 0.5)  # Move 1m forward on x-axis
-    # time.sleep(10)
-    # drone.land()
-    # time.sleep(5)
-
-    # # Move to another position
-    # # print("Setting new target position")
-    # print("post 35 seconds pause")
-    # drone.set_target_position(0.0, 0.0, 0.5)  # Return to origin (x,y)
-    # time.sleep(20)
-    # # Try a more complex position
-    # # print("Setting final test position")
-    # drone.set_target_position(1.0, 1.0, 0.5)  # Move along y-axis and change height
-    # time.sleep(20)
     # # Land and stop
     drone.land()
-    drone.is_landed_event.wait(timeout=15)
+    drone.is_landed_event.wait(timeout=30)
     if not drone.is_landed_event.is_set():
         print("Drone is failing to land....")
         print("Forcing stop")
