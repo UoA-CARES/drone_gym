@@ -12,7 +12,8 @@ from cflib.crazyflie.log import LogConfig
 from cflib.crazyflie.syncCrazyflie import SyncCrazyflie
 from cflib.positioning.motion_commander import MotionCommander
 from cflib.utils import uri_helper
-
+import csv
+import pandas as pd
 
 class Drone:
 
@@ -45,7 +46,7 @@ class Drone:
         self.gains = {
             "x": {"kp": 0.6, "kd": 0, "ki": 0},
             "y": {"kp": 0.6, "kd": 0, "ki": 0},
-            "z": {"kp": 0.2, "kd": 0, "ki": 0}
+            "z": {"kp": 0.5, "kd": 0, "ki": 0.15}
         }
         self.last_error = {"x": 0.0, "y": 0.0, "z": 0.0}
         self.integral = {"x": 0.0, "y": 0.0, "z": 0.0}
@@ -84,6 +85,10 @@ class Drone:
         self.position_history = {}  # Dictionary with timestamp as key
         # Storing target positions for graph
         self.targetting_positions = [] 
+        # storing the error (xyz) as dictionary
+        self.error_history = {}
+        # storing the error (RMS) as dictionary
+        self.error_magnitude_history = {}
 
 
     def _check_boundaries(self):
@@ -234,7 +239,6 @@ class Drone:
                 self.is_flying_event.clear()
 
             if self.mc:
-                print("mc")
                 # self.mc.stop()
                 self.mc = None
 
@@ -244,7 +248,6 @@ class Drone:
                 self.armed = False
 
             if self.scf:
-                print("scf")
                 self.scf.close_link()
                 self.scf = None
 
@@ -370,6 +373,12 @@ class Drone:
                 print(f"[Controller]: Position({current_pos['x']}, {current_pos['y']}, {current_pos['z']})")
                 # Calculate error magnitude to determine if position is reached
                 error_magnitude = (error["x"]**2 + error["y"]**2 + error["z"]**2)**0.5
+
+                # log data for graphing
+                # Store with timestamp as key
+                timestamp = time.time()
+                self.error_history[timestamp] = error.copy()
+                self.error_magnitude_history[timestamp] = error_magnitude
 
                 if error_magnitude < error_threshold and not position_reached:
                     print(f"[Controller] Position reached! Error: {error_magnitude:.2f}m")
@@ -585,9 +594,9 @@ class Drone:
                      color=color, linewidth=2, linestyle='--', 
                      label=f'Ideal: {path["name"]}')
     
-         ax.set_xlabel('X Position')
-         ax.set_ylabel('Y Position')
-         ax.set_zlabel('Z Position')
+         ax.set_xlabel('X Position (m)')
+         ax.set_ylabel('Y Position (m)')
+         ax.set_zlabel('Z Position (m)')
          ax.set_title('Drone Flight Path Comparison')
          ax.legend()
          plt.show()
@@ -630,6 +639,29 @@ class Drone:
          z_points = [start_z + (end_z - start_z) * i / (num_points - 1) for i in range(num_points)]
     
          return x_points, y_points, z_points
+    
+    def export_position_to_excel(self, filename="drone_position_history.xlsx"):
+         """Export position history to Excel file"""
+    
+         if not self.position_history:
+             print("No position history to export")
+             return
+    
+         rows = []
+         for timestamp, position_dict in self.position_history.items():
+             row = {
+                 'timestamp': timestamp,
+                 'x': position_dict['x'],
+                 'y': position_dict['y'],
+                 'z': position_dict['z']
+             }
+             rows.append(row)
+    
+         df = pd.DataFrame(rows)
+         df = df.sort_values('timestamp')
+    
+         df.to_excel(filename, index=False)
+         print(f"Exported {len(df)} position records to {filename}")
 
 if __name__ == "__main__":
     # Testing instructions
@@ -649,11 +681,11 @@ if __name__ == "__main__":
     drone.set_target_position(0, 1.0, 0.5)  # Move 1m forward on x-axis
     # Let the position controller run for 15 seconds
     time.sleep(15)
-    print("post 35 seconds pause")
-    drone.set_target_position(0.0, 0.0, 0.5)  # Return to origin (x,y)
-    time.sleep(15)
-    drone.set_target_position(1.0, 1.0, 0.5)  # Move along y-axis and change height
-    time.sleep(15)
+    # print("post 35 seconds pause")
+    # drone.set_target_position(1.0, 0.0, 0.5)  # Return to origin (x,y)
+    # time.sleep(15)
+    # drone.set_target_position(1.0, 1.0, 0.5)  # Move along y-axis and change height
+    # time.sleep(15)
     drone.stop_position_control()
     # # Land and stop
     drone.land()
@@ -666,3 +698,13 @@ if __name__ == "__main__":
 
     ideal_path = drone.create_ideal_path()
     drone.plot_drone_path([ideal_path])
+
+    # # export data to excel
+    # drone.export_position_to_excel("first_trial.xlsx")
+
+    # export error to excel .csv file
+    with open('errorxyz.csv', 'w') as csv_file:  
+         writer = csv.writer(csv_file)
+         for key, value in drone.error_history.items():
+             writer.writerow([key, value])
+
