@@ -499,13 +499,23 @@ class Drone:
 
     def _setup_battery_logging(self):
 
-        self.battery_log_conf = LogConfig(name='Battery', period_in_ms = 10000)
-        self.battery_log_conf.add_variable('pm.vbat', 'float')
+        # Check if Crazyflie object is available
+        if self.cf is None:
+            print('[Drone] Could not start battery logging, Crazyflie object not available.')
+            return
+
+        # Check if log interface is available
+        if not hasattr(self.cf, 'log') or self.cf.log is None:
+            print('[Drone] Could not start battery logging, log interface not available.')
+            return
 
         try:
-            self.cf.log.add_config(self.battery_log_conf)
+            self.battery_log_config = LogConfig(name='Battery', period_in_ms=10000)
+            self.battery_log_config.add_variable('pm.vbat', 'float')
+
+            self.cf.log.add_config(self.battery_log_config)
             # Register the callback function that will receive the data
-            self.battery_log_conf.data_received_cb.add_callback(self._battery_callback)
+            self.battery_log_config.data_received_cb.add_callback(self._battery_callback)
             # Start the logging
             self.battery_log_conf.start()
             print("[Drone] Battery logging started.")
