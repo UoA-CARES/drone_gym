@@ -19,6 +19,8 @@ class Drone:
         self.URI = uri_helper.uri_from_env(default='radio://0/80/2M/E7E7E7E7E7')
         self.default_height = 0.5
         self.deck_attached_event = Event()
+        self.battery_lock = threading.Lock()
+        self.battery_log_config = None
 
         # Drone Events
         self.is_flying_event = Event()
@@ -37,8 +39,8 @@ class Drone:
         self.controller_thread = None
         # PID gains - separate for each axis for better tuning
         self.gains = {
-            "x": {"kp": 0.5, "kd": 0, "ki": 0},
-            "y": {"kp": 0.5, "kd": 0, "ki": 0},
+            "x": {"kp": 0.6, "kd": 0, "ki": 0},
+            "y": {"kp": 0.6, "kd": 0, "ki": 0},
             "z": {"kp": 0.5, "kd": 0, "ki": 0}
         }
         self.last_error = {"x": 0.0, "y": 0.0, "z": 0.0}
@@ -161,6 +163,8 @@ class Drone:
             self.armed = True
             print("[Crazyflie] Crazyflie armed.")
 
+
+            self._setup_battery_logging()
             return True
 
         except Exception as e:
@@ -230,6 +234,10 @@ class Drone:
                 print("scf")
                 self.scf.close_link()
                 self.scf = None
+
+            if self.battery_log_config:
+                self.battery_log_config.close()
+
 
         except Exception as e:
             print(f"[Drone] Error during shutdown: {str(e)}")
@@ -489,6 +497,33 @@ class Drone:
         self.position_deadband = float(value)
         print(f"[Drone] Position deadband set to {self.position_deadband} meters")
 
+    def _setup_battery_logging(self):
+
+        self.battery_log_conf = LogConfig(name='Battery', period_in_ms = 10000)
+        self.battery_log_conf.add_variable('pm.vbat', 'float')
+
+        try:
+            self.cf.log.add_config(self.battery_log_conf)
+            # Register the callback function that will receive the data
+            self.battery_log_conf.data_received_cb.add_callback(self._battery_callback)
+            # Start the logging
+            self.battery_log_conf.start()
+            print("[Drone] Battery logging started.")
+        except KeyError as e:
+            print(f'[Drone] Could not start battery logging: {e}')
+        except AttributeError:
+            print('[Drone] Could not start battery logging, Crazyflie object not available.')
+
+    def _battery_callback(self, timestamp, data, logconf):
+        """Callback for when new battery data is received from the drone."""
+        voltage = data['pm.vbat']
+        with self.battery_lock:
+            self.battery_level = voltage
+
+    def get_battery(self) -> float:
+        with self.battery_lock:
+            return self.battery_level
+
     def stop(self):
         """Stop the drone and all threads"""
         # Stop position controller if active
@@ -516,6 +551,12 @@ if __name__ == "__main__":
     # Testing instructions
 
     drone = Drone()
+
+    while True:
+        print(drone.get_battery())
+        time.sleep(1)
+
+
     print("Drone class initiated")
     drone.take_off()
     drone.is_flying_event.wait(timeout=15)
