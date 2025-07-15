@@ -556,7 +556,7 @@ class Drone:
             return
 
         try:
-            self.battery_log_config = LogConfig(name='Battery', period_in_ms=10000)
+            self.battery_log_config = LogConfig(name='Battery', period_in_ms=1000)
             self.battery_log_config.add_variable('pm.vbat', 'float')
 
             self.cf.log.add_config(self.battery_log_config)
