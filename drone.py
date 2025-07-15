@@ -291,6 +291,26 @@ class Drone:
             elif "move" in command:
                 if self.is_flying_event.is_set() and self.mc:
                     self.mc.start_linear_motion(0,-0.2,0)
+
+            elif "velocity_vector" in command:
+                # Handle velocity vector command
+                if self.is_flying_event.is_set() and self.mc:
+                    vel_vector = command["velocity_vector"]
+                    vx = vel_vector.get("x", 0.0)
+                    vy = vel_vector.get("y", 0.0)
+                    vz = vel_vector.get("z", 0.0)
+
+                    # Apply velocity limits for safety
+                    max_vel = getattr(self, 'max_velocity', 0.5)
+                    vx = max(-max_vel, min(max_vel, vx))
+                    vy = max(-max_vel, min(max_vel, vy))
+                    vz = max(-max_vel, min(max_vel, vz))
+
+                    self.mc.start_linear_motion(vx, vy, vz)
+                    print(f"[Drone] Velocity vector set: vx={vx:.2f}, vy={vy:.2f}, vz={vz:.2f}")
+                else:
+                    print("[Drone] Cannot set velocity - drone not flying or motion commander not available")
+
             else:
                 print(f"[Drone] Unknown command: {command}")
 
@@ -432,6 +452,31 @@ class Drone:
 
         if self.is_flying_event.is_set() and self.mc:
             self.mc.start_linear_motion(x, y, z)
+
+    def set_velocity_vector(self, vx: float, vy: float, vz: float) -> None:
+        velocity_command = {
+            "velocity_vector": {
+                "x": vx,
+                "y": vy,
+                "z": vz
+            }
+        }
+
+        self.send_command(velocity_command)
+        print(f"[Drone] Velocity vector command sent: vx={vx}, vy={vy}, vz={vz}")
+
+    def set_velocity(self, velocity_vector) -> None:
+        """Set velocity vector from a list or array [vx, vy, vz]"""
+
+        if len(velocity_vector) != 3:
+            raise ValueError("Velocity vector must have exactly 3 elements [vx, vy, vz]")
+
+        self.set_velocity_vector(velocity_vector[0], velocity_vector[1], velocity_vector[2])
+
+    def stop_velocity(self) -> None:
+        """Stop the drone by setting all velocities to zero"""
+
+        self.set_velocity_vector(0.0, 0.0, 0.0)
 
     def set_target_position(self, x: float, y: float, z: float) -> None:
         """Set target position with boundary checking"""
