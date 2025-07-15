@@ -21,6 +21,7 @@ class Drone:
         self.deck_attached_event = Event()
         self.battery_lock = threading.Lock()
         self.battery_log_config = None
+        self.battery_level = None
 
         # Drone Events
         self.is_flying_event = Event()
@@ -236,7 +237,7 @@ class Drone:
                 self.scf = None
 
             if self.battery_log_config:
-                self.battery_log_config.close()
+                self.battery_log_config.stop()
 
 
         except Exception as e:
@@ -517,7 +518,7 @@ class Drone:
             # Register the callback function that will receive the data
             self.battery_log_config.data_received_cb.add_callback(self._battery_callback)
             # Start the logging
-            self.battery_log_conf.start()
+            self.battery_log_config.start()
             print("[Drone] Battery logging started.")
         except KeyError as e:
             print(f'[Drone] Could not start battery logging: {e}')
@@ -562,36 +563,38 @@ if __name__ == "__main__":
 
     drone = Drone()
 
+    time.sleep(5)
+
     while True:
         print(drone.get_battery())
         time.sleep(1)
 
 
-    print("Drone class initiated")
-    drone.take_off()
-    drone.is_flying_event.wait(timeout=15)
+    # print("Drone class initiated")
+    # drone.take_off()
+    # drone.is_flying_event.wait(timeout=15)
 
-    if not drone.is_flying_event.is_set():
-        print("Drone failed to take off")
-        drone.stop()
+    # if not drone.is_flying_event.is_set():
+    #     print("Drone failed to take off")
+    #     drone.stop()
 
-    drone.start_position_control()
-    time.sleep(2) # Let the controller stabilise first
-    print("Setting target position")
-    drone.set_target_position(0, 1.0, 0.5)  # Move 1m forward on x-axis
-    # Let the position controller run for 15 seconds
-    time.sleep(15)
-    print("post 35 seconds pause")
-    drone.set_target_position(0.0, 0.0, 0.5)  # Return to origin (x,y)
-    time.sleep(15)
-    drone.set_target_position(1.0, 1.0, 0.5)  # Move along y-axis and change height
-    time.sleep(15)
-    drone.stop_position_control()
-    # # Land and stop
-    drone.land()
-    drone.is_landed_event.wait(timeout=30)
-    if not drone.is_landed_event.is_set():
-        print("Drone is failing to land....")
-        print("Forcing stop")
-    # time.sleep(5)
-    drone.stop()
+    # drone.start_position_control()
+    # time.sleep(2) # Let the controller stabilise first
+    # print("Setting target position")
+    # drone.set_target_position(0, 1.0, 0.5)  # Move 1m forward on x-axis
+    # # Let the position controller run for 15 seconds
+    # time.sleep(15)
+    # print("post 35 seconds pause")
+    # drone.set_target_position(0.0, 0.0, 0.5)  # Return to origin (x,y)
+    # time.sleep(15)
+    # drone.set_target_position(1.0, 1.0, 0.5)  # Move along y-axis and change height
+    # time.sleep(15)
+    # drone.stop_position_control()
+    # # # Land and stop
+    # drone.land()
+    # drone.is_landed_event.wait(timeout=30)
+    # if not drone.is_landed_event.is_set():
+    #     print("Drone is failing to land....")
+    #     print("Forcing stop")
+    # # time.sleep(5)
+    # drone.stop()
