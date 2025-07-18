@@ -39,7 +39,7 @@ class DroneEnvironment(ABC):
 
         return self._get_state()
 
-    def step(self, action) -> Tuple[np.ndarray, float, bool, Dict]:
+    def step(self, action) -> Tuple[np.ndarray, float, bool, bool, Dict]:
         """Execute one step in the environment"""
         self.steps += 1
 
@@ -52,15 +52,12 @@ class DroneEnvironment(ABC):
         # Store previous state for reward calculation
         self.prior_state = self._generate_state_dict(current_pos)
 
-        # Scale action from [-1, 1] to actual velocity in m/s
-        vx = action[0] * self.max_velocity
-        vy = action[1] * self.max_velocity
-        vz = action[2] * self.max_velocity
+        vx, vy, vz = action
 
         # Send velocity command to drone
         self.drone.set_velocity_vector(vx, vy, vz)
 
-        # Apply velocity for specified time
+        # Apply velocity for specified time - can improve this to be non-blocking
         time.sleep(self.step_time)
 
         # Stop velocity after step duration
@@ -87,7 +84,7 @@ class DroneEnvironment(ABC):
             **self._get_additional_info(current_state)
         }
 
-        return self._get_state(), reward, done or truncated, info
+        return self._get_state(), reward, done, truncated, info
 
     def _generate_state_dict(self, position: List[float]) -> Dict[str, Any]:
         """Generate a state dictionary with common drone information"""
@@ -118,9 +115,9 @@ class DroneEnvironment(ABC):
             'low': [-1.0, -1.0, -1.0],
             'high': [1.0, 1.0, 1.0],
             'description': {
-                'vx': 'Forward/backward velocity (-1 to 1, scaled to m/s)',
-                'vy': 'Right/left velocity (-1 to 1, scaled to m/s)',
-                'vz': 'Up/down velocity (-1 to 1, scaled to m/s)'
+                'vx': 'Velocity in the X direction (-1 to 1, scaled to m/s)',
+                'vy': 'Velocity in the Y direction (-1 to 1, scaled to m/s)',
+                'vz': 'Velocity in the Z direction (-1 to 1, scaled to m/s)'
             },
             'max_velocity_ms': self.max_velocity,
             'step_duration_s': self.step_time
