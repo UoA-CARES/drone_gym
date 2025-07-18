@@ -2,19 +2,19 @@ from abc import ABC, abstractmethod
 from drone import Drone
 import time
 import numpy as np
-import math
 from typing import Dict, List, Tuple, Any
 
 
 class DroneEnvironment(ABC):
     """Base drone environment that handles common drone operations"""
+    def __init__(self, max_velocity: float = 1.0, step_time: float = 0.1, max_steps: int = 1000):
 
-    def __init__(self, max_velocity: float = 1.0, step_time: float = 0.1):
         self.drone = Drone()
         self.reset_position = [0, 0, 1]
         self.max_velocity = max_velocity
         self.step_time = step_time
         self.steps = 0
+        self.max_steps = max_steps
 
     def reset(self):
         """Reset the drone to initial position and state"""
@@ -37,7 +37,7 @@ class DroneEnvironment(ABC):
         # Reset task-specific state
         self._reset_task_state()
 
-        return self._get_state()
+        return self._get_state(), {}
 
     def step(self, action) -> Tuple[np.ndarray, float, bool, bool, Dict]:
         """Execute one step in the environment"""
@@ -92,6 +92,7 @@ class DroneEnvironment(ABC):
             'position': position,
             'in_boundaries': self.drone.in_boundaries,
             'steps': self.steps,
+            'distance_to_target' : self._distance_to_target(position),
             **self._get_task_specific_state()
         }
 
@@ -150,7 +151,20 @@ class DroneEnvironment(ABC):
             self._render_task_specific_info()
             print("-" * 50)
 
+    @property
+    def max_action_value(self):
+        return self.max_velocity
+
+    @property
+    def min_action_value(self):
+        return -self.max_velocity
+
     # Abstract methods to be implemented by task-specific environments
+
+    @abstractmethod
+    def sample_action(self):
+        pass
+
     @abstractmethod
     def _reset_task_state(self):
         """Reset task-specific state variables"""

@@ -7,14 +7,14 @@ from environment import DroneEnvironment
 class DroneNavigationTask(DroneEnvironment):
     """Drone navigation task - reach a target position"""
 
-    def __init__(self, max_velocity: float = 1.0, step_time: float = 0.1):
-        super().__init__(max_velocity, step_time)
+    def __init__(self, max_velocity: float = 1.0, step_time: float = 0.1, max_steps: int = 1000):
+        super().__init__(max_velocity, step_time, max_steps)
 
         # Task-specific parameters
         self.target_position = [1, 1, 1]  # Goal position
-        self.distance_threshold = 0.2  # Distance threshold to consider target reached
+        self.distance_threshold = 0.1  # Distance threshold to consider target reached
         self.max_distance = 5.0  # Maximum distance for normalization
-        self.max_steps = 1000  # Maximum steps before truncation
+        self.max_steps = max_steps
 
         # Reward parameters
         self.success_reward = 100.0
@@ -49,6 +49,7 @@ class DroneNavigationTask(DroneEnvironment):
         """Get task-specific state information"""
         position = self.drone.get_position()
         return {
+            'position': position,
             'target_position': self.target_position,
             'distance_to_target': self._distance_to_target(position),
             'done': self.done
@@ -65,7 +66,7 @@ class DroneNavigationTask(DroneEnvironment):
     def _calculate_reward(self, current_state: Dict[str, Any]) -> float:
         """Calculate reward for navigation task"""
         position = current_state['position']
-        distance = current_state['distance_to_target']
+        distance = self._distance_to_target(position)   # <-- add this line
 
         # Base reward is negative distance (closer = higher reward)
         reward = -distance
@@ -115,6 +116,9 @@ class DroneNavigationTask(DroneEnvironment):
             'out_of_bounds': not current_state['in_boundaries']
         }
 
+    def sample_action(self):
+        return np.random.uniform(-1, 1, size=(3,))
+
     def _render_task_specific_info(self):
         """Render navigation task specific information"""
         pos = self.drone.get_position()
@@ -156,28 +160,14 @@ class DroneNavigationTask(DroneEnvironment):
         }
 
 
-# Example usage
 if __name__ == "__main__":
+    # quick sanity test
     env = DroneNavigationTask()
-
-    # Set task parameters
-    env.set_target_position([1.5, 1.0, 1.2])
-    env.set_distance_threshold(0.3)
-    env.set_max_steps(500)
-
-    # Reset environment
-    state = env.reset()
-
-    # Run a few steps
-    for i in range(10):
-        # Random action
-        action = np.random.uniform(-1, 1, 3)
-        state, reward, done, info = env.step(action)
-
-        print(f"Step {i+1}: Reward={reward:.2f}, Done={done}")
-        env.render()
-
-        if done:
-            break
-
+    env.reset()
+    for _ in range(3):
+        a = env.sample_action()
+        s, r, d, t, i = env.step(a)
+        assert s.shape == (9,)
+        assert -50 <= r <= 100
     env.close()
+    print("Sanity-check passed")
