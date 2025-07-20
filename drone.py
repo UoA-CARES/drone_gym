@@ -656,6 +656,8 @@ class Drone:
                  'z': position_dict['z']
              }
              rows.append(row)
+
+        # changing dictionary to dataframe
     
          df = pd.DataFrame(rows)
          df = df.sort_values('timestamp')
@@ -681,11 +683,11 @@ if __name__ == "__main__":
     drone.set_target_position(0, 1.0, 0.5)  # Move 1m forward on x-axis
     # Let the position controller run for 15 seconds
     time.sleep(15)
-    # print("post 35 seconds pause")
-    # drone.set_target_position(1.0, 0.0, 0.5)  # Return to origin (x,y)
-    # time.sleep(15)
-    # drone.set_target_position(1.0, 1.0, 0.5)  # Move along y-axis and change height
-    # time.sleep(15)
+    print("post 35 seconds pause")
+    drone.set_target_position(1.0, 0.0, 0.5)  # Return to origin (x,y)
+    time.sleep(15)
+    drone.set_target_position(1.0, 1.0, 0.5)  # Move along y-axis and change height
+    time.sleep(15)
     drone.stop_position_control()
     # # Land and stop
     drone.land()
