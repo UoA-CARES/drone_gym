@@ -69,12 +69,15 @@ class DroneNavigationTask(DroneEnvironment):
         distance = self._distance_to_target(position)   # <-- add this line
 
         # Base reward is negative distance (closer = higher reward)
-        reward = -distance
+        # currently this reward will never be positive and is too low. assuming the max distance is (3,3,3) reward = -5.2. 
+        # Changed from reward = -distance to reward = 50-10*distance
+        reward = 50 - 10*distance
 
         # Reward for moving closer to target
+        # This should be done in proportions (JJ)
         if self.prior_state is not None:
             prev_distance = self.prior_state['distance_to_target']
-            distance_improvement = prev_distance - distance
+            distance_improvement = (prev_distance - distance)/prev_distance # this gives proportional distance increase compared to prev dist
             reward += distance_improvement * self.distance_improvement_multiplier
 
         # Bonus for reaching target
