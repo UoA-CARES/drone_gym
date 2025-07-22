@@ -16,6 +16,10 @@ class DroneEnvironment(ABC):
         self.steps = 0
         self.max_steps = max_steps
 
+        self.current_battery = self.drone.get_battery()
+        self.battery_threshold = 3.5
+
+
     def reset(self):
         """Reset the drone to initial position and state"""
         self.steps = 0
@@ -33,6 +37,7 @@ class DroneEnvironment(ABC):
         self.drone.is_flying_event.wait(timeout=15)
         self.drone.start_position_control()
         time.sleep(10)
+        self.drone.stop_position_control()
 
         # Reset task-specific state
         self._reset_task_state()
@@ -41,6 +46,12 @@ class DroneEnvironment(ABC):
 
     def step(self, action) -> Tuple[np.ndarray, float, bool, bool, Dict]:
         """Execute one step in the environment"""
+
+        # Check that the current drone battery is above the threshold
+        self.current_battery = self.drone.get_battery()
+        if self.current_battery <= self.battery_threshold:
+            self.drone.stop()
+
         self.steps += 1
 
         # Parse action - expecting [vx, vy, vz] in range [-1, 1]
@@ -136,9 +147,12 @@ class DroneEnvironment(ABC):
 
     def close(self):
         """Clean up the drone environment"""
-        if hasattr(self.drone, 'is_flying_event') and self.drone.is_flying_event.is_set():
-            self.drone.land()
-            self.drone.is_landed_event.wait(timeout=30)
+        self.drone.land()
+        self.drone.is_landed_event.wait(timeout=30)
+        if not self.drone.is_landed_event.is_set():
+            print("Drone is failing to land....")
+            print("Forcing stop")
+        # time.sleep(5)
         self.drone.stop()
 
     def render(self, mode='human'):
