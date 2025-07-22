@@ -10,7 +10,7 @@ class DroneEnvironment(ABC):
     def __init__(self, max_velocity: float = 1.0, step_time: float = 0.1, max_steps: int = 1000):
 
         self.drone = Drone()
-        self.reset_position = [0, 0, 1]
+        self.reset_position = [0, 0, 0.5]
         self.max_velocity = max_velocity
         self.step_time = step_time
         self.steps = 0

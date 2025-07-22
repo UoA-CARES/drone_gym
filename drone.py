@@ -190,6 +190,11 @@ class Drone:
                         print("[Drone] Shutting down.")
                         break
                     elif command == "emergency_stop":
+                        if self.controller_active:
+                            self.stop_position_control()
+                        if self.is_flying_event.is_set() and self.mc:
+                            print("EMERGENCY STOP: Landing and Stopping.")
+                            self.land_and_stop()
                         self.set_running(False)
                         print("[Drone] EMERGENCY STOP initiated. Shutting down.")
                         break
@@ -203,7 +208,7 @@ class Drone:
 
                 # Display current position periodically
                 if hasattr(self, '_last_position_print'):
-                    if time.time() - self._last_position_print > 1.5:
+                    if time.time() - self._last_position_print > 0.2:
                         print(f"[Drone] Current position: {self.position}")
                         self._last_position_print = time.time()
                 else:
@@ -359,7 +364,7 @@ class Drone:
 
     def _position_control_loop(self):
         """Main control loop for position-based velocity control"""
-        control_rate = 0.05  # Control rate in seconds (50Hz)
+        control_rate = 0.04  # Control rate in seconds (20hz)
         error_threshold = 0.1  # Error threshold to consider position reached (meters)
         position_reached = False
 
