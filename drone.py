@@ -593,28 +593,108 @@ class Drone:
         with self.battery_lock:
             return self.battery_level
 
-    def stop(self):
-        """Stop the drone and all threads"""
-        # Stop position controller if active
-        if self.controller_active:
-            self.stop_position_control()
+    def stop(self, restart: bool = False):
+        """
+        Fully stop the drone and optionally prepare for a clean restart.
 
+        Args
+        ----
+        restart : bool
+            If True the object will be left in a state where `start()`
+            can be called again without creating a new instance.
+        """
+        print("In the new stop function")
+        self._signal_stop_to_all_threads()   # 1. tell threads to quit
+        self._cleanup_crazyflie()            # 2. CF link / logging / disarm
+        self._join_all_threads()             # 3. wait for threads to die
+        self._close_vicon()                  # 4. close Vicon socket
+        self._reset_shared_state()           # 5. zero all state variables
+        if not restart:
+            self._final_cleanup()            # 6. optional – delete big objects
+
+    def _signal_stop_to_all_threads(self):
+        """Set all shutdown flags so every thread leaves its loop ASAP."""
         self.set_running(False)
+        self.controller_active = False
+        # Purge the command queue so no stale commands run after restart
+        while not self.command_queue.empty():
+            try:
+                self.command_queue.get_nowait()
+            except queue.Empty:
+                break
+        # Force threads waiting on Queue.get() to wake up
+        self.command_queue.put("exit")
 
-        self.send_command("exit")
+    def _cleanup_crazyflie(self):
+        """Land if necessary, dis-arm, stop logging and close link."""
+        try:
+            if self.mc and self.is_flying_event.is_set():
+                print("[Drone] Landing before shutdown...")
+                self.mc.land()
+                self.is_flying_event.clear()
+                self.is_landed_event.set()
 
-        time.sleep(0.2)
+            if self.battery_log_config and self.cf:
+                self.battery_log_config.stop()
+                self.battery_log_config = None
 
-        # Join the run thread
-        if self.thread.is_alive():
-            self.thread.join()
-        # Join the vicon thread
-        if self.position_thread.is_alive():
-            self.position_thread.join()
-        # Join the safety thread
-        if self.safety_thread.is_alive():
-            self.safety_thread.join()
+            if self.armed and self.cf:
+                self.cf.platform.send_arming_request(False)
+                self.armed = False
 
+            if self.scf:
+                self.scf.close_link()
+                self.scf = None
+        except Exception as e:
+            print(f"[Drone] Error during Crazyflie cleanup: {e}")
+
+    def _join_all_threads(self):
+        """Wait until every managed thread has exited."""
+        for name, thr in (
+                ("main", self.thread),
+                ("position", self.position_thread),
+                ("safety", self.safety_thread),
+                ("controller", self.controller_thread)):
+            if thr and thr.is_alive():
+                thr.join(timeout=2.0)
+                if thr.is_alive():
+                    print(f"[Drone] WARNING: {name} thread did not join in time.")
+
+    def _close_vicon(self):
+        """Tell the Vicon interface to stop its background thread."""
+        try:
+            self.vicon.run_interface = False
+            # Give Vicon a moment to shut down its socket
+            time.sleep(0.2)
+        except Exception as e:
+            print(f"[Drone] Error while closing Vicon: {e}")
+
+    def _reset_shared_state(self):
+        """Reset all state variables to their initial values."""
+        # Position and target
+        with self.position_lock:
+            self.position = {"x": 0.0, "y": 0.0, "z": 0.0}
+            self.target_position = {"x": 0.0, "y": 0.0, "z": 0.0}
+        # PID
+        self.last_error = {"x": 0.0, "y": 0.0, "z": 0.0}
+        self.integral   = {"x": 0.0, "y": 0.0, "z": 0.0}
+        # Events
+        self.is_flying_event.clear()
+        self.is_landed_event.set()
+        self.deck_attached_event.clear()
+        # Misc
+        with self.velocity_lock:
+            self.velocity = 0.0
+        with self.battery_lock:
+            self.battery_level = None
+        self.in_boundaries = True
+
+    def _final_cleanup(self):
+        """Delete big objects so garbage collection can reclaim them."""
+        # These will be re-created if the user ever calls start() again
+        self.cf  = None
+        self.scf = None
+        self.mc  = None
 
 if __name__ == "__main__":
     # Testing instructions
