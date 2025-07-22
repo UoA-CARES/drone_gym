@@ -29,9 +29,7 @@ class DroneEnvironment(ABC):
 
         if self.drone.is_flying_event.is_set():
             print("Control: The drone is already flying")
-            self.drone.land()
-            self.drone.is_landed_event.wait(timeout=30)
-            self.drone.stop()
+            self.drone.land_and_stop()
 
         self.drone.take_off()
         self.drone.is_flying_event.wait(timeout=15)
@@ -50,7 +48,7 @@ class DroneEnvironment(ABC):
         # Check that the current drone battery is above the threshold
         self.current_battery = self.drone.get_battery()
         if self.current_battery <= self.battery_threshold:
-            self.drone.stop()
+            self.drone.land_and_stop()
 
         self.steps += 1
 

@@ -576,7 +576,15 @@ class Drone:
         with self.battery_lock:
             self.battery_level = voltage
 
-    def get_battery(self) -> float:
+    def land_and_stop(self):
+        self.land()
+        self.is_landed_event.wait(timeout=30)
+        if not self.is_landed_event.is_set():
+            print("Drone is failing to land....")
+            print("Forcing stop")
+        self.stop()
+
+    def get_battery(self):
         with self.battery_lock:
             return self.battery_level
 
@@ -642,4 +650,4 @@ if __name__ == "__main__":
     #     print("Drone is failing to land....")
     #     print("Forcing stop")
     # # time.sleep(5)
-    # drone.stop()
+    drone.stop()
