@@ -23,15 +23,13 @@ class DroneEnvironment(ABC):
     def reset(self):
         """Reset the drone to initial position and state"""
         self.steps = 0
-
         # Check that the drone is not already flying
-        self.drone.set_target_position(self.reset_position[0], self.reset_position[1], self.reset_position[2])
 
         if self.drone.is_flying_event.is_set():
             print("Control: The drone is already flying")
             self.drone.land_and_stop()
-
         self.drone.take_off()
+        self.drone.set_target_position(self.reset_position[0], self.reset_position[1], self.reset_position[2])
         self.drone.is_flying_event.wait(timeout=15)
         self.drone.start_position_control()
         time.sleep(10)
@@ -47,8 +45,8 @@ class DroneEnvironment(ABC):
 
         # Check that the current drone battery is above the threshold
         self.current_battery = self.drone.get_battery()
-        if self.current_battery <= self.battery_threshold:
-            self.drone.land_and_stop()
+        # if self.current_battery <= self.battery_threshold:
+        #     self.drone.land_and_stop()
 
         self.steps += 1
 
@@ -152,6 +150,7 @@ class DroneEnvironment(ABC):
             print("Forcing stop")
         # time.sleep(5)
         self.drone.stop()
+        self.drone.reboot_crazyflie()
 
     def render(self, mode='human'):
         """Render the environment state"""

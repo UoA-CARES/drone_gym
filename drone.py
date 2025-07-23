@@ -10,6 +10,7 @@ from cflib.crazyflie.log import LogConfig
 from cflib.crazyflie.syncCrazyflie import SyncCrazyflie
 from cflib.positioning.motion_commander import MotionCommander
 from cflib.utils import uri_helper
+from cflib.utils.power_switch import PowerSwitch
 
 
 class Drone:
@@ -22,6 +23,7 @@ class Drone:
         self.battery_lock = threading.Lock()
         self.battery_log_config = None
         self.battery_level = None
+        self.ps = PowerSwitch('radio://0/80/2M/E7E7E7E7E7')
 
         # Drone Events
         self.is_flying_event = Event()
@@ -76,8 +78,30 @@ class Drone:
         self.thread = threading.Thread(target=self._run)
         self.thread.start()
 
+        # Wait thread
+        # self._ready_event = Event()
+        # self._ready_thread = threading.Thread(target = self._wait_until_ready)
+        # self._ready_thread.start()
+
+    # def _wait_until_ready(self):
+
+    #     while self.is_running():
+    #         with self.position_lock:
+    #             if self.position is not None and any(self.position.values()):
+    #                 break
+    #         time.sleep(0.05)
+
+    #     if self._initialize_crazyflie():
+    #         self._ready_event.set()
+    #     else:
+    #         print("[Drone] Initialisation has failed...")
+
+    # def wait_until_ready(self, timeout = 10.0):
+
+    #     return self._ready_event.wait(timeout = timeout)
+
     def _check_boundaries(self):
-        time.sleep(5)
+        time.sleep(7)
         while self.is_running():
             try:
                 # Check if position is within boundaries for each axis
@@ -116,9 +140,9 @@ class Drone:
 
     def _update_position(self):
         # It takes some time for the vicon to get values
-        time.sleep(1)
         vicon_thread = threading.Thread(target=self.vicon.main_loop)
         vicon_thread.start()
+        time.sleep(4)
         while self.is_running():
             try:
                 position_array = self.vicon.getPos(self.drone_name)
@@ -139,13 +163,14 @@ class Drone:
         self.vicon.run_interface = False
         vicon_thread.join()
 
+
     def _initialize_crazyflie(self):
         """Initialize Crazyflie connection and setup"""
         try:
             cflib.crtp.init_drivers()
             print("[Drone] Connecting to Crazyflie...")
 
-            self.scf = SyncCrazyflie(self.URI, cf=Crazyflie(rw_cache='./cache'))
+            self.scf = SyncCrazyflie(self.URI, cf=Crazyflie(rw_cache = './cache'))
             self.scf.open_link()
             self.cf = self.scf.cf
 
@@ -172,7 +197,7 @@ class Drone:
             print(f"[Drone] Failed to initialize Crazyflie: {str(e)}")
             return False
 
-    def _run(self):
+    def _run(self, display = False):
         """Main drone control loop"""
         if not self._initialize_crazyflie():
             self.set_running(False)
@@ -207,12 +232,13 @@ class Drone:
                     pass  # No command received; continue
 
                 # Display current position periodically
-                if hasattr(self, '_last_position_print'):
-                    if time.time() - self._last_position_print > 0.2:
-                        print(f"[Drone] Current position: {self.position}")
+                if display == True:
+                    if hasattr(self, '_last_position_print'):
+                        if time.time() - self._last_position_print > 0.2:
+                            print(f"[Drone] Current position: {self.position}")
+                            self._last_position_print = time.time()
+                    else:
                         self._last_position_print = time.time()
-                else:
-                    self._last_position_print = time.time()
 
                 time.sleep(0.05)  # Shorter sleep for more responsive command processing
 
@@ -222,13 +248,14 @@ class Drone:
     def _shutdown_crazyflie(self):
         """Properly shutdown Crazyflie connection"""
         try:
+            print("In shutdown crazyflie")
             if self.is_flying_event.is_set() and self.mc:
                 print("[Drone] Landing before shutdown...")
                 self.is_flying_event.clear()
 
             if self.mc:
                 print("mc")
-                # self.mc.stop()
+                self.mc.stop()
                 self.mc = None
 
             if self.armed and self.cf:
@@ -237,12 +264,12 @@ class Drone:
                 self.armed = False
 
             if self.scf:
-                print("scf")
                 self.scf.close_link()
                 self.scf = None
+                print("scf object cleaned")
 
             if self.battery_log_config:
-                self.battery_log_config.stop()
+                self.battery_log_config.delete()
 
 
         except Exception as e:
@@ -593,6 +620,7 @@ class Drone:
         with self.battery_lock:
             return self.battery_level
 
+
     def stop(self, restart: bool = False):
         """
         Fully stop the drone and optionally prepare for a clean restart.
@@ -642,9 +670,6 @@ class Drone:
                 self.cf.platform.send_arming_request(False)
                 self.armed = False
 
-            if self.scf:
-                self.scf.close_link()
-                self.scf = None
         except Exception as e:
             print(f"[Drone] Error during Crazyflie cleanup: {e}")
 
@@ -696,17 +721,25 @@ class Drone:
         self.scf = None
         self.mc  = None
 
+    def reboot_crazyflie(self):
+        print("[Drone] Rebooting Crazyflie...")
+        time.sleep(0.5)
+        self.ps.stm_power_down()
+        time.sleep(1)
+        # self.ps.stm_power_up()
+
 if __name__ == "__main__":
     # Testing instructions
 
     drone = Drone()
-
+    # drone.reboot_crazyflie()
     time.sleep(5)
 
-    while True:
+    for i in range(5):
         print(drone.get_battery())
         time.sleep(1)
-
+    time.sleep(5)
+    drone.stop()
 
     # print("Drone class initiated")
     # drone.take_off()
@@ -735,4 +768,3 @@ if __name__ == "__main__":
     #     print("Drone is failing to land....")
     #     print("Forcing stop")
     # # time.sleep(5)
-    drone.stop()
