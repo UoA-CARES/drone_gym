@@ -7,6 +7,7 @@ from vicon_connection_class import ViconInterface as vi
 import cflib.crtp
 from cflib.crazyflie import Crazyflie
 from cflib.crazyflie.log import LogConfig
+from cflib.crazyflie.log import Log
 from cflib.crazyflie.syncCrazyflie import SyncCrazyflie
 from cflib.positioning.motion_commander import MotionCommander
 from cflib.utils import uri_helper
@@ -702,6 +703,13 @@ class Drone:
         self.ps.stm_power_down()
         time.sleep(1)
         # self.ps.stm_power_up()
+        
+    def reset(self):
+        """
+        Reset the log system and remove all log blocks
+        """
+        self.log_blocks = []
+        self._send_reset_packet()
 
 if __name__ == "__main__":
     # Testing instructions
