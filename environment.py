@@ -173,7 +173,7 @@ class DroneEnvironment(ABC):
     # Abstract methods to be implemented by task-specific environments
 
     @abstractmethod
-    def sample_action(self):
+    def sample_action(self) -> Any:
         pass
 
     @abstractmethod
