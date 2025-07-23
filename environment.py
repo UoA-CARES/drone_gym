@@ -147,7 +147,6 @@ class DroneEnvironment(ABC):
             print("Forcing stop")
         # time.sleep(5)
         self.drone.stop()
-        self.drone.reboot_crazyflie()
 
     def render(self, mode='human'):
         """Render the environment state"""

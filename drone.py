@@ -59,7 +59,7 @@ class Drone:
 
         # Vicon Integration
         self.position = {"x": 0.0, "y": 0.0, "z": 0.0}
-        self.drone_name = "AtlasCrazyflie"
+        self.drone_name = "NewCrazyflie"
         self.vicon = vi()
         self.position_thread = threading.Thread(target=self._update_position)
         self.position_thread.start()
@@ -91,7 +91,7 @@ class Drone:
     #                 break
     #         time.sleep(0.05)
 
-    #     if self._initialize_crazyflie():
+    #     if self._initialise_crazyflie():
     #         self._ready_event.set()
     #     else:
     #         print("[Drone] Initialisation has failed...")
@@ -164,7 +164,7 @@ class Drone:
         vicon_thread.join()
 
 
-    def _initialize_crazyflie(self):
+    def _initialise_crazyflie(self):
         """Initialize Crazyflie connection and setup"""
         try:
             cflib.crtp.init_drivers()
@@ -174,12 +174,16 @@ class Drone:
             self.scf.open_link()
             self.cf = self.scf.cf
 
+            print("[Drone] Resetting all log configurations")
+            self.cf.log.reset()
+            time.sleep(0.5)
             # Setup deck detection
             self.cf.param.add_update_callback(group='deck', name='bcFlow2', cb=self._param_deck_flow)
             time.sleep(1)
 
             if not self.deck_attached_event.wait(timeout=5):
                 print("No flow deck is detected! Exiting....")
+                self.stop()
                 return False
 
             # Arm the drone
@@ -199,7 +203,7 @@ class Drone:
 
     def _run(self, display = False):
         """Main drone control loop"""
-        if not self._initialize_crazyflie():
+        if not self._initialise_crazyflie():
             self.set_running(False)
             return
 
@@ -255,7 +259,7 @@ class Drone:
 
             if self.mc:
                 print("mc")
-                self.mc.stop()
+                # self.mc.stop()
                 self.mc = None
 
             if self.armed and self.cf:
@@ -269,8 +273,9 @@ class Drone:
                 print("scf object cleaned")
 
             if self.battery_log_config:
+                self.battery_log_config.stop()
                 self.battery_log_config.delete()
-
+                self.battery_log_config = None
 
         except Exception as e:
             print(f"[Drone] Error during shutdown: {str(e)}")
@@ -389,7 +394,7 @@ class Drone:
         else:
             print("[Drone] Position controller already stopped")
 
-    def _position_control_loop(self):
+    def _position_control_loop(self, first_instance = 0):
         """Main control loop for position-based velocity control"""
         control_rate = 0.04  # Control rate in seconds (20hz)
         error_threshold = 0.1  # Error threshold to consider position reached (meters)
@@ -402,6 +407,10 @@ class Drone:
                 current_pos = self.get_position_dict()
                 with self.position_lock:
                     target_pos = self.target_position.copy()
+
+                if first_instance == 0:
+                    print(f"target position = {self.target_position.copy()}")
+                    print(f"current position = {self.get_position_dict()}")
 
                 # Calculate position error
                 error = {
@@ -651,7 +660,6 @@ class Drone:
     def _join_all_threads(self):
         """Wait until every managed thread has exited."""
         for name, thr in (
-                ("main", self.thread),
                 ("position", self.position_thread),
                 ("safety", self.safety_thread),
                 ("controller", self.controller_thread)):
@@ -701,7 +709,7 @@ class Drone:
         time.sleep(0.5)
         self.ps.stm_power_down()
         time.sleep(1)
-        # self.ps.stm_power_up()
+        self.ps.stm_power_up()
 
 if __name__ == "__main__":
     # Testing instructions
