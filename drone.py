@@ -621,24 +621,19 @@ class Drone:
             return self.battery_level
 
 
-    def stop(self, restart: bool = False):
+    def stop(self):
         """
         Fully stop the drone and optionally prepare for a clean restart.
 
         Args
-        ----
-        restart : bool
-            If True the object will be left in a state where `start()`
-            can be called again without creating a new instance.
+
         """
         print("In the new stop function")
-        self._signal_stop_to_all_threads()   # 1. tell threads to quit
-        self._cleanup_crazyflie()            # 2. CF link / logging / disarm
-        self._join_all_threads()             # 3. wait for threads to die
-        self._close_vicon()                  # 4. close Vicon socket
-        self._reset_shared_state()           # 5. zero all state variables
-        if not restart:
-            self._final_cleanup()            # 6. optional – delete big objects
+        self._signal_stop_to_all_threads()
+        self._join_all_threads()
+        self._close_vicon()
+        self._reset_shared_state()
+        self._final_cleanup()
 
     def _signal_stop_to_all_threads(self):
         """Set all shutdown flags so every thread leaves its loop ASAP."""
@@ -652,26 +647,6 @@ class Drone:
                 break
         # Force threads waiting on Queue.get() to wake up
         self.command_queue.put("exit")
-
-    def _cleanup_crazyflie(self):
-        """Land if necessary, dis-arm, stop logging and close link."""
-        try:
-            if self.mc and self.is_flying_event.is_set():
-                print("[Drone] Landing before shutdown...")
-                self.mc.land()
-                self.is_flying_event.clear()
-                self.is_landed_event.set()
-
-            if self.battery_log_config and self.cf:
-                self.battery_log_config.stop()
-                self.battery_log_config = None
-
-            if self.armed and self.cf:
-                self.cf.platform.send_arming_request(False)
-                self.armed = False
-
-        except Exception as e:
-            print(f"[Drone] Error during Crazyflie cleanup: {e}")
 
     def _join_all_threads(self):
         """Wait until every managed thread has exited."""
