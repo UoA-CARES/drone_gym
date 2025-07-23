@@ -67,9 +67,6 @@ class DroneEnvironment(ABC):
         # Apply velocity for specified time - can improve this to be non-blocking
         time.sleep(self.step_time)
 
-        # Stop velocity after step duration
-        self.drone.stop_velocity()
-
         new_pos = self.drone.get_position()
         current_state = self._generate_state_dict(new_pos)
 
