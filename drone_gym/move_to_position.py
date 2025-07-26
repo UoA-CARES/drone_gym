@@ -2,7 +2,7 @@ import numpy as np
 import math
 import time
 from typing import Dict, List, Any
-from drone_environment import DroneEnvironment
+from drone_gym.drone_environment import DroneEnvironment
 
 
 class DroneNavigationTask(DroneEnvironment):

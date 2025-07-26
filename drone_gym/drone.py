@@ -2,7 +2,7 @@ import threading
 import queue
 import time
 from threading import Event
-from vicon_connection_class import ViconInterface as vi
+from drone_gym.utils.vicon_connection_class import ViconInterface as vi
 
 import cflib.crtp
 from cflib.crazyflie import Crazyflie

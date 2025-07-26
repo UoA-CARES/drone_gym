@@ -1,5 +1,5 @@
 from abc import ABC, abstractmethod
-from drone import Drone
+from drone_gym.drone import Drone
 import time
 import numpy as np
 from typing import Dict, List, Tuple, Any
