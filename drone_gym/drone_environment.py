@@ -91,7 +91,7 @@ class DroneEnvironment(ABC):
 
         return self._get_state(), reward, done, truncated, info
 
-    def _generate_state_dict(self, position: List[float]) -> Dict[str, Any]:
+    def generate_state_dict(self, position: List[float]) -> Dict[str, Any]:
         """Generate a state dictionary with common drone information"""
         return {
             'position': position,
