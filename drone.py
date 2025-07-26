@@ -40,10 +40,12 @@ class Drone:
         # Controller parameters
         self.controller_active = False
         self.controller_thread = None
+        self.at_reset_position = Event()
+
         # PID gains - separate for each axis for better tuning
         self.gains = {
-            "x": {"kp": 0.6, "kd": 0, "ki": 0},
-            "y": {"kp": 0.6, "kd": 0, "ki": 0},
+            "x": {"kp": 0.7, "kd": 0, "ki": 0.2},
+            "y": {"kp": 0.7, "kd": 0, "ki": 0.2},
             "z": {"kp": 0.5, "kd": 0, "ki": 0}
         }
         self.last_error = {"x": 0.0, "y": 0.0, "z": 0.0}
@@ -174,9 +176,6 @@ class Drone:
             self.scf.open_link()
             self.cf = self.scf.cf
 
-            print("[Drone] Resetting all log configurations")
-            self.cf.log.reset()
-            time.sleep(0.5)
             # Setup deck detection
             self.cf.param.add_update_callback(group='deck', name='bcFlow2', cb=self._param_deck_flow)
             time.sleep(1)
@@ -186,6 +185,9 @@ class Drone:
                 self.stop()
                 return False
 
+            print("[Drone] Resetting all log configurations")
+            self.cf.log.reset()
+            time.sleep(0.5)
             # Arm the drone
             print("[Crazyflie] Arming Crazyflie...")
             self.cf.platform.send_arming_request(True)
@@ -397,8 +399,7 @@ class Drone:
     def _position_control_loop(self, first_instance = 0):
         """Main control loop for position-based velocity control"""
         control_rate = 0.04  # Control rate in seconds (20hz)
-        error_threshold = 0.1  # Error threshold to consider position reached (meters)
-        position_reached = False
+        error_threshold = 0.15  # Error threshold to consider position reached (meters)
 
         print("[Drone] Position control loop started")
         while self.is_running() and self.controller_active:
@@ -422,14 +423,12 @@ class Drone:
                 # Calculate error magnitude to determine if position is reached
                 error_magnitude = (error["x"]**2 + error["y"]**2 + error["z"]**2)**0.5
 
-                if error_magnitude < error_threshold and not position_reached:
+                # print(error_magnitude)
+                # print(self.get_battery())
+
+                if error_magnitude < error_threshold :
                     print(f"[Controller] Position reached! Error: {error_magnitude:.2f}m")
-                    position_reached = True
-
-                elif error_magnitude >= error_threshold * 1.5 and position_reached:
-                    # Reset flag when error increases significantly (e.g., new target set)
-                    position_reached = False
-
+                    self.at_reset_position.set()
                 # Calculate velocity command using PID control
                 velocity = self._calculate_pid_velocity(error, control_rate)
 
@@ -659,7 +658,7 @@ class Drone:
 
     def _join_all_threads(self):
         """Wait until every managed thread has exited."""
-        for name, thr in (
+        for name, thr in (("main", self.thread),
                 ("position", self.position_thread),
                 ("safety", self.safety_thread),
                 ("controller", self.controller_thread)):

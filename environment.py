@@ -7,7 +7,7 @@ from typing import Dict, List, Tuple, Any
 
 class DroneEnvironment(ABC):
     """Base drone environment that handles common drone operations"""
-    def __init__(self, max_velocity: float = 1.0, step_time: float = 0.1, max_steps: int = 1000):
+    def __init__(self, max_velocity: float = 1.0, step_time: float = 0.1, max_steps: int = 200):
 
         self.drone = Drone()
         self.reset_position = [0, 0, 0.5]
@@ -24,15 +24,16 @@ class DroneEnvironment(ABC):
         """Reset the drone to initial position and state"""
         self.steps = 0
         # Check that the drone is not already flying
-
-        if self.drone.is_flying_event.is_set():
+        #
+        if not self.drone.is_flying_event.is_set():
             print("Control: The drone is already flying")
-            self.drone.land_and_stop()
-        self.drone.take_off()
+            self.drone.take_off()
+
         self.drone.set_target_position(self.reset_position[0], self.reset_position[1], self.reset_position[2])
         self.drone.is_flying_event.wait(timeout=15)
         self.drone.start_position_control()
-        time.sleep(10)
+        self.drone.at_reset_position.wait(timeout=10)
+        time.sleep(1.5)
         self.drone.stop_position_control()
 
         # Reset task-specific state

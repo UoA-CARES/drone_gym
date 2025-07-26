@@ -1,5 +1,6 @@
 import numpy as np
 import math
+import time
 from typing import Dict, List, Any
 from environment import DroneEnvironment
 
@@ -166,6 +167,12 @@ class DroneNavigationTask(DroneEnvironment):
 if __name__ == "__main__":
     # quick sanity test
     env = DroneNavigationTask()
+    env.reset()
+    env.drone.set_velocity_vector(2, 0, 0)
+    time.sleep(2)
+    env.reset()
+    env.drone.set_velocity_vector(0, 2, 0)
+    time.sleep(2)
     env.reset()
     # for _ in range(3):
     #     a = env.sample_action()
