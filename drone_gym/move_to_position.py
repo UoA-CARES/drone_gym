@@ -12,7 +12,7 @@ class DroneNavigationTask(DroneEnvironment):
         super().__init__(max_velocity, step_time, max_steps)
 
         # Task-specific parameters
-        self.target_position = [1, 1, 1]  # Goal position
+        self.target_position = [1, 1, 0.5]  # Goal position
         self.distance_threshold = 0.1  # Distance threshold to consider target reached
         self.max_distance = 5.0  # Maximum distance for normalization
         self.max_steps = max_steps
@@ -46,7 +46,7 @@ class DroneNavigationTask(DroneEnvironment):
 
         return np.array(state, dtype=np.float32)
 
-    def _get_task_specific_state(self) -> Dict[str, Any]:
+    def get_overlay_info(self) -> Dict[str, Any]:
         """Get task-specific state information"""
         position = self.drone.get_position()
         return {
@@ -120,8 +120,11 @@ class DroneNavigationTask(DroneEnvironment):
             'out_of_bounds': not current_state['in_boundaries']
         }
 
-    def sample_action(self):
-        return np.random.uniform(-1, 1, size=(3,))
+    def sample_action(self, safety = True):
+        if safety:
+            x, y = np.random.uniform(-self.max_velocity, self.max_velocity, size=(2,))
+            return [x, y, 0]
+        return np.random.uniform(-self.max_velocity, self.max_velocity, size=(3,))
 
     def _render_task_specific_info(self):
         """Render navigation task specific information"""

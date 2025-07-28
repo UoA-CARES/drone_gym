@@ -4,10 +4,11 @@ import time
 import numpy as np
 from typing import Dict, List, Tuple, Any
 
+# TODO - make naming more consistent
 
 class DroneEnvironment(ABC):
     """Base drone environment that handles common drone operations"""
-    def __init__(self, max_velocity: float = 1.0, step_time: float = 0.1, max_steps: int = 200):
+    def __init__(self, max_velocity: float = 1.0,  step_time: float = 0.1, max_steps: int = 200):
 
         self.drone = Drone()
         self.reset_position = [0, 0, 0.5]
@@ -15,6 +16,7 @@ class DroneEnvironment(ABC):
         self.step_time = step_time
         self.steps = 0
         self.max_steps = max_steps
+        self.seed = 0
 
         self.current_battery = self.drone.get_battery()
         self.battery_threshold = 3.5
@@ -33,7 +35,7 @@ class DroneEnvironment(ABC):
         self.drone.is_flying_event.wait(timeout=15)
         self.drone.start_position_control()
         self.drone.at_reset_position.wait(timeout=10)
-        time.sleep(1.5)
+        time.sleep(2)
         self.drone.stop_position_control()
 
         # Reset task-specific state
@@ -58,7 +60,7 @@ class DroneEnvironment(ABC):
         current_pos = self.drone.get_position()
 
         # Store previous state for reward calculation
-        self.prior_state = self._generate_state_dict(current_pos)
+        self.prior_state = self.generate_state_dict(current_pos)
 
         vx, vy, vz = action
 
@@ -69,7 +71,7 @@ class DroneEnvironment(ABC):
         time.sleep(self.step_time)
 
         new_pos = self.drone.get_position()
-        current_state = self._generate_state_dict(new_pos)
+        current_state = self.generate_state_dict(new_pos)
 
         # Calculate reward using task-specific logic
         reward = self._calculate_reward(current_state)
@@ -158,6 +160,10 @@ class DroneEnvironment(ABC):
             print(f"Steps: {self.steps}")
             self._render_task_specific_info()
             print("-" * 50)
+
+    def set_seed(self):
+        """Generate the random seed for the environment"""
+        self.seed = np.random.randint(0, 2**32 - 1)
 
     @property
     def max_action_value(self):

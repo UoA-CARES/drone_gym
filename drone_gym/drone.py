@@ -399,7 +399,7 @@ class Drone:
     def _position_control_loop(self, first_instance = 0):
         """Main control loop for position-based velocity control"""
         control_rate = 0.04  # Control rate in seconds (20hz)
-        error_threshold = 0.15  # Error threshold to consider position reached (meters)
+        error_threshold = 0.14  # Error threshold to consider position reached (meters)
 
         print("[Drone] Position control loop started")
         while self.is_running() and self.controller_active:
