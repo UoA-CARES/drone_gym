@@ -8,7 +8,7 @@ from drone_gym.drone_environment import DroneEnvironment
 class DroneNavigationTask(DroneEnvironment):
     """Drone navigation task - reach a target position"""
 
-    def __init__(self, max_velocity: float = 1.0, step_time: float = 0.1, max_steps: int = 1000):
+    def __init__(self, max_velocity: float = 1.0, step_time: float = 1, max_steps: int = 1000):
         super().__init__(max_velocity, step_time, max_steps)
 
         # Task-specific parameters
@@ -67,7 +67,7 @@ class DroneNavigationTask(DroneEnvironment):
     def _calculate_reward(self, current_state: Dict[str, Any]) -> float:
         """Calculate reward for navigation task"""
         position = current_state['position']
-        distance = self._distance_to_target(position)   # <-- add this line
+        distance = self._distance_to_target(position)
 
         # Base reward is negative distance (closer = higher reward)
         # currently this reward will never be positive and is too low. assuming the max distance is (3,3,3) reward = -5.2.
@@ -76,16 +76,16 @@ class DroneNavigationTask(DroneEnvironment):
 
         # Reward for moving closer to target
         # This should be done in proportions (JJ)
-        if self.prior_state is not None:
-            prev_distance = self.prior_state['distance_to_target']
-            distance_improvement = (prev_distance - distance)/prev_distance # this gives proportional distance increase compared to prev dist
-            reward += distance_improvement * self.distance_improvement_multiplier
+        # if self.prior_state is not None:
+        #     prev_distance = self.prior_state['distance_to_target']
+        #     distance_improvement = (prev_distance - distance)/prev_distance # this gives proportional distance increase compared to prev dist
+        #     reward += distance_improvement * self.distance_improvement_multiplier
 
         # Bonus for reaching target
         if distance < self.distance_threshold:
             reward += self.success_reward
 
-        # Penalty for going out of bounds
+        # TODO: Penalty for going close to out of bounds
         if not current_state['in_boundaries']:
             reward += self.out_of_bounds_penalty
 
@@ -117,14 +117,18 @@ class DroneNavigationTask(DroneEnvironment):
         return {
             'target_position': self.target_position,
             'success': current_state['distance_to_target'] < self.distance_threshold,
-            'out_of_bounds': not current_state['in_boundaries']
+            'out_of_bounds': not current_state['in_boundaries'],
+            'description': "Gym environment for reinforcement learning control of drones"
         }
 
-    def sample_action(self, safety = True):
+
+    def sample_action(self, safety=True):
         if safety:
-            x, y = np.random.uniform(-self.max_velocity, self.max_velocity, size=(2,))
-            return [x, y, 0]
-        return np.random.uniform(-self.max_velocity, self.max_velocity, size=(3,))
+            x, y = np.random.uniform(0, 1, size=(2,))
+            print("Sampled action:", x, y)
+            # z value is 0.5 which will be normalised to 0
+            return np.array([x, y, 0.5])
+        return np.random.uniform(0, 1, size=(3,))
 
     def _render_task_specific_info(self):
         """Render navigation task specific information"""

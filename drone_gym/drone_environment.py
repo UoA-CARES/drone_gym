@@ -8,7 +8,7 @@ from typing import Dict, List, Tuple, Any
 
 class DroneEnvironment(ABC):
     """Base drone environment that handles common drone operations"""
-    def __init__(self, max_velocity: float = 1.0,  step_time: float = 0.1, max_steps: int = 200):
+    def __init__(self, max_velocity: float = 0.5,  step_time: float = 1, max_steps: int = 200):
 
         self.drone = Drone()
         self.reset_position = [0, 0, 0.5]
@@ -20,13 +20,14 @@ class DroneEnvironment(ABC):
 
         self.current_battery = self.drone.get_battery()
         self.battery_threshold = 3.5
-
+        self.observation_space = 6
 
     def reset(self):
         """Reset the drone to initial position and state"""
         self.steps = 0
         # Check that the drone is not already flying
         #
+        print("DRONE RESET")
         if not self.drone.is_flying_event.is_set():
             print("Control: The drone is already flying")
             self.drone.take_off()
@@ -41,41 +42,39 @@ class DroneEnvironment(ABC):
         # Reset task-specific state
         self._reset_task_state()
 
-        return self._get_state(), {}
+        return self._get_state()
 
     def step(self, action) -> Tuple[np.ndarray, float, bool, bool, Dict]:
         """Execute one step in the environment"""
-
         # Check that the current drone battery is above the threshold
         self.current_battery = self.drone.get_battery()
         # if self.current_battery <= self.battery_threshold:
         #     self.drone.land_and_stop()
-
         self.steps += 1
-
-        # Parse action - expecting [vx, vy, vz] in range [-1, 1]
+        print(f"action: {action}")
+        # Parse action - expecting [vx, vy, vz] in range [0, 1]
         if len(action) != 3:
             raise ValueError("Action must be a 3-element array [vx, vy, vz]")
 
+        # Denormalize action from [0, 1] to [-max_velocity, max_velocity]
+        vx = action[0] * (2 * self.max_velocity) - self.max_velocity  # [0,1] -> [-max_velocity, max_velocity]
+        vy = action[1] * (2 * self.max_velocity) - self.max_velocity
+        vz = action[2] * (2 * self.max_velocity) - self.max_velocity
+
         current_pos = self.drone.get_position()
-
         # Store previous state for reward calculation
-        self.prior_state = self.generate_state_dict(current_pos)
-
-        vx, vy, vz = action
+        self.prior_state = self._generate_state_dict(current_pos)
 
         # Send velocity command to drone
         self.drone.set_velocity_vector(vx, vy, vz)
-
         # Apply velocity for specified time - can improve this to be non-blocking
         time.sleep(self.step_time)
 
         new_pos = self.drone.get_position()
-        current_state = self.generate_state_dict(new_pos)
+        current_state = self._generate_state_dict(current_pos)
 
         # Calculate reward using task-specific logic
         reward = self._calculate_reward(current_state)
-
         # Check if episode is done using task-specific logic
         done = self._check_if_done(current_state)
         truncated = self._check_if_truncated(current_state)
@@ -85,7 +84,8 @@ class DroneEnvironment(ABC):
             'current_position': new_pos,
             'previous_position': current_pos,
             'distance_to_target': self._distance_to_target(new_pos),
-            'applied_velocity': [vx, vy, vz],
+            'applied_velocity': [vx, vy, vz],  # Store the denormalized velocities
+            'normalized_action': action,  # Store the original normalized action
             'in_boundaries': self.drone.in_boundaries,
             'steps': self.steps,
             **self._get_additional_info(current_state)
@@ -93,15 +93,23 @@ class DroneEnvironment(ABC):
 
         return self._get_state(), reward, done, truncated, info
 
-    def generate_state_dict(self, position: List[float]) -> Dict[str, Any]:
+    def _generate_state_dict(self, position: List[float]) -> Dict[str, Any]:
         """Generate a state dictionary with common drone information"""
         return {
             'position': position,
             'in_boundaries': self.drone.in_boundaries,
             'steps': self.steps,
             'distance_to_target' : self._distance_to_target(position),
-            **self._get_task_specific_state()
         }
+
+    def _generate_action_dict(self, action: List[float]) -> np.ndarray:
+        """Generate a compact action representation as numpy array"""
+        action = [
+            action[0],  # x velocity
+            action[1],  # y velocity
+            action[2],  # z velocity
+        ]
+        return np.array(action, dtype=np.float32)
 
     def _distance_to_target(self, position: List[float]) -> float:
         """Calculate distance to target - to be overridden by task"""
@@ -173,6 +181,10 @@ class DroneEnvironment(ABC):
     def min_action_value(self):
         return -self.max_velocity
 
+    @property
+    def action_num(self):
+        return 3
+
     # Abstract methods to be implemented by task-specific environments
 
     @abstractmethod
@@ -187,11 +199,6 @@ class DroneEnvironment(ABC):
     @abstractmethod
     def _get_state(self) -> np.ndarray:
         """Get the current state representation"""
-        pass
-
-    @abstractmethod
-    def _get_task_specific_state(self) -> Dict[str, Any]:
-        """Get task-specific state information"""
         pass
 
     @abstractmethod

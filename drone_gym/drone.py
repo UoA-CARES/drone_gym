@@ -396,7 +396,7 @@ class Drone:
         else:
             print("[Drone] Position controller already stopped")
 
-    def _position_control_loop(self, first_instance = 0):
+    def _position_control_loop(self, first_instance = 0, debugging = False):
         """Main control loop for position-based velocity control"""
         control_rate = 0.04  # Control rate in seconds (20hz)
         error_threshold = 0.14  # Error threshold to consider position reached (meters)
@@ -419,7 +419,10 @@ class Drone:
                     "y": target_pos["y"] - current_pos["y"],
                     "z": target_pos["z"] - current_pos["z"]
                 }
-                print(f"[Controller]: Position({current_pos['x']}, {current_pos['y']}, {current_pos['z']})")
+
+                if debugging:
+                    print(f"[Controller]: Position({current_pos['x']}, {current_pos['y']}, {current_pos['z']})")
+
                 # Calculate error magnitude to determine if position is reached
                 error_magnitude = (error["x"]**2 + error["y"]**2 + error["z"]**2)**0.5
 
@@ -439,8 +442,10 @@ class Drone:
                         velocity["y"],
                         velocity["z"]
                     )
-                    print(f"[Controller] Pos error: ({error['x']:.2f}, {error['y']:.2f}, {error['z']:.2f}) → "
-                          f"Vel: ({velocity['x']:.2f}, {velocity['y']:.2f}, {velocity['z']:.2f})")
+
+                    if debugging:
+                        print(f"[Controller] Pos error: ({error['x']:.2f}, {error['y']:.2f}, {error['z']:.2f}) → "
+                              f"Vel: ({velocity['x']:.2f}, {velocity['y']:.2f}, {velocity['z']:.2f})")
 
                 # Sleep to maintain control rate
                 time.sleep(control_rate)
@@ -574,7 +579,7 @@ class Drone:
                   f"ki={self.gains[ax]['ki']}, kd={self.gains[ax]['kd']}")
 
     def set_max_velocity(self, velocity):
-        """Set the maximum velocity limit for the controller"""
+        """Set the maximum velocity limit for the contset_velocity_vectorroller"""
         self.max_velocity = float(velocity)
         print(f"[Drone] Maximum velocity set to {self.max_velocity} m/s")
 
@@ -715,14 +720,27 @@ if __name__ == "__main__":
 
     drone = Drone()
     # drone.reboot_crazyflie()
+    drone.take_off()
+    drone.is_flying_event.wait(timeout=15)
+    drone.start_position_control()
+    drone.set_target_position(0, 0, 0.5)
     time.sleep(5)
+    drone.stop_position_control()
 
-    for i in range(5):
-        print(drone.get_battery())
+    for i in range(12):  # Increased to 12 for 3 complete cycles of 4 vectors
+        if i % 4 == 0:
+            drone.set_velocity_vector(0, 0.5, 0)    # Forward
+        elif i % 4 == 1:
+            drone.set_velocity_vector(0.5, 0, 0)    # Right
+        elif i % 4 == 2:
+            drone.set_velocity_vector(0, -0.5, 0)   # Backward
+        else:
+            drone.set_velocity_vector(-0.5, 0, 0)   # Left
         time.sleep(1)
-    time.sleep(5)
-    drone.stop()
 
+    drone.land()
+    drone.is_landed_event.wait(timeout=30)
+    drone.stop()
     # print("Drone class initiated")
     # drone.take_off()
     # drone.is_flying_event.wait(timeout=15)
