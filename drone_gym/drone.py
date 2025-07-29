@@ -68,10 +68,11 @@ class Drone:
         self.position_lock = threading.Lock()
 
         # Drone Safety
-        self.boundaries = {"x": 3, "y": 3, "z": 3}
+        self.boundaries = {"x": 2.5, "y": 2.5, "z": 2}
         self.safety_thread = threading.Thread(target=self._check_boundaries)
         self.safety_thread.start()
         self.in_boundaries = True
+        self.emergency_event = Event()
 
         # Objective related
         self.target_position = {"x": 0.0, "y": 0.0, "z": 0.0}
@@ -80,32 +81,13 @@ class Drone:
         self.thread = threading.Thread(target=self._run)
         self.thread.start()
 
-        # Wait thread
-        # self._ready_event = Event()
-        # self._ready_thread = threading.Thread(target = self._wait_until_ready)
-        # self._ready_thread.start()
-
-    # def _wait_until_ready(self):
-
-    #     while self.is_running():
-    #         with self.position_lock:
-    #             if self.position is not None and any(self.position.values()):
-    #                 break
-    #         time.sleep(0.05)
-
-    #     if self._initialise_crazyflie():
-    #         self._ready_event.set()
-    #     else:
-    #         print("[Drone] Initialisation has failed...")
-
-    # def wait_until_ready(self, timeout = 10.0):
-
-    #     return self._ready_event.wait(timeout = timeout)
-
     def _check_boundaries(self):
         time.sleep(7)
         while self.is_running():
             try:
+                if self.emergency_event.is_set():
+                    break
+
                 # Check if position is within boundaries for each axis
                 with self.position_lock:
                     current_pos = self.position.copy()
@@ -114,21 +96,39 @@ class Drone:
                     z_in_bounds = self.boundaries["z"] >= abs(current_pos["z"])
 
                 # Set in_boundaries status
-                current_status = x_in_bounds and y_in_bounds and z_in_bounds
+                in_bounds = x_in_bounds and y_in_bounds and z_in_bounds
 
-                if current_status != self.in_boundaries:
-                    self.in_boundaries = current_status
-                    if self.in_boundaries:
-                        print("Drone currently in bounds")
-                    else:
-                        print("[Drone] WARNING: Out of bounds!")
-                        self.send_command("emergency_stop")
-                        print("Emergency stop command sent")
+                if not in_bounds:
+                    self.in_boundaries = False
+                    # immediately try to stop the velocity
+                    self.cf.commander.send_velocity_world_setpoint(0, 0, 0, 0)
+                    self._execute_emergency_stop()
+                    break
                 time.sleep(0.01)
 
             except Exception as e:
                 print(f"[Drone] Error in boundary checking: {str(e)}")
                 time.sleep(0.1)
+
+    def _execute_emergency_stop(self):
+
+        if not self.emergency_event.is_set():
+            self.emergency_event.set()
+            print("Emergency stop event triggered!!!")
+
+        if self.mc:
+            self.mc.land()
+
+        self.controller_active = False
+
+        if self.armed and self.cf:
+            self.cf.platform.send_arming_request(False)
+            self.armed = False
+
+        self.set_running(False)
+        self.command_queue.put("exit")
+
+        self.stop()
 
     def is_running(self):
         """Check if the drone is running"""
@@ -145,7 +145,7 @@ class Drone:
         vicon_thread = threading.Thread(target=self.vicon.main_loop)
         vicon_thread.start()
         time.sleep(4)
-        while self.is_running():
+        while self.is_running() and not self.emergency_event.is_set():
             try:
                 position_array = self.vicon.getPos(self.drone_name)
                 if position_array is not None:
@@ -164,7 +164,6 @@ class Drone:
         # Signal the vicon thread to join
         self.vicon.run_interface = False
         vicon_thread.join()
-
 
     def _initialise_crazyflie(self):
         """Initialize Crazyflie connection and setup"""
@@ -213,6 +212,10 @@ class Drone:
             # Main command processing loop
             while self.is_running():
                 try:
+
+                    if self.emergency_event.is_set():
+                        break
+
                     # Get command with timeout
                     command = self.command_queue.get(timeout=0.1)
 
@@ -330,6 +333,8 @@ class Drone:
             elif "move" in command:
                 if self.is_flying_event.is_set() and self.mc:
                     self.mc.start_linear_motion(0,-0.2,0)
+                    self.mc.start_linear_motion(0,0,0)
+
 
             elif "velocity_vector" in command:
                 # Handle velocity vector command
@@ -402,7 +407,7 @@ class Drone:
         error_threshold = 0.14  # Error threshold to consider position reached (meters)
 
         print("[Drone] Position control loop started")
-        while self.is_running() and self.controller_active:
+        while self.is_running() and self.controller_active and not self.emergency_event.is_set():
             try:
                 # Get current and target positions
                 current_pos = self.get_position_dict()
@@ -623,7 +628,7 @@ class Drone:
 
     def land_and_stop(self):
         self.land()
-        self.is_landed_event.wait(timeout=30)
+        self.is_landed_event.wait(timeout=10)
         if not self.is_landed_event.is_set():
             print("Drone is failing to land....")
             print("Forcing stop")

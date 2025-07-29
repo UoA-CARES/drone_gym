@@ -24,6 +24,9 @@ class DroneEnvironment(ABC):
 
     def reset(self):
         """Reset the drone to initial position and state"""
+        # Stop the current velocity first
+        self.drone.set_velocity_vector(0, 0, 0)
+        time.sleep(0.5)
         self.steps = 0
         # Check that the drone is not already flying
         #
