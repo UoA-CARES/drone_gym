@@ -26,9 +26,17 @@ class DroneEnvironment(ABC):
         self.xy_limit = 1.5
         self.z_limit = 0.5
 
+    def _reset_control_properties(self):
+        self.drone.clear_command_queue()
+        self.last_error = {"x": 0.0, "y": 0.0, "z": 0.0}
+        self.integral = {"x": 0.0, "y": 0.0, "z": 0.0}
+
     def reset(self):
         """Reset the drone to initial position and state"""
-        # Stop the current velocity first
+
+        self._reset_control_properties()
+
+        # Stop the current velocity
         self.drone.set_velocity_vector(0, 0, 0)
         time.sleep(0.5)
         self.steps = 0

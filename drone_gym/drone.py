@@ -561,6 +561,14 @@ class Drone:
         """Send command to the command queue"""
         self.command_queue.put(command)
 
+    def clear_command_queue(self):
+        """Clear all pending commands from the command queue."""
+        while True:
+            try:
+                self.command_queue.get_nowait()
+            except queue.Empty:
+                break
+
     def set_pid_gains(self, axis, kp=None, ki=None, kd=None):
         """Update PID gains for a specific axis"""
         axes = ["x", "y", "z"] if axis == "all" else [axis]
