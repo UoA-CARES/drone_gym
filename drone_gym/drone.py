@@ -395,10 +395,10 @@ class Drone:
         else:
             print("[Drone] Position controller already stopped")
 
-    def _position_control_loop(self, first_instance = 0, debugging = False):
+    def _position_control_loop(self, first_instance = 0, debugging = True):
         """Main control loop for position-based velocity control"""
-        control_rate = 0.04  # Control rate in seconds (20hz)
-        error_threshold = 0.14  # Error threshold to consider position reached (meters)
+        control_rate = 0.05  # Control rate in seconds (20hz)
+        error_threshold = 0.15  # Error threshold to consider position reached (meters)
 
         print("[Drone] Position control loop started")
         while self.is_running() and self.controller_active and not self.emergency_event.is_set():
@@ -423,7 +423,7 @@ class Drone:
                     print(f"[Controller]: Position({current_pos['x']}, {current_pos['y']}, {current_pos['z']})")
 
                 # Calculate error magnitude to determine if position is reached
-                error_magnitude = (error["x"]**2 + error["y"]**2 + error["z"]**2)**0.5
+                error_magnitude = (abs(error["x"])**2 + abs(error["y"])**2 + abs(error["z"]**2))**0.5
 
                 # print(error_magnitude)
                 # print(self.get_battery())
@@ -454,6 +454,9 @@ class Drone:
                 time.sleep(0.5)  # Sleep longer on error
 
         print("[Drone] Position control loop stopped")
+
+    def clear_reset_position_event(self):
+        self.at_reset_position.clear()
 
     def _calculate_pid_velocity(self, error, dt):
         """Calculate velocity vector using PID control
@@ -728,26 +731,6 @@ if __name__ == "__main__":
     while True:
         position = drone.get_position()
         print(position)
-    # drone.reboot_crazyflie()
-
-    # for i in range(12):  # Increased to 12 for 3 complete cycles of 4 vectors
-    #     if i % 4 == 0:
-    #         drone.set_velocity_vector(0, 0.5, 0)    # Forward
-    #     elif i % 4 == 1:
-    #         drone.set_velocity_vector(0.5, 0, 0)    # Right
-    #     elif i % 4 == 2:
-    #         drone.set_velocity_vector(0, -0.5, 0)   # Backward
-    #     else:
-    #         drone.set_velocity_vector(-0.5, 0, 0)   # Left
-    #     time.sleep(1)
-
-    # print("Drone class initiated")
-    # drone.take_off()
-    # drone.is_flying_event.wait(timeout=15)
-
-    # if not drone.is_flying_event.is_set():
-    #     print("Drone failed to take off")
-    #     drone.stop()
 
     # drone.start_position_control()
     # time.sleep(2) # Let the controller stabilise first

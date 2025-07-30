@@ -45,7 +45,7 @@ class DroneEnvironment(ABC):
         self.drone.at_reset_position.wait(timeout=12)
         time.sleep(1)
         self.drone.stop_position_control()
-
+        self.drone.clear_reset_position_event()
         # Reset task-specific state
         self._reset_task_state()
 
