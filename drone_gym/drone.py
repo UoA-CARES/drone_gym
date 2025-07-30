@@ -100,12 +100,9 @@ class Drone:
 
                 if not in_bounds:
                     self.in_boundaries = False
-                    # immediately try to stop the velocity
-                    self.cf.commander.send_velocity_world_setpoint(0, 0, 0, 0)
                     self._execute_emergency_stop()
                     break
                 time.sleep(0.01)
-
             except Exception as e:
                 print(f"[Drone] Error in boundary checking: {str(e)}")
                 time.sleep(0.1)
@@ -118,6 +115,7 @@ class Drone:
 
         if self.mc:
             self.mc.land()
+            time.sleep(1)
 
         self.controller_active = False
 
@@ -125,9 +123,7 @@ class Drone:
             self.cf.platform.send_arming_request(False)
             self.armed = False
 
-        self.set_running(False)
         self.command_queue.put("exit")
-
         self.stop()
 
     def is_running(self):
@@ -165,6 +161,8 @@ class Drone:
         self.vicon.run_interface = False
         vicon_thread.join()
 
+    # TODO - check for unsuccessful arming attempts
+
     def _initialise_crazyflie(self):
         """Initialize Crazyflie connection and setup"""
         try:
@@ -194,7 +192,6 @@ class Drone:
             self.armed = True
             print("[Crazyflie] Crazyflie armed.")
 
-
             self._setup_battery_logging()
             return True
 
@@ -212,13 +209,12 @@ class Drone:
             # Main command processing loop
             while self.is_running():
                 try:
-
                     if self.emergency_event.is_set():
+                        self._handle_command({"land": True})
+                        self.is_landed_event.wait(timeout = 10)
                         break
-
                     # Get command with timeout
                     command = self.command_queue.get(timeout=0.1)
-
                     if command == "exit":
                         self.set_running(False)
                         print("[Drone] Shutting down.")
@@ -282,6 +278,8 @@ class Drone:
                 self.battery_log_config.delete()
                 self.battery_log_config = None
 
+            self.set_running(False)
+
         except Exception as e:
             print(f"[Drone] Error during shutdown: {str(e)}")
 
@@ -310,7 +308,7 @@ class Drone:
 
             elif "take_off" in command:
                 if not self.is_flying_event.is_set() and self.armed:
-                    print("[Drone] Executing take-off command")
+                    print("[Drone] Processing the take off command")
                     self.mc = MotionCommander(self.scf, default_height=self.default_height)
                     self.mc.take_off()
                     self.is_landed_event.clear()
@@ -323,8 +321,6 @@ class Drone:
                 if self.is_flying_event.is_set() and self.mc:
                     print("[Drone] Landing drone")
                     self.mc.land()
-                    # self.mc.stop()
-                    # self.mc = None
                     self.is_landed_event.set()
                     self.is_flying_event.clear()
                     print("[Drone] Landing successful")
@@ -332,9 +328,7 @@ class Drone:
                     print("[Drone] Cannot land - not currently flying")
             elif "move" in command:
                 if self.is_flying_event.is_set() and self.mc:
-                    self.mc.start_linear_motion(0,-0.2,0)
                     self.mc.start_linear_motion(0,0,0)
-
 
             elif "velocity_vector" in command:
                 # Handle velocity vector command
@@ -648,8 +642,8 @@ class Drone:
         """
         print("In the new stop function")
         self._signal_stop_to_all_threads()
-        self._join_all_threads()
         self._close_vicon()
+        self._join_all_threads()
         self._reset_shared_state()
         self._final_cleanup()
 
@@ -668,12 +662,14 @@ class Drone:
 
     def _join_all_threads(self):
         """Wait until every managed thread has exited."""
-        for name, thr in (("main", self.thread),
-                ("position", self.position_thread),
-                ("safety", self.safety_thread),
-                ("controller", self.controller_thread)):
+        for name, thr in (("position", self.position_thread),
+                ("controller", self.controller_thread),
+                ("main", self.thread)):
             if thr and thr.is_alive():
-                thr.join(timeout=2.0)
+                if name == "main":
+                    thr.join(timeout=5.0)
+                else:
+                    thr.join(timeout=2.0)
                 if thr.is_alive():
                     print(f"[Drone] WARNING: {name} thread did not join in time.")
 
@@ -709,6 +705,11 @@ class Drone:
     def _final_cleanup(self):
         """Delete big objects so garbage collection can reclaim them."""
         # These will be re-created if the user ever calls start() again
+
+        # Join the safety thread last
+
+        self.safety_thread.join()
+
         self.cf  = None
         self.scf = None
         self.mc  = None
@@ -731,20 +732,20 @@ if __name__ == "__main__":
     drone.set_target_position(0, 0, 0.5)
     time.sleep(5)
     drone.stop_position_control()
+    drone.set_velocity_vector(0, -0.5, 0)
+    time.sleep(15)
 
-    for i in range(12):  # Increased to 12 for 3 complete cycles of 4 vectors
-        if i % 4 == 0:
-            drone.set_velocity_vector(0, 0.5, 0)    # Forward
-        elif i % 4 == 1:
-            drone.set_velocity_vector(0.5, 0, 0)    # Right
-        elif i % 4 == 2:
-            drone.set_velocity_vector(0, -0.5, 0)   # Backward
-        else:
-            drone.set_velocity_vector(-0.5, 0, 0)   # Left
-        time.sleep(1)
+    # for i in range(12):  # Increased to 12 for 3 complete cycles of 4 vectors
+    #     if i % 4 == 0:
+    #         drone.set_velocity_vector(0, 0.5, 0)    # Forward
+    #     elif i % 4 == 1:
+    #         drone.set_velocity_vector(0.5, 0, 0)    # Right
+    #     elif i % 4 == 2:
+    #         drone.set_velocity_vector(0, -0.5, 0)   # Backward
+    #     else:
+    #         drone.set_velocity_vector(-0.5, 0, 0)   # Left
+    #     time.sleep(1)
 
-    drone.land()
-    drone.is_landed_event.wait(timeout=30)
     drone.stop()
     # print("Drone class initiated")
     # drone.take_off()
