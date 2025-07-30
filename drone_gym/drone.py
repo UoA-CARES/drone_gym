@@ -44,9 +44,9 @@ class Drone:
 
         # PID gains - separate for each axis for better tuning
         self.gains = {
-            "x": {"kp": 0.7, "kd": 0, "ki": 0.2},
-            "y": {"kp": 0.7, "kd": 0, "ki": 0.2},
-            "z": {"kp": 0.5, "kd": 0, "ki": 0}
+            "x": {"kp": 0.8, "kd": 0, "ki": 0.2},
+            "y": {"kp": 0.8, "kd": 0, "ki": 0.2},
+            "z": {"kp": 0.8, "kd": 0, "ki": 0.2}
         }
         self.last_error = {"x": 0.0, "y": 0.0, "z": 0.0}
         self.integral = {"x": 0.0, "y": 0.0, "z": 0.0}
@@ -725,15 +725,10 @@ if __name__ == "__main__":
     # Testing instructions
 
     drone = Drone()
+    while True:
+        position = drone.get_position()
+        print(position)
     # drone.reboot_crazyflie()
-    drone.take_off()
-    drone.is_flying_event.wait(timeout=15)
-    drone.start_position_control()
-    drone.set_target_position(0, 0, 0.5)
-    time.sleep(5)
-    drone.stop_position_control()
-    drone.set_velocity_vector(0, -0.5, 0)
-    time.sleep(15)
 
     # for i in range(12):  # Increased to 12 for 3 complete cycles of 4 vectors
     #     if i % 4 == 0:
@@ -746,7 +741,6 @@ if __name__ == "__main__":
     #         drone.set_velocity_vector(-0.5, 0, 0)   # Left
     #     time.sleep(1)
 
-    drone.stop()
     # print("Drone class initiated")
     # drone.take_off()
     # drone.is_flying_event.wait(timeout=15)

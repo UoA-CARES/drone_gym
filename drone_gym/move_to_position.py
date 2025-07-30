@@ -8,11 +8,11 @@ from drone_gym.drone_environment import DroneEnvironment
 class DroneNavigationTask(DroneEnvironment):
     """Drone navigation task - reach a target position"""
 
-    def __init__(self, max_velocity: float = 1.0, step_time: float = 1, max_steps: int = 1000):
+    def __init__(self, max_velocity: float = 0.35, step_time: float = 0.8, max_steps: int = 1000):
         super().__init__(max_velocity, step_time, max_steps)
 
         # Task-specific parameters
-        self.target_position = [1, 1, 0.5]  # Goal position
+        self.target_position = [0, 0, 1.2]  # Goal position
         self.distance_threshold = 0.1  # Distance threshold to consider target reached
         self.max_distance = 5.0  # Maximum distance for normalization
         self.max_steps = max_steps
@@ -110,7 +110,15 @@ class DroneNavigationTask(DroneEnvironment):
 
     def _check_if_truncated(self, current_state: Dict[str, Any]) -> bool:
         """Check if episode should be truncated"""
-        return current_state['steps'] >= self.max_steps
+        if current_state['steps'] >= self.max_steps:
+            return True
+        elif not self._is_in_testing_zone():
+            return True
+
+        return False
+
+    # def _is_in_testing_zone(self):
+
 
     def _get_additional_info(self, current_state: Dict[str, Any]) -> Dict[str, Any]:
         """Get additional task-specific info"""
@@ -124,10 +132,10 @@ class DroneNavigationTask(DroneEnvironment):
 
     def sample_action(self, safety=True):
         if safety:
-            x, y = np.random.uniform(0, 1, size=(2,))
+            x, y , z= np.random.uniform(0, 1, size=(3,))
             print("Sampled action:", x, y)
             # z value is 0.5 which will be normalised to 0
-            return np.array([x, y, 0.5])
+            return np.array([x, y, z])
         return np.random.uniform(0, 1, size=(3,))
 
     def _render_task_specific_info(self):

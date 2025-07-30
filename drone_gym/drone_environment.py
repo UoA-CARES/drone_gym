@@ -8,10 +8,10 @@ from typing import Dict, List, Tuple, Any
 
 class DroneEnvironment(ABC):
     """Base drone environment that handles common drone operations"""
-    def __init__(self, max_velocity: float = 0.5,  step_time: float = 1, max_steps: int = 200):
+    def __init__(self, max_velocity: float = 0.3,  step_time: float = 1, max_steps: int = 200):
 
         self.drone = Drone()
-        self.reset_position = [0, 0, 0.5]
+        self.reset_position = [0, 0, 1]
         self.max_velocity = max_velocity
         self.step_time = step_time
         self.steps = 0
@@ -21,6 +21,10 @@ class DroneEnvironment(ABC):
         self.current_battery = self.drone.get_battery()
         self.battery_threshold = 3.5
         self.observation_space = 6
+
+        # Movement Boundary
+        self.xy_limit = 1.5
+        self.z_limit = 0.5
 
     def reset(self):
         """Reset the drone to initial position and state"""
@@ -38,8 +42,8 @@ class DroneEnvironment(ABC):
         self.drone.set_target_position(self.reset_position[0], self.reset_position[1], self.reset_position[2])
         self.drone.is_flying_event.wait(timeout=15)
         self.drone.start_position_control()
-        self.drone.at_reset_position.wait(timeout=10)
-        time.sleep(2)
+        self.drone.at_reset_position.wait(timeout=12)
+        time.sleep(1)
         self.drone.stop_position_control()
 
         # Reset task-specific state
@@ -50,12 +54,11 @@ class DroneEnvironment(ABC):
     def step(self, action) -> Tuple[np.ndarray, float, bool, bool, Dict]:
         """Execute one step in the environment"""
         # Check that the current drone battery is above the threshold
-        self.current_battery = self.drone.get_battery()
+        # self.current_battery = self.drone.get_battery()
         # if self.current_battery <= self.battery_threshold:
         #     self.drone.land_and_stop()
         self.steps += 1
         print(f"action: {action}")
-        # Parse action - expecting [vx, vy, vz] in range [0, 1]
         if len(action) != 3:
             raise ValueError("Action must be a 3-element array [vx, vy, vz]")
 
@@ -175,6 +178,16 @@ class DroneEnvironment(ABC):
     def set_seed(self):
         """Generate the random seed for the environment"""
         self.seed = np.random.randint(0, 2**32 - 1)
+
+    def _is_in_testing_zone(self):
+        x, y, z = self.drone.get_position()
+        in_height_range = self.z_limit < z < self.z_limit + self.reset_position[2]
+        if abs(x) > self.xy_limit or abs(y) > self.xy_limit:
+            return False
+        elif not in_height_range:
+            return False
+
+        return True
 
     @property
     def max_action_value(self):
