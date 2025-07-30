@@ -23,7 +23,7 @@ class DroneEnvironment(ABC):
         self.observation_space = 6
 
         # Movement Boundary
-        self.xy_limit = 1.5
+        self.xy_limit = 1.25
         self.z_limit = 0.5
 
     def _reset_control_properties(self):
