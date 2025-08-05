@@ -22,7 +22,7 @@ class Drone:
         self.deck_attached_event = Event()
         self.battery_lock = threading.Lock()
         self.battery_log_config = None
-        self.battery_level = None
+        self.battery_level = 5.0
         self.ps = PowerSwitch('radio://0/80/2M/E7E7E7E7E7')
 
         # Drone Events
@@ -50,8 +50,8 @@ class Drone:
         }
         self.last_error = {"x": 0.0, "y": 0.0, "z": 0.0}
         self.integral = {"x": 0.0, "y": 0.0, "z": 0.0}
-        self.max_velocity = 0.5  # Maximum velocity in m/s
-        self.position_deadband = 0.15  # Position error below which velocity will be zero (in meters)
+        self.max_velocity = 0.25  # Maximum velocity in m/s
+        self.position_deadband = 0.10  # Position error below which velocity will be zero (in meters)
 
         # Crazyflie objects - will be initialized in _run
         self.scf = None
@@ -68,7 +68,7 @@ class Drone:
         self.position_lock = threading.Lock()
 
         # Drone Safety
-        self.boundaries = {"x": 2.5, "y": 2.5, "z": 2}
+        self.boundaries = {"x": 2.25, "y": 2.25, "z": 2.0}
         self.safety_thread = threading.Thread(target=self._check_boundaries)
         self.safety_thread.start()
         self.in_boundaries = True
@@ -164,7 +164,7 @@ class Drone:
     # TODO - check for unsuccessful arming attempts
 
     def _initialise_crazyflie(self):
-        """Initialize Crazyflie connection and setup"""
+        """Initialise Crazyflie connection and setup"""
         try:
             cflib.crtp.init_drivers()
             print("[Drone] Connecting to Crazyflie...")
@@ -643,7 +643,6 @@ class Drone:
         with self.battery_lock:
             return self.battery_level
 
-
     def stop(self):
         """
         Fully stop the drone and optionally prepare for a clean restart.
@@ -725,6 +724,14 @@ class Drone:
         self.scf = None
         self.mc  = None
 
+    def pre_battery_change_cleanup(self):
+        self.cf  = None
+        self.scf = None
+        self.mc  = None
+
+        self._reset_shared_state()
+
+
     def reboot_crazyflie(self):
         print("[Drone] Rebooting Crazyflie...")
         time.sleep(0.5)
@@ -736,26 +743,33 @@ if __name__ == "__main__":
     # Testing instructions
 
     drone = Drone()
-    while True:
-        position = drone.get_position()
-        print(position)
+    # while True:
+    #     position = drone.get_position()
+    #     print(position)
+    print("Drone class initiated")
+    drone.take_off()
+    drone.is_flying_event.wait(timeout=15)
 
-    # drone.start_position_control()
-    # time.sleep(2) # Let the controller stabilise first
-    # print("Setting target position")
-    # drone.set_target_position(0, 1.0, 0.5)  # Move 1m forward on x-axis
-    # # Let the position controller run for 15 seconds
-    # time.sleep(15)
+    if not drone.is_flying_event.is_set():
+        print("Drone failed to take off")
+        drone.stop()
+
+    drone.start_position_control()
+    time.sleep(2) # Let the controller stabilise first
+    print("Setting target position")
+    drone.set_target_position(0, 0, 1)  # Move 1m forward on x-axis
+    # Let the position controller run for 15 seconds
+    time.sleep(30)
     # print("post 35 seconds pause")
     # drone.set_target_position(0.0, 0.0, 0.5)  # Return to origin (x,y)
     # time.sleep(15)
     # drone.set_target_position(1.0, 1.0, 0.5)  # Move along y-axis and change height
     # time.sleep(15)
-    # drone.stop_position_control()
-    # # # Land and stop
-    # drone.land()
-    # drone.is_landed_event.wait(timeout=30)
-    # if not drone.is_landed_event.is_set():
-    #     print("Drone is failing to land....")
-    #     print("Forcing stop")
-    # # time.sleep(5)
+    drone.stop_position_control()
+    # # Land and stop
+    drone.land()
+    drone.is_landed_event.wait(timeout=30)
+    if not drone.is_landed_event.is_set():
+        print("Drone is failing to land....")
+        print("Forcing stop")
+    # time.sleep(5)

@@ -8,7 +8,7 @@ from drone_gym.drone_environment import DroneEnvironment
 class DroneNavigationTask(DroneEnvironment):
     """Drone navigation task - reach a target position"""
 
-    def __init__(self, max_velocity: float = 0.30, step_time: float = 0.8, max_steps: int = 1000):
+    def __init__(self, max_velocity: float = 0.25, step_time: float = 0.8, max_steps: int = 1000):
         super().__init__(max_velocity, step_time, max_steps)
 
         # Task-specific parameters
@@ -110,9 +110,14 @@ class DroneNavigationTask(DroneEnvironment):
 
     def _check_if_truncated(self, current_state: Dict[str, Any]) -> bool:
         """Check if episode should be truncated"""
+        if self.need_to_change_battery():
+            self.change_battery()
+            # truncates the current episode -> resets
+            return True
+
         if current_state['steps'] >= self.max_steps:
             return True
-        elif not self._is_in_testing_zone():
+        elif not self.is_in_testing_zone():
             return True
 
         return False

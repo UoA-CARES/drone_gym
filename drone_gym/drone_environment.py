@@ -18,12 +18,13 @@ class DroneEnvironment(ABC):
         self.max_steps = max_steps
         self.seed = 0
 
-        self.current_battery = self.drone.get_battery()
-        self.battery_threshold = 3.5
+        self.battery_threshold = 3.15
+        # self.battery_threshold = 3.45
+
         self.observation_space = 6
 
         # Movement Boundary
-        self.xy_limit = 1.25
+        self.xy_limit = 1.0
         self.z_limit = 0.5
 
     def _reset_control_properties(self):
@@ -43,6 +44,20 @@ class DroneEnvironment(ABC):
         # Check that the drone is not already flying
         #
         print("DRONE RESET")
+
+        # Change battery if battery level is lower than threshold
+        # self.current_battery = self.drone.get_battery()
+        # if self.current_battery is not None:
+        #     if self.current_battery <= self.battery_threshold:
+        #         # stop training for changing battery
+        #         print("Battery changed? y/n")
+        #         battery_changed = input()
+        #         if battery_changed == "y":
+        #             print("Continue training")
+        #         else:
+        #             print("Change battery")
+        #             return
+
         if not self.drone.is_flying_event.is_set():
             print("Control: The drone is already flying")
             self.drone.take_off()
@@ -62,9 +77,12 @@ class DroneEnvironment(ABC):
     def step(self, action) -> Tuple[np.ndarray, float, bool, bool, Dict]:
         """Execute one step in the environment"""
         # Check that the current drone battery is above the threshold
-        # self.current_battery = self.drone.get_battery()
-        # if self.current_battery <= self.battery_threshold:
-        #     self.drone.land_and_stop()
+        self.current_battery = self.drone.get_battery()
+        print(f"Battery level: {self.current_battery}")
+        # if self.current_battery is not None:
+        #     if self.current_battery <= self.battery_threshold:
+        #         self.drone.land()
+
         self.steps += 1
         print(f"action: {action}")
         if len(action) != 3:
@@ -98,7 +116,7 @@ class DroneEnvironment(ABC):
             'current_position': new_pos,
             'previous_position': current_pos,
             'distance_to_target': self._distance_to_target(new_pos),
-            'applied_velocity': [vx, vy, vz],  # Store the denormalized velocities
+            'applied_velocity': [vx, vy, vz],  # Store the denorm
             'normalized_action': action,  # Store the original normalized action
             'in_boundaries': self.drone.in_boundaries,
             'steps': self.steps,
@@ -187,7 +205,7 @@ class DroneEnvironment(ABC):
         """Generate the random seed for the environment"""
         self.seed = np.random.randint(0, 2**32 - 1)
 
-    def _is_in_testing_zone(self):
+    def is_in_testing_zone(self):
         x, y, z = self.drone.get_position()
         in_height_range = self.z_limit < z < self.z_limit + self.reset_position[2]
         if abs(x) > self.xy_limit or abs(y) > self.xy_limit:
@@ -196,6 +214,35 @@ class DroneEnvironment(ABC):
             return False
 
         return True
+
+    def need_to_change_battery(self):
+        self.drone.battery_level = self.drone.get_battery()
+        if self.drone.battery_level <= self.battery_threshold:
+            return True
+        return False
+
+    def change_battery(self):
+        print("[Drone] Beginning battery change operation.")
+        self.drone.land()
+        self.drone.is_landed_event.wait(timeout=15)
+
+        self.drone.pre_battery_change_cleanup()
+
+        time.sleep(2)
+
+        print("Battery changed? y/n")
+        battery_changed = input()
+
+        if battery_changed == "y":
+            print("Continue training")
+
+        # Reinitialise crazyflie parametres
+        self.drone._initialise_crazyflie()
+        self.drone.take_off()
+        self.drone.is_flying_event.wait(timeout=15)
+        print("[Drone] Taking off after battery change successful.")
+        print("[Drone] Battery change operation complete.")
+
 
     @property
     def max_action_value(self):
