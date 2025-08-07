@@ -588,11 +588,6 @@ class Drone:
 
         return velocity
 
-    def test_velocity(self, x, y, z):
-
-        if self.is_flying_event.is_set() and self.mc:
-            self.mc.start_linear_motion(x, y, z)
-
     def set_velocity_vector(self, vx: float, vy: float, vz: float) -> None:
         velocity_command = {
             "velocity_vector": {
@@ -612,11 +607,6 @@ class Drone:
             raise ValueError("Velocity vector must have exactly 3 elements [vx, vy, vz]")
 
         self.set_velocity_vector(velocity_vector[0], velocity_vector[1], velocity_vector[2])
-
-    def stop_velocity(self) -> None:
-        """Stop the drone by setting all velocities to zero"""
-
-        self.set_velocity_vector(0.0, 0.0, 0.0)
 
     def set_target_position(self, x: float, y: float, z: float) -> None:
         """Set target position with boundary checking"""
@@ -662,34 +652,10 @@ class Drone:
             except queue.Empty:
                 break
 
-    def set_pid_gains(self, axis, kp=None, ki=None, kd=None):
-        """Update PID gains for a specific axis"""
-        axes = ["x", "y", "z"] if axis == "all" else [axis]
-
-        for ax in axes:
-            if ax not in self.gains:
-                print(f"[Drone] Invalid axis '{ax}'. Use 'x', 'y', 'z', or 'all'")
-                continue
-
-            if kp is not None:
-                self.gains[ax]["kp"] = kp
-            if ki is not None:
-                self.gains[ax]["ki"] = ki
-            if kd is not None:
-                self.gains[ax]["kd"] = kd
-
-            print(f"[Drone] Updated PID gains for {ax}-axis: kp={self.gains[ax]['kp']}, "
-                  f"ki={self.gains[ax]['ki']}, kd={self.gains[ax]['kd']}")
-
     def set_max_velocity(self, velocity):
         """Set the maximum velocity limit for the contset_velocity_vectorroller"""
         self.max_velocity = float(velocity)
         print(f"[Drone] Maximum velocity set to {self.max_velocity} m/s")
-
-    def set_deadband(self, value):
-        """Set position error deadband"""
-        self.position_deadband = float(value)
-        print(f"[Drone] Position deadband set to {self.position_deadband} meters")
 
     def _setup_battery_logging(self):
 
@@ -823,14 +789,6 @@ class Drone:
         self.mc  = None
 
         self._reset_shared_state()
-
-
-    def reboot_crazyflie(self):
-        print("[Drone] Rebooting Crazyflie...")
-        time.sleep(0.5)
-        self.ps.stm_power_down()
-        time.sleep(1)
-        self.ps.stm_power_up()
 
 if __name__ == "__main__":
     # Testing instructions
