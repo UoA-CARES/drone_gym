@@ -709,7 +709,7 @@ class Drone:
         with self.velocity_lock:
             self.velocity = 0.0
         with self.battery_lock:
-            self.battery_level = None
+            self.battery_level = 5.0
         self.in_boundaries = True
 
     def _final_cleanup(self):

@@ -29,8 +29,9 @@ class DroneEnvironment(ABC):
 
     def _reset_control_properties(self):
         self.drone.clear_command_queue()
-        self.last_error = {"x": 0.0, "y": 0.0, "z": 0.0}
-        self.integral = {"x": 0.0, "y": 0.0, "z": 0.0}
+        time.sleep(0.5)  # Allow any in-flight commands to be processed
+        self.drone.last_error = {"x": 0.0, "y": 0.0, "z": 0.0}
+        self.drone.integral = {"x": 0.0, "y": 0.0, "z": 0.0}
 
     def reset(self):
         """Reset the drone to initial position and state"""
@@ -45,30 +46,23 @@ class DroneEnvironment(ABC):
         #
         print("DRONE RESET")
 
-        # Change battery if battery level is lower than threshold
-        # self.current_battery = self.drone.get_battery()
-        # if self.current_battery is not None:
-        #     if self.current_battery <= self.battery_threshold:
-        #         # stop training for changing battery
-        #         print("Battery changed? y/n")
-        #         battery_changed = input()
-        #         if battery_changed == "y":
-        #             print("Continue training")
-        #         else:
-        #             print("Change battery")
-        #             return
-
         if not self.drone.is_flying_event.is_set():
             print("Control: The drone is already flying")
             self.drone.take_off()
 
-        self.drone.set_target_position(self.reset_position[0], self.reset_position[1], self.reset_position[2])
+        # Ensure drone is flying before setting target position
         self.drone.is_flying_event.wait(timeout=15)
+
+        self.drone.set_target_position(self.reset_position[0], self.reset_position[1], self.reset_position[2])
+        time.sleep(0.1)  # Allow target position to be set
         self.drone.start_position_control()
+
+        # Wait for position to be reached
         self.drone.at_reset_position.wait(timeout=12)
         time.sleep(1)
         self.drone.stop_position_control()
         self.drone.clear_reset_position_event()
+
         # Reset task-specific state
         self._reset_task_state()
 
