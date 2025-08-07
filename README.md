@@ -1,2 +1,2 @@
 # drone_gym
-Gym for Reinforceemnt Learning control of Drones
+Gym for Reinforcement Learning control of Drones

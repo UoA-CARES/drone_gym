@@ -8,14 +8,13 @@ import math
 from random import randint
 import queue
 from threading import Thread
-import matplotlib.pyplot as plt
 
 us_start = int(time.time() * 1000 * 1000)
 
 def micros():
     us_now = int(time.time() * 1000 * 1000)
     return int(us_now - us_start)
-    
+
 
 def micros():
     us_now = int(time.time() * 1000 * 1000)
@@ -29,7 +28,7 @@ class ViconInterface():
         self.udp_port = udp_port
         self.udp_ip = udp_ip
 
-        # Bind the listener 
+        # Bind the listener
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.sock.bind((udp_ip, udp_port))
 
@@ -49,7 +48,7 @@ class ViconInterface():
     def end(self):
         self.run_interface = False
         self.sock.close()
-        
+
     def main_loop(self):
         try:
             while self.run_interface:
@@ -92,8 +91,8 @@ class ViconInterface():
                         yaw = (data[5]) # DEPRECATED: yaw inverted
                         roll = data[3]
                         pitch = data[4] # DEPRECATED: pitch inverted
-                        
-                        if name in self.tracked_object:    
+
+                        if name in self.tracked_object:
                             x_vel = (x - self.tracked_object[name][0])/((datetime.now()-self.tracked_object[name][12]).total_seconds())
                             y_vel = (y - self.tracked_object[name][1])/((datetime.now()-self.tracked_object[name][12]).total_seconds())
                             z_vel = (z - self.tracked_object[name][2])/((datetime.now()-self.tracked_object[name][12]).total_seconds())
@@ -108,10 +107,10 @@ class ViconInterface():
                             roll_rate = 0
                             pitch_rate = 0
                             yaw_rate = 0
-                            
+
                         self.have_recv_packet = True
 
-                        # Store in public variable 
+                        # Store in public variable
                         self.tracked_object[name] = [x, y, z, roll, pitch, yaw, x_vel, y_vel, z_vel, roll_rate, pitch_rate, yaw_rate, datetime.now()]
 
                         #print("p{:.3f},{:.3f},{:.3f},{:.3f},{:.3f},{:.3f}".format(ned_x, ned_y, ned_z, ned_roll, ned_pitch, ned_yaw))
@@ -119,19 +118,19 @@ class ViconInterface():
             pass
         finally:
             self.sock.close()
-        
+
     def getPos(self, name):
         try:
             return self.tracked_object[name][0:6]
         except Exception as e:
             return None
-        
+
     def getVel(self, name):
         try:
             return self.tracked_object[name][6:12]
         except Exception as e:
             return None
-        
+
 
 if __name__ == "__main__":
 
