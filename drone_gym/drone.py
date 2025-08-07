@@ -63,34 +63,89 @@ class Drone:
         self.position = {"x": 0.0, "y": 0.0, "z": 0.0}
         self.drone_name = "NewCrazyflie"
         self.vicon = vi()
-        self.position_thread = threading.Thread(target=self._update_position)
-        self.position_thread.start()
+        self.position_thread = None
         self.position_lock = threading.Lock()
 
         # Drone Safety
         self.boundaries = {"x": 2.25, "y": 2.25, "z": 2.0}
-        self.safety_thread = threading.Thread(target=self._check_boundaries)
-        self.safety_thread.start()
+        self.safety_thread = None
         self.in_boundaries = True
         self.emergency_event = Event()
 
         # Objective related
         self.target_position = {"x": 0.0, "y": 0.0, "z": 0.0}
 
-        # Start the main drone thread
+        # Thread coordination events
+        self.hardware_ready_event = Event()
+        self.position_ready_event = Event()
+
+        # Start threads in coordinated sequence
         self.thread = threading.Thread(target=self._run)
+        self._start_threads_coordinated()
+
+    def _start_threads_coordinated(self):
+
+        print("[Drone] Starting threads with")
+
+        # Start main thread first (initialises hardware)
         self.thread.start()
+        print("[Drone] Main thread started, waiting for hardware initialization...")
+
+        # Wait for hardware to be ready
+        if not self.hardware_ready_event.wait(timeout=15):
+            print("[Drone] ERROR: Hardware failed to initialize in time")
+            self.set_running(False)
+            return
+
+        print("[Drone] Hardware ready, starting position thread...")
+
+        # Start position tracking thread
+        self.position_thread = threading.Thread(target=self._update_position)
+        self.position_thread.start()
+
+        # Wait for position system to stabilize
+        if not self.position_ready_event.wait(timeout=10):
+            print("[Drone] WARNING: Position system may not be ready")
+        else:
+            print("[Drone] Position system ready, starting safety monitoring...")
+
+        # Start safety monitoring last
+        self.safety_thread = threading.Thread(target=self._check_boundaries)
+        self.safety_thread.start()
+
+        print("[Drone] All threads started successfully with coordination")
 
     def _check_boundaries(self):
-        time.sleep(7)
+        """Monitor drone boundaries with safety checks for valid position data"""
+        print("[Drone] Boundary monitoring thread started")
+
+        # Wait for position system to be ready before checking boundaries
+        if not self.position_ready_event.wait(timeout=15):
+            print("[Drone] WARNING: Starting boundary check without confirmed position data")
+
+        # Additional startup delay to let system stabilize
+        time.sleep(2)
+        print("[Drone] Boundary checking now active")
+
         while self.is_running():
             try:
                 if self.emergency_event.is_set():
                     break
 
+                # Safety check: only monitor boundaries if position system is ready
+                if not self.position_ready_event.is_set():
+                    time.sleep(0.1)
+                    continue
+
                 # Check if position is within boundaries for each axis
                 with self.position_lock:
                     current_pos = self.position.copy()
+
+                    # Additional safety: skip check if position is clearly invalid (all zeros)
+                    if current_pos["x"] == 0.0 and current_pos["y"] == 0.0 and current_pos["z"] == 0.0:
+                        time.sleep(0.01)
+                        continue
+
                     x_in_bounds = self.boundaries["x"] >= abs(current_pos["x"])
                     y_in_bounds = self.boundaries["y"] >= abs(current_pos["y"])
                     z_in_bounds = self.boundaries["z"] >= abs(current_pos["z"])
@@ -100,12 +155,18 @@ class Drone:
 
                 if not in_bounds:
                     self.in_boundaries = False
+                    print(f"[Drone] BOUNDARY VIOLATION: Position {current_pos} exceeds limits {self.boundaries}")
                     self._execute_emergency_stop()
                     break
+                else:
+                    self.in_boundaries = True
+
                 time.sleep(0.01)
             except Exception as e:
                 print(f"[Drone] Error in boundary checking: {str(e)}")
                 time.sleep(0.1)
+
+        print("[Drone] Boundary monitoring thread stopped")
 
     def _execute_emergency_stop(self):
 
@@ -137,29 +198,55 @@ class Drone:
             self.running = value
 
     def _update_position(self):
-        # It takes some time for the vicon to get values
-        vicon_thread = threading.Thread(target=self.vicon.main_loop)
-        vicon_thread.start()
-        time.sleep(4)
-        while self.is_running() and not self.emergency_event.is_set():
-            try:
-                position_array = self.vicon.getPos(self.drone_name)
-                if position_array is not None:
-                    with self.position_lock:
-                        self.position = {
-                            "x": position_array[0],
-                            "y": position_array[1],
-                            "z": position_array[2]
-                        }
-                else:
-                    print("Drone position is not being updated")
+        """Update position from Vicon with proper initialization signaling"""
+        vicon_thread = None
+        try:
+            # It takes some time for the vicon to get values
+            vicon_thread = threading.Thread(target=self.vicon.main_loop)
+            vicon_thread.start()
+            print("[Drone] Vicon thread started, waiting for position data...")
+            time.sleep(4)
 
-                time.sleep(0.0166666)  # 60 Hz
-            except Exception as e:
-                print(f"[Drone] Error: Position data could not be parsed correctly - {str(e)}")
-        # Signal the vicon thread to join
-        self.vicon.run_interface = False
-        vicon_thread.join()
+            # Wait for first valid position reading before signaling ready
+            position_ready = False
+            ready_timeout = time.time() + 6  # 6 second timeout for first position
+
+            while self.is_running() and not self.emergency_event.is_set():
+                try:
+                    position_array = self.vicon.getPos(self.drone_name)
+                    if position_array is not None:
+                        with self.position_lock:
+                            self.position = {
+                                "x": position_array[0],
+                                "y": position_array[1],
+                                "z": position_array[2]
+                            }
+
+                        # Signal ready on first successful position read
+                        if not position_ready:
+                            self.position_ready_event.set()
+                            position_ready = True
+                            print(f"[Drone] First position acquired: {self.position}")
+
+                    else:
+                        print("Drone position is not being updated")
+                        # If timeout reached without position, signal anyway to prevent deadlock
+                        if not position_ready and time.time() > ready_timeout:
+                            print("[Drone] WARNING: Position timeout - signaling ready anyway")
+                            self.position_ready_event.set()
+                            position_ready = True
+
+                    time.sleep(0.0166666)  # 60 Hz
+                except Exception as e:
+                    print(f"[Drone] Error: Position data could not be parsed correctly - {str(e)}")
+
+        except Exception as e:
+            print(f"[Drone] Critical error in position thread: {str(e)}")
+        finally:
+            # Signal the vicon thread to join
+            self.vicon.run_interface = False
+            if vicon_thread is not None:
+                vicon_thread.join()
 
     # TODO - check for unsuccessful arming attempts
 
@@ -193,6 +280,10 @@ class Drone:
             print("[Crazyflie] Crazyflie armed.")
 
             self._setup_battery_logging()
+
+            # Signal that hardware is ready
+            self.hardware_ready_event.set()
+            print("[Drone] Hardware initialisation complete - signaling ready")
             return True
 
         except Exception as e:
@@ -203,6 +294,8 @@ class Drone:
         """Main drone control loop"""
         if not self._initialise_crazyflie():
             self.set_running(False)
+            print("[Drone] Hardware Initialisation failed...")
+            self.hardware_ready_event.set() # Even though the hardware did not initialise set to prevent deadlock
             return
 
         try:
@@ -672,9 +765,14 @@ class Drone:
 
     def _join_all_threads(self):
         """Wait until every managed thread has exited."""
-        for name, thr in (("position", self.position_thread),
-                ("controller", self.controller_thread),
-                ("main", self.thread)):
+        threads_to_join = [
+            ("position", self.position_thread),
+            ("safety", self.safety_thread),
+            ("controller", self.controller_thread),
+            ("main", self.thread)
+        ]
+
+        for name, thr in threads_to_join:
             if thr and thr.is_alive():
                 if name == "main":
                     thr.join(timeout=5.0)
@@ -715,11 +813,6 @@ class Drone:
     def _final_cleanup(self):
         """Delete big objects so garbage collection can reclaim them."""
         # These will be re-created if the user ever calls start() again
-
-        # Join the safety thread last
-
-        self.safety_thread.join()
-
         self.cf  = None
         self.scf = None
         self.mc  = None
