@@ -2,7 +2,6 @@ import time
 
 from drone_gym.drone import Drone
 
-
 def test_delay_time():
 
     drone = Drone()
@@ -41,5 +40,30 @@ def test_position_control():
     drone.is_landed_event.wait(timeout=15)
     drone.stop()
 
+def test_velocity_vector():
+    drone = Drone()
+    drone.take_off()
+    drone.is_flying_event.wait(timeout=15)
+
+    drone.set_velocity_vector(0.20, -0.25, 0.25)
+    time.sleep(0.05)
+    drone.set_velocity_vector(0.21, -0.25, 0.25)
+    time.sleep(0.05)
+    drone.set_velocity_vector(0.21, -0.25, 0.25)
+    time.sleep(0.05)
+    drone.set_velocity_vector(0.24, -0.25, 0.25)
+    time.sleep(0.05)
+    drone.set_velocity_vector(0.15, -0.25, -0.25)
+    time.sleep(4)
+    drone.start_position_control()
+    drone.set_target_position(0, 0, 0.5)
+    drone.at_reset_position.wait(timeout = 30)
+    drone.stop_position_control()
+
+    drone.land()
+    drone.is_landed_event.wait(timeout=15)
+    drone.stop()
+
+
 if __name__ == "__main__":
-    test_position_control()
+    test_velocity_vector()
