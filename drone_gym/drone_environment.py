@@ -29,7 +29,7 @@ class DroneEnvironment(ABC):
 
     def _reset_control_properties(self):
         self.drone.clear_command_queue()
-        time.sleep(0.5)  # Allow any in-flight commands to be processed
+        time.sleep(0.1)  # Allow any in-flight commands to be processed
         self.drone.last_error = {"x": 0.0, "y": 0.0, "z": 0.0}
         self.drone.integral = {"x": 0.0, "y": 0.0, "z": 0.0}
 
@@ -40,7 +40,7 @@ class DroneEnvironment(ABC):
 
         # Stop the current velocity
         self.drone.set_velocity_vector(0, 0, 0)
-        time.sleep(0.5)
+        time.sleep(2.5)
         self.steps = 0
         # Check that the drone is not already flying
         #
