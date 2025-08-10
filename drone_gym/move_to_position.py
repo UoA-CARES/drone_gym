@@ -28,12 +28,17 @@ class DroneNavigationTask(DroneEnvironment):
 
     def _reset_task_state(self):
         """Reset task-specific state variables"""
+        print(f"[DEBUG] MoveToPosition: _reset_task_state() called")
+        print(f"[DEBUG] MoveToPosition: Previous done state: {self.done}")
+        print(f"[DEBUG] MoveToPosition: Previous prior_state: {self.prior_state}")
         self.done = False
         self.prior_state = None
+        print(f"[DEBUG] MoveToPosition: Task state reset - done: {self.done}, prior_state: {self.prior_state}")
 
     def _get_state(self) -> np.ndarray:
         """Get the current state representation for the navigation task"""
         position = self.drone.get_position()
+        print(f"[DEBUG] MoveToPosition: _get_state() - Current position: {position}")
 
         # State includes: current position, target position, distance to target, normalized
         state = [
@@ -44,7 +49,9 @@ class DroneNavigationTask(DroneEnvironment):
             self.steps / self.max_steps  # Normalized step count
         ]
 
-        return np.array(state, dtype=np.float32)
+        state_array = np.array(state, dtype=np.float32)
+        print(f"[DEBUG] MoveToPosition: Generated state vector: {state_array}")
+        return state_array
 
     def get_overlay_info(self) -> Dict[str, Any]:
         """Get task-specific state information"""
@@ -68,6 +75,7 @@ class DroneNavigationTask(DroneEnvironment):
         """Calculate reward for navigation task"""
         position = current_state['position']
         distance = self._distance_to_target(position)
+        print(f"[DEBUG] MoveToPosition: Calculating reward. Distance to target: {distance}")
 
         # Base reward is negative distance (closer = higher reward)
         # currently this reward will never be positive and is too low. assuming the max distance is (3,3,3) reward = -5.2.
@@ -84,42 +92,54 @@ class DroneNavigationTask(DroneEnvironment):
         # Bonus for reaching target
         if distance < self.distance_threshold:
             reward += self.success_reward
+            print(f"[DEBUG] MoveToPosition: Target reached! Adding success reward: {self.success_reward}")
 
         # TODO: Penalty for going close to out of bounds
         if not current_state['in_boundaries']:
             reward += self.out_of_bounds_penalty
+            print(f"[DEBUG] MoveToPosition: Out of bounds! Adding penalty: {self.out_of_bounds_penalty}")
 
+        print(f"[DEBUG] MoveToPosition: Final reward: {reward}")
         return reward
 
     def _check_if_done(self, current_state: Dict[str, Any]) -> bool:
         """Check if navigation task is complete"""
         distance = current_state['distance_to_target']
         position = current_state['position']
+        print(f"[DEBUG] MoveToPosition: Checking if done. Distance: {distance}, Position: {position}")
 
         # Success condition
         if distance < self.distance_threshold:
             self.done = True
+            print("[DEBUG] MoveToPosition: Done -> Target reached.")
             return True
 
         # Failure conditions
         if not current_state['in_boundaries'] or position[2] <= 0:
             self.done = True
+            print("[DEBUG] MoveToPosition: Done -> Out of bounds or crashed.")
             return True
 
+        print("[DEBUG] MoveToPosition: Not done.")
         return False
 
     def _check_if_truncated(self, current_state: Dict[str, Any]) -> bool:
         """Check if episode should be truncated"""
+        print(f"[DEBUG] MoveToPosition: Checking if truncated. Steps: {current_state['steps']}, Max steps: {self.max_steps}")
         if self.need_to_change_battery():
             self.change_battery()
             # truncates the current episode -> resets
+            print("[DEBUG] MoveToPosition: Truncated -> Battery needs changing.")
             return True
 
         if current_state['steps'] >= self.max_steps:
+            print("[DEBUG] MoveToPosition: Truncated -> Max steps reached.")
             return True
         elif not self.is_in_testing_zone():
+            print("[DEBUG] MoveToPosition: Truncated -> Outside testing zone.")
             return True
 
+        print("[DEBUG] MoveToPosition: Not truncated.")
         return False
 
     # def _is_in_testing_zone(self):
@@ -136,12 +156,17 @@ class DroneNavigationTask(DroneEnvironment):
 
 
     def sample_action(self, safety=True):
+        print(f"[DEBUG] MoveToPosition: sample_action() called with safety={safety}")
         if safety:
             x, y , z= np.random.uniform(0, 1, size=(3,))
-            print("Sampled action:", x, y)
+            print(f"[DEBUG] MoveToPosition: Sampled action (safe): [{x:.3f}, {y:.3f}, {z:.3f}]")
             # z value is 0.5 which will be normalised to 0
-            return np.array([x, y, z])
-        return np.random.uniform(0, 1, size=(3,))
+            action = np.array([x, y, z])
+            print(f"[DEBUG] MoveToPosition: Returning safe action: {action}")
+            return action
+        unsafe_action = np.random.uniform(0, 1, size=(3,))
+        print(f"[DEBUG] MoveToPosition: Returning unsafe action: {unsafe_action}")
+        return unsafe_action
 
     def _render_task_specific_info(self):
         """Render navigation task specific information"""

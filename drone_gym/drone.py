@@ -307,7 +307,9 @@ class Drone:
                         self.is_landed_event.wait(timeout = 10)
                         break
                     # Get command with timeout
+                    print(f"[DEBUG] Drone: Waiting for command from queue (size: {self.command_queue.qsize()})")
                     command = self.command_queue.get(timeout=0.1)
+                    print(f"[DEBUG] Drone: Got command from queue: {command}")
                     if command == "exit":
                         self.set_running(False)
                         print("[Drone] Shutting down.")
@@ -378,9 +380,13 @@ class Drone:
 
     def _handle_command(self, command):
         """Handle different types of commands"""
+        print(f"[DEBUG] Drone: _handle_command() called with: {command}")
+        print(f"[DEBUG] Drone: Current flying status: {self.is_flying_event.is_set()}")
+        print(f"[DEBUG] Drone: Motion commander available: {self.mc is not None}")
+
         # Handle string commands first
         if not isinstance(command, dict):
-            print(f"[Drone] String command received: {command}")
+            print(f"[DEBUG] Drone: String command received: {command}")
             return
 
         # From here on, we know command is a dictionary
@@ -388,7 +394,7 @@ class Drone:
             if "velocity" in command:
                 with self.velocity_lock:
                     self.velocity = command["velocity"]
-                print(f"[Drone] Velocity set to: {self.velocity}")
+                print(f"[DEBUG] Drone: Velocity set to: {self.velocity}")
 
             elif "position" in command:
                 # This is a position command
@@ -397,53 +403,68 @@ class Drone:
                     y = command["position"].get("y", self.position["y"])
                     z = command["position"].get("z", self.position["z"])
                     self.target_position = {"x": x, "y": y, "z": z}
-                    print(f"[Drone] Target position set: x={x}, y={y}, z={z}")
+                    print(f"[DEBUG] Drone: Target position set: x={x}, y={y}, z={z}")
 
             elif "take_off" in command:
                 if not self.is_flying_event.is_set() and self.armed:
-                    print("[Drone] Processing the take off command")
+                    print("[DEBUG] Drone: Processing the take off command")
                     self.mc = MotionCommander(self.scf, default_height=self.default_height)
                     self.mc.take_off()
                     self.is_landed_event.clear()
                     self.is_flying_event.set()
-                    print("[Drone] Take-off successful")
+                    print("[DEBUG] Drone: Take-off successful")
                 else:
-                    print("[Drone] Cannot take off - already flying or not armed")
+                    print("[DEBUG] Drone: Cannot take off - already flying or not armed")
 
             elif "land" in command:
                 if self.is_flying_event.is_set() and self.mc:
-                    print("[Drone] Landing drone")
+                    print("[DEBUG] Drone: Landing drone")
                     self.mc.land()
                     self.is_landed_event.set()
                     self.is_flying_event.clear()
-                    print("[Drone] Landing successful")
+                    print("[DEBUG] Drone: Landing successful")
                 else:
-                    print("[Drone] Cannot land - not currently flying")
+                    print("[DEBUG] Drone: Cannot land - not currently flying")
             elif "move" in command:
                 if self.is_flying_event.is_set() and self.mc:
                     self.mc.start_linear_motion(0,0,0)
 
             elif "velocity_vector" in command:
                 # Handle velocity vector command
+                print("[DEBUG] Drone: Processing velocity_vector command")
+                print(f"[DEBUG] Drone: Flight check - is_flying: {self.is_flying_event.is_set()}, mc available: {self.mc is not None}")
+                print(f"[DEBUG] Drone: Controller state - active: {self.controller_active}")
+
                 if self.is_flying_event.is_set() and self.mc:
                     vel_vector = command["velocity_vector"]
-                    vx = vel_vector.get("x", 0.0)
-                    vy = vel_vector.get("y", 0.0)
-                    vz = vel_vector.get("z", 0.0)
+                    vx_raw = vel_vector.get("x", 0.0)
+                    vy_raw = vel_vector.get("y", 0.0)
+                    vz_raw = vel_vector.get("z", 0.0)
+                    print(f"[DEBUG] Drone: Raw velocity command: vx={vx_raw}, vy={vy_raw}, vz={vz_raw}")
 
                     # Apply velocity limits for safety
                     max_vel = getattr(self, 'max_velocity', 0.5)
-                    vx = max(-max_vel, min(max_vel, vx))
-                    vy = max(-max_vel, min(max_vel, vy))
-                    vz = max(-max_vel, min(max_vel, vz))
+                    print(f"[DEBUG] Drone: Max velocity limit: {max_vel}")
+                    vx = max(-max_vel, min(max_vel, vx_raw))
+                    vy = max(-max_vel, min(max_vel, vy_raw))
+                    vz = max(-max_vel, min(max_vel, vz_raw))
+                    print(f"[DEBUG] Drone: Clamped velocity: vx={vx:.3f}, vy={vy:.3f}, vz={vz:.3f}")
+
+                    # Check if velocity was clamped
+                    if vx != vx_raw or vy != vy_raw or vz != vz_raw:
+                        print(f"[WARNING] Drone: Velocity command was clamped from [{vx_raw:.3f}, {vy_raw:.3f}, {vz_raw:.3f}] to [{vx:.3f}, {vy:.3f}, {vz:.3f}]")
 
                     self.mc.start_linear_motion(vx, vy, vz)
-                    print(f"[Drone] Velocity vector set: vx={vx:.2f}, vy={vy:.2f}, vz={vz:.2f}")
+                    print(f"[DEBUG] Drone: Velocity vector successfully set: vx={vx:.2f}, vy={vy:.2f}, vz={vz:.2f}")
                 else:
-                    print("[Drone] Cannot set velocity - drone not flying or motion commander not available")
+                    print(f"[ERROR] Drone: Cannot set velocity - is_flying: {self.is_flying_event.is_set()}, mc available: {self.mc is not None}")
+                    if not self.is_flying_event.is_set():
+                        print("[ERROR] Drone: Drone is not flying - velocity command ignored")
+                    if self.mc is None:
+                        print("[ERROR] Drone: Motion commander not available - velocity command ignored")
 
             else:
-                print(f"[Drone] Unknown command: {command}")
+                print(f"[DEBUG] Drone: Unknown command: {command}")
 
         except Exception as e:
             print(f"[Drone] Error handling command {command}: {str(e)}")
@@ -470,40 +491,58 @@ class Drone:
 
     def start_position_control(self):
         """Start the position controller thread for automatic position tracking"""
+        print("[DEBUG] Drone: start_position_control() called")
+        print(f"[DEBUG] Drone: Controller currently active: {self.controller_active}")
+        print(f"[DEBUG] Drone: Current flying status: {self.is_flying_event.is_set()}")
+        print(f"[DEBUG] Drone: Target position: {self.target_position}")
+
         if not self.controller_active:
             self.controller_active = True
             self.controller_thread = threading.Thread(target=self._position_control_loop)
             self.controller_thread.start()
-            print("[Drone] Position controller started")
+            print("[DEBUG] Drone: Position controller thread started")
         else:
-            print("[Drone] Position controller already active")
+            print("[DEBUG] Drone: Position controller already active")
 
     def stop_position_control(self):
         """Stop the position controller thread"""
+        print("[DEBUG] Drone: stop_position_control() called")
+        print(f"[DEBUG] Drone: Controller currently active: {self.controller_active}")
+
         if self.controller_active:
+            print("[DEBUG] Drone: Stopping position controller...")
             self.controller_active = False
             if self.controller_thread and self.controller_thread.is_alive():
+                print("[DEBUG] Drone: Waiting for controller thread to join...")
                 self.controller_thread.join()
-            print("[Drone] Position controller stopped")
+                print("[DEBUG] Drone: Controller thread joined successfully")
+            print("[DEBUG] Drone: Position controller stopped")
         else:
-            print("[Drone] Position controller already stopped")
+            print("[DEBUG] Drone: Position controller already stopped")
 
     def _position_control_loop(self, first_instance = 0, debugging = True):
         """Main control loop for position-based velocity control"""
         control_rate = 0.05  # Control rate in seconds (20hz)
         error_threshold = 0.15  # Error threshold to consider position reached (meters)
+        loop_count = 0
 
-        print("[Drone] Position control loop started")
+        print(f"[DEBUG] Drone: Position control loop started with control_rate={control_rate}, error_threshold={error_threshold}")
+        print(f"[DEBUG] Drone: Initial conditions - running: {self.is_running()}, controller_active: {self.controller_active}, emergency: {self.emergency_event.is_set()}")
+
         while self.is_running() and self.controller_active and not self.emergency_event.is_set():
+            loop_count += 1
+            print(f"[DEBUG] Drone: Control loop iteration {loop_count}")
             try:
                 # Get current and target positions
                 current_pos = self.get_position_dict()
                 with self.position_lock:
                     target_pos = self.target_position.copy()
 
-                if first_instance == 0:
-                    print(f"target position = {self.target_position.copy()}")
-                    print(f"current position = {self.get_position_dict()}")
+                if first_instance == 0 or loop_count <= 3:
+                    print(f"[DEBUG] Drone: Target position = {self.target_position.copy()}")
+                    print(f"[DEBUG] Drone: Current position = {self.get_position_dict()}")
+                    print(f"[DEBUG] Drone: Position control is active: {self.controller_active}")
+                    print(f"[DEBUG] Drone: Drone is flying: {self.is_flying_event.is_set()}")
 
                 # Calculate position error
                 error = {
@@ -512,8 +551,9 @@ class Drone:
                     "z": target_pos["z"] - current_pos["z"]
                 }
 
-                if debugging:
-                    print(f"[Controller]: Position({current_pos['x']}, {current_pos['y']}, {current_pos['z']})")
+                if debugging and (loop_count <= 5 or loop_count % 10 == 0):  # Reduce spam
+                    print(f"[DEBUG] [Controller] Loop {loop_count}: Position({current_pos['x']:.3f}, {current_pos['y']:.3f}, {current_pos['z']:.3f})")
+                    print(f"[DEBUG] [Controller] Loop {loop_count}: Error({error['x']:.3f}, {error['y']:.3f}, {error['z']:.3f})")
 
                 # Calculate error magnitude to determine if position is reached
                 error_magnitude = (abs(error["x"])**2 + abs(error["y"])**2 + abs(error["z"]**2))**0.5
@@ -522,22 +562,30 @@ class Drone:
                 # print(self.get_battery())
 
                 if error_magnitude < error_threshold :
-                    print(f"[Controller] Position reached! Error: {error_magnitude:.2f}m")
+                    print("[DEBUG] [Controller] Position reached! Error: {error_magnitude:.4f}m (threshold: {error_threshold})")
+                    print("[DEBUG] [Controller] Setting at_reset_position event")
                     self.at_reset_position.set()
                 # Calculate velocity command using PID control
                 velocity = self._calculate_pid_velocity(error, control_rate)
 
                 # Apply velocity command if flying
                 if self.is_flying_event.is_set() and self.mc:
+                    print(f"[DEBUG] [Controller] Loop {loop_count}: Applying velocity command to motion commander")
                     self.mc.start_linear_motion(
                         velocity["x"],
                         velocity["y"],
                         velocity["z"]
                     )
+                    print(f"[DEBUG] [Controller] Loop {loop_count}: Velocity command applied successfully")
 
-                    if debugging:
-                        print(f"[Controller] Pos error: ({error['x']:.2f}, {error['y']:.2f}, {error['z']:.2f}) → "
-                              f"Vel: ({velocity['x']:.2f}, {velocity['y']:.2f}, {velocity['z']:.2f})")
+                    if debugging and (loop_count <= 5 or loop_count % 10 == 0):
+                        print(f"[DEBUG] [Controller] Loop {loop_count}: Pos error: ({error['x']:.3f}, {error['y']:.3f}, {error['z']:.3f}) → "
+                              f"Vel: ({velocity['x']:.3f}, {velocity['y']:.3f}, {velocity['z']:.3f})")
+                else:
+                    print(f"[ERROR] [Controller] Loop {loop_count}: Cannot apply velocity - flying: {self.is_flying_event.is_set()}, mc: {self.mc is not None}")
+                    if not self.is_flying_event.is_set():
+                        print("[ERROR] [Controller] Drone not flying - breaking control loop")
+                        break
 
                 # Sleep to maintain control rate
                 time.sleep(control_rate)
@@ -546,7 +594,7 @@ class Drone:
                 print(f"[Drone] Error in position control loop: {str(e)}")
                 time.sleep(0.5)  # Sleep longer on error
 
-        print("[Drone] Position control loop stopped")
+        print("[DEBUG] Drone: Position control loop stopped")
 
     def clear_reset_position_event(self):
         self.at_reset_position.clear()
@@ -589,6 +637,10 @@ class Drone:
         return velocity
 
     def set_velocity_vector(self, vx: float, vy: float, vz: float) -> None:
+        print(f"[DEBUG] Drone: set_velocity_vector() called with vx={vx:.3f}, vy={vy:.3f}, vz={vz:.3f}")
+        print(f"[DEBUG] Drone: Current queue size before adding command: {self.command_queue.qsize()}")
+        print(f"[DEBUG] Drone: Current position: {self.get_position()}")
+
         velocity_command = {
             "velocity_vector": {
                 "x": vx,
@@ -597,8 +649,10 @@ class Drone:
             }
         }
 
+        print(f"[DEBUG] Drone: Constructed velocity command: {velocity_command}")
         self.send_command(velocity_command)
-        print(f"[Drone] Velocity vector command sent: vx={vx}, vy={vy}, vz={vz}")
+        print(f"[DEBUG] Drone: Velocity vector command queued: vx={vx:.3f}, vy={vy:.3f}, vz={vz:.3f}")
+        print(f"[DEBUG] Drone: Queue size after adding command: {self.command_queue.qsize()}")
 
     def set_velocity(self, velocity_vector) -> None:
         """Set velocity vector from a list or array [vx, vy, vz]"""
@@ -642,15 +696,23 @@ class Drone:
 
     def send_command(self, command):
         """Send command to the command queue"""
+        print(f"[DEBUG] Drone: send_command() putting command in queue: {command}")
+        print(f"[DEBUG] Drone: Queue size before put: {self.command_queue.qsize()}")
         self.command_queue.put(command)
+        print(f"[DEBUG] Drone: Command queued. Queue size after put: {self.command_queue.qsize()}")
 
     def clear_command_queue(self):
         """Clear all pending commands from the command queue."""
+        print("[DEBUG] Drone: clear_command_queue() called")
+        cleared_count = 0
         while True:
             try:
-                self.command_queue.get_nowait()
+                cmd = self.command_queue.get_nowait()
+                print(f"[DEBUG] Drone: Cleared command: {cmd}")
+                cleared_count += 1
             except queue.Empty:
                 break
+        print(f"[DEBUG] Drone: Cleared {cleared_count} commands from queue")
 
     def set_max_velocity(self, velocity):
         """Set the maximum velocity limit for the contset_velocity_vectorroller"""

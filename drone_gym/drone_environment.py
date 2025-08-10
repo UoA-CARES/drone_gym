@@ -28,19 +28,34 @@ class DroneEnvironment(ABC):
         self.z_limit = 0.5
 
     def _reset_control_properties(self):
+        print("[DEBUG] DroneEnvironment: _reset_control_properties() - Clearing command queue and PID state")
+        queue_size_before = self.drone.command_queue.qsize()
         self.drone.clear_command_queue()
+        print(f"[DEBUG] DroneEnvironment: Cleared {queue_size_before} commands from queue")
         time.sleep(0.1)  # Allow any in-flight commands to be processed
+
+        # Log PID state before reset
+        print(f"[DEBUG] DroneEnvironment: PID state before reset - Last error: {self.drone.last_error}, Integral: {self.drone.integral}")
         self.drone.last_error = {"x": 0.0, "y": 0.0, "z": 0.0}
         self.drone.integral = {"x": 0.0, "y": 0.0, "z": 0.0}
+        print("[DEBUG] DroneEnvironment: PID state reset to zero")
 
     def reset(self):
         """Reset the drone to initial position and state"""
+        print("[DEBUG] DroneEnvironment: reset() called.")
 
         self._reset_control_properties()
 
         # Stop the current velocity
+        print("[DEBUG] DroneEnvironment: Stopping current velocity.")
+        current_pos_before_stop = self.drone.get_position()
+        print(f"[DEBUG] DroneEnvironment: Position before velocity stop: {current_pos_before_stop}")
         self.drone.set_velocity_vector(0, 0, 0)
+        print("[DEBUG] DroneEnvironment: Zero velocity command sent")
         time.sleep(2.5)
+        current_pos_after_stop = self.drone.get_position()
+        print(f"[DEBUG] DroneEnvironment: Position after velocity stop: {current_pos_after_stop}")
+        print(f"[DEBUG] DroneEnvironment: Position change during stop: {[current_pos_after_stop[i] - current_pos_before_stop[i] for i in range(3)]}")
         self.steps = 0
         # Check that the drone is not already flying
         #
@@ -53,23 +68,38 @@ class DroneEnvironment(ABC):
         # Ensure drone is flying before setting target position
         self.drone.is_flying_event.wait(timeout=15)
 
+        print(f"[DEBUG] DroneEnvironment: Setting target position to {self.reset_position}")
         self.drone.set_target_position(self.reset_position[0], self.reset_position[1], self.reset_position[2])
         time.sleep(0.1)  # Allow target position to be set
+        print("[DEBUG] DroneEnvironment: Starting position control.")
         self.drone.start_position_control()
 
         # Wait for position to be reached
+        print("[DEBUG] DroneEnvironment: Waiting for drone to reach reset position.")
         self.drone.at_reset_position.wait(timeout=12)
+        print("[DEBUG] DroneEnvironment: Drone reached reset position.")
         time.sleep(1)
+        print("[DEBUG] DroneEnvironment: Stopping position control.")
+        controller_was_active = self.drone.controller_active
         self.drone.stop_position_control()
+        print(f"[DEBUG] DroneEnvironment: Position controller stopped (was active: {controller_was_active})")
         self.drone.clear_reset_position_event()
+        print("[DEBUG] DroneEnvironment: Reset position event cleared")
+
+        # Check final position before task reset
+        final_reset_pos = self.drone.get_position()
+        print(f"[DEBUG] DroneEnvironment: Final position after reset sequence: {final_reset_pos}")
+        print(f"[DEBUG] DroneEnvironment: Distance from target reset position: {[abs(final_reset_pos[i] - self.reset_position[i]) for i in range(3)]}")
 
         # Reset task-specific state
+        print("[DEBUG] DroneEnvironment: Resetting task-specific state")
         self._reset_task_state()
 
         return self._get_state()
 
     def step(self, action) -> Tuple[np.ndarray, float, bool, bool, Dict]:
         """Execute one step in the environment"""
+        print(f"[DEBUG] DroneEnvironment: step() called with action: {action}")
         # Check that the current drone battery is above the threshold
         self.current_battery = self.drone.get_battery()
         print(f"Battery level: {self.current_battery}")
@@ -86,24 +116,53 @@ class DroneEnvironment(ABC):
         vx = action[0] * (2 * self.max_velocity) - self.max_velocity  # [0,1] -> [-max_velocity, max_velocity]
         vy = action[1] * (2 * self.max_velocity) - self.max_velocity
         vz = action[2] * (2 * self.max_velocity) - self.max_velocity
+        print(f"[DEBUG] DroneEnvironment: Calculated velocity: [vx={vx}, vy={vy}, vz={vz}]")
 
         current_pos = self.drone.get_position()
+        print(f"[DEBUG] DroneEnvironment: Current position before action: {current_pos}")
         # Store previous state for reward calculation
         self.prior_state = self._generate_state_dict(current_pos)
 
         # Send velocity command to drone
+        print("[DEBUG] DroneEnvironment: Setting velocity vector.")
+        print(f"[DEBUG] DroneEnvironment: Drone flying status: {self.drone.is_flying_event.is_set()}")
+        print(f"[DEBUG] DroneEnvironment: Motion commander available: {self.drone.mc is not None}")
+        print(f"[DEBUG] DroneEnvironment: Controller active: {self.drone.controller_active}")
+        print(f"[DEBUG] DroneEnvironment: Command queue size before velocity command: {self.drone.command_queue.qsize()}")
+
         self.drone.set_velocity_vector(vx, vy, vz)
+        print("[DEBUG] DroneEnvironment: Velocity vector command queued")
+        print(f"[DEBUG] DroneEnvironment: Command queue size after velocity command: {self.drone.command_queue.qsize()}")
+
         # Apply velocity for specified time - can improve this to be non-blocking
+        print(f"[DEBUG] DroneEnvironment: Sleeping for {self.step_time}s to apply velocity")
         time.sleep(self.step_time)
+        print("[DEBUG] DroneEnvironment: Velocity application period completed")
 
         new_pos = self.drone.get_position()
-        current_state = self._generate_state_dict(current_pos)
+        print(f"[DEBUG] DroneEnvironment: New position after action: {new_pos}")
+        actual_movement = [new_pos[i] - current_pos[i] for i in range(3)]
+        expected_movement = [vx * self.step_time, vy * self.step_time, vz * self.step_time]
+        print(f"[DEBUG] DroneEnvironment: Expected movement: {expected_movement}")
+        print(f"[DEBUG] DroneEnvironment: Actual movement: {actual_movement}")
+        movement_error = [actual_movement[i] - expected_movement[i] for i in range(3)]
+        print(f"[DEBUG] DroneEnvironment: Movement error: {movement_error}")
+
+        # Check if drone responded to velocity command
+        total_movement = sum([abs(x) for x in actual_movement])
+        if total_movement < 0.01:  # Very small movement threshold
+            print(f"[WARNING] DroneEnvironment: Minimal movement detected ({total_movement:.6f}m) - drone may not be responding to velocity commands")
+
+        current_state = self._generate_state_dict(new_pos)
 
         # Calculate reward using task-specific logic
         reward = self._calculate_reward(current_state)
+        print(f"[DEBUG] DroneEnvironment: Calculated reward: {reward}")
         # Check if episode is done using task-specific logic
         done = self._check_if_done(current_state)
+        print(f"[DEBUG] DroneEnvironment: Episode done: {done}")
         truncated = self._check_if_truncated(current_state)
+        print(f"[DEBUG] DroneEnvironment: Episode truncated: {truncated}")
 
         # Generate info dict
         info = {
