@@ -83,6 +83,10 @@ class Drone:
         self.thread = threading.Thread(target=self._run)
         self._start_threads_coordinated()
 
+        # Debugging parameters
+        self.control_target_velocities = [0, 0, 0]
+        self.control_target_lock = threading.Lock()
+
     def _start_threads_coordinated(self):
 
         print("[Drone] Starting threads with")
@@ -280,6 +284,8 @@ class Drone:
             print("[Crazyflie] Crazyflie armed.")
 
             self._setup_battery_logging()
+
+            self._setup_velocity_logging()
 
             # Signal that hardware is ready
             self.hardware_ready_event.set()
@@ -529,11 +535,15 @@ class Drone:
 
                 # Apply velocity command if flying
                 if self.is_flying_event.is_set() and self.mc:
-                    self.mc.start_linear_motion(
-                        velocity["x"],
-                        velocity["y"],
-                        velocity["z"]
-                    )
+
+                    # Change velocity to be handled by the main thread
+                    self.set_velocity_vector(velocity["x"], velocity["y"], velocity["z"])
+
+                    # self.mc.start_linear_motion(
+                    #     velocity["x"],
+                    #     velocity["y"],
+                    #     velocity["z"]
+                    # )
 
                     if debugging:
                         print(f"[Controller] Pos error: ({error['x']:.2f}, {error['y']:.2f}, {error['z']:.2f}) → "
@@ -541,6 +551,7 @@ class Drone:
 
                 # Sleep to maintain control rate
                 time.sleep(control_rate)
+                print(f"DEBUG: Current control target velocities {self.get_control_target()}")
 
             except Exception as e:
                 print(f"[Drone] Error in position control loop: {str(e)}")
@@ -690,6 +701,47 @@ class Drone:
         with self.battery_lock:
             self.battery_level = voltage
 
+    def _setup_velocity_logging(self):
+
+        if self.cf is None:
+            print('[Drone] Could not start velocity logging, Crazyflie object not available.')
+            return
+
+        if not hasattr(self.cf, 'log') or self.cf.log is None:
+            print('[Drone] Could not start velocity logging, log interface not available.')
+            return
+
+        try:
+            self.velocity_log_config = LogConfig(name='ControlTarget', period_in_ms = 1000)
+            self.velocity_log_config.add_config('ctrltarget.vx', float)
+            self.velocity_log_config.add_config('ctrltarget.vy', float)
+            self.velocity_log_config.add_config('ctrltarget.vz', float)
+
+            self.cf.log.add_config(self.velocity_log_config)
+            self.velocity_log_config.data_received_cb.add_callback(self._velocity_callback)
+
+            # Start the velocity logging
+            self.velocity_log_config.start()
+            print("[Drone] The velocity logging has started...")
+        except KeyError as e:
+            print(f"[Drone] Could not start velocity logging: {e}")
+        except AttributeError:
+            print('[Drone] Could not start velocity logging, Crazyflie object not available.')
+
+    def _velocity_callback(self, timestamp, data, logconf):
+
+        x = data['ctrltarget.vx']
+        y = data['ctrltarget.vy']
+        z = data['ctrltarget.vz']
+
+        with self.control_target_lock:
+            self.control_target_velocities = [x, y, z]
+
+    def get_control_target(self):
+
+        with self.control_target_lock:
+            return self.control_target_velocities
+
     def land_and_stop(self):
         self.land()
         self.is_landed_event.wait(timeout=10)
@@ -789,6 +841,8 @@ class Drone:
         self.mc  = None
 
         self._reset_shared_state()
+
+
 
 if __name__ == "__main__":
     # Testing instructions

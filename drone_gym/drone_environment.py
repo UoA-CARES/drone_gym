@@ -41,6 +41,7 @@ class DroneEnvironment(ABC):
         # Stop the current velocity
         self.drone.set_velocity_vector(0, 0, 0)
         time.sleep(0.5)
+        print(f"DEBUG: Current control target velocities {self.drone.get_control_target()}")
         self.steps = 0
         # Check that the drone is not already flying
         #
@@ -73,9 +74,6 @@ class DroneEnvironment(ABC):
         # Check that the current drone battery is above the threshold
         self.current_battery = self.drone.get_battery()
         print(f"Battery level: {self.current_battery}")
-        # if self.current_battery is not None:
-        #     if self.current_battery <= self.battery_threshold:
-        #         self.drone.land()
 
         self.steps += 1
         print(f"action: {action}")
