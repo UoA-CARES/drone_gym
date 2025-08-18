@@ -87,6 +87,14 @@ class Drone:
         self.control_target_velocities = [0, 0, 0]
         self.control_target_lock = threading.Lock()
 
+        # Velocity validation parameters
+        self.velocity_validation_enabled = True
+        self.velocity_tolerance = 0.02  # m/s tolerance for velocity validation
+        self.velocity_validation_timeout = 2.0  # seconds to wait for validation
+        self.velocity_validated_event = Event()
+        self.expected_velocity = [0.0, 0.0, 0.0]
+        self.velocity_validation_lock = threading.Lock()
+
     def _start_threads_coordinated(self):
 
         print("[Drone] Starting threads with")
@@ -116,6 +124,12 @@ class Drone:
         # Start safety monitoring last
         self.safety_thread = threading.Thread(target=self._check_boundaries)
         self.safety_thread.start()
+
+        # Start velocity validation monitoring
+        if self.velocity_validation_enabled:
+            self.velocity_monitor_thread = threading.Thread(target=self._velocity_validation_monitor)
+            self.velocity_monitor_thread.start()
+            print("[Drone] Velocity validation monitoring started")
 
         print("[Drone] All threads started successfully with coordination")
 
@@ -430,7 +444,6 @@ class Drone:
                     self.mc.start_linear_motion(0,0,0)
 
             elif "velocity_vector" in command:
-                # Handle velocity vector command
                 if self.is_flying_event.is_set() and self.mc:
                     vel_vector = command["velocity_vector"]
                     vx = vel_vector.get("x", 0.0)
@@ -443,8 +456,25 @@ class Drone:
                     vy = max(-max_vel, min(max_vel, vy))
                     vz = max(-max_vel, min(max_vel, vz))
 
-                    self.mc.start_linear_motion(vx, vy, vz)
-                    print(f"[Drone] Velocity vector set: vx={vx:.2f}, vy={vy:.2f}, vz={vz:.2f}")
+                    if self.velocity_validation_enabled:
+
+                        with self.velocity_validation_lock:
+                            self.expected_velocity = [vx, vy, vz]
+                        self.velocity_validated_event.clear()
+
+                        # Send velocity command
+                        self.mc.start_linear_motion(vx, vy, vz)
+                        print(f"[Drone] Velocity vector set: vx={vx:.2f}, vy={vy:.2f}, vz={vz:.2f}")
+
+                        # Wait for validation
+                        if self.velocity_validated_event.wait(timeout=self.velocity_validation_timeout):
+                            print("[Drone] Velocity command validated successfully")
+                        else:
+                            print(f"[Drone] WARNING: Velocity validation timed out after {self.velocity_validation_timeout}s")
+                    else:
+                        # Send velocity command without validation
+                        self.mc.start_linear_motion(vx, vy, vz)
+                        print(f"[Drone] Velocity vector set: vx={vx:.2f}, vy={vy:.2f}, vz={vz:.2f}")
                 else:
                     print("[Drone] Cannot set velocity - drone not flying or motion commander not available")
 
@@ -701,46 +731,51 @@ class Drone:
         with self.battery_lock:
             self.battery_level = voltage
 
-    def _setup_velocity_logging(self):
 
-        if self.cf is None:
-            print('[Drone] Could not start velocity logging, Crazyflie object not available.')
-            return
+    def get_motion_commander_setpoint(self):
+        """Get the current hover setpoint from MotionCommander's internal thread"""
+        if self.mc and hasattr(self.mc, '_thread') and self.mc._thread:
+            try:
+                # Access the internal hover setpoint from the MotionCommander thread
+                hover_setpoint = self.mc._thread._hover_setpoint.copy()
+                # Return as [vx, vy, vz] (first 3 elements, ignoring yaw)
+                return hover_setpoint[:3]
+            except AttributeError as e:
+                print(f"[Drone] Warning: Could not access MotionCommander setpoint: {e}")
+                return [0.0, 0.0, 0.0]
+        return [0.0, 0.0, 0.0]
 
-        if not hasattr(self.cf, 'log') or self.cf.log is None:
-            print('[Drone] Could not start velocity logging, log interface not available.')
-            return
+    def _velocity_validation_monitor(self):
+        """Monitor MotionCommander setpoint and trigger validation events"""
+        print("[Drone] Velocity validation monitor thread started")
 
-        try:
-            self.velocity_log_config = LogConfig(name='ControlTarget', period_in_ms = 1000)
-            self.velocity_log_config.add_config('ctrltarget.vx', float)
-            self.velocity_log_config.add_config('ctrltarget.vy', float)
-            self.velocity_log_config.add_config('ctrltarget.vz', float)
+        while self.is_running() and not self.emergency_event.is_set():
+            try:
+                if self.mc and hasattr(self.mc, '_thread') and self.mc._thread:
+                    current_setpoint = self.get_motion_commander_setpoint()
 
-            self.cf.log.add_config(self.velocity_log_config)
-            self.velocity_log_config.data_received_cb.add_callback(self._velocity_callback)
+                    with self.velocity_validation_lock:
+                        expected = self.expected_velocity.copy()
 
-            # Start the velocity logging
-            self.velocity_log_config.start()
-            print("[Drone] The velocity logging has started...")
-        except KeyError as e:
-            print(f"[Drone] Could not start velocity logging: {e}")
-        except AttributeError:
-            print('[Drone] Could not start velocity logging, Crazyflie object not available.')
+                    # Check if current setpoint matches expected velocity (X and Y only)
+                    velocity_match = True
+                    for i in range(2):  # vx, vy only (Z velocity not tracked in hover_setpoint)
+                        diff = abs(expected[i] - current_setpoint[i])
+                        if diff > self.velocity_tolerance:
+                            velocity_match = False
+                            break
 
-    def _velocity_callback(self, timestamp, data, logconf):
+                    if velocity_match and not self.velocity_validated_event.is_set():
+                        print(f"[Drone] Velocity validation SUCCESS (X/Y only): Expected [{expected[0]:.3f}, {expected[1]:.3f}], Actual [{current_setpoint[0]:.3f}, {current_setpoint[1]:.3f}]")
+                        self.velocity_validated_event.set()
 
-        x = data['ctrltarget.vx']
-        y = data['ctrltarget.vy']
-        z = data['ctrltarget.vz']
+                time.sleep(0.05)  # Check every 50ms
 
-        with self.control_target_lock:
-            self.control_target_velocities = [x, y, z]
+            except Exception as e:
+                print(f"[Drone] Error in velocity validation monitor: {str(e)}")
+                time.sleep(0.1)
 
-    def get_control_target(self):
-
-        with self.control_target_lock:
-            return self.control_target_velocities
+        print("[Drone] Velocity validation monitor thread stopped")
 
     def land_and_stop(self):
         self.land()
@@ -787,6 +822,7 @@ class Drone:
             ("position", self.position_thread),
             ("safety", self.safety_thread),
             ("controller", self.controller_thread),
+            ("velocity_monitor", getattr(self, 'velocity_monitor_thread', None)),
             ("main", self.thread)
         ]
 
