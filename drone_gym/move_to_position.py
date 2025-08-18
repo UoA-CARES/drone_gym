@@ -122,8 +122,6 @@ class DroneNavigationTask(DroneEnvironment):
 
         return False
 
-    # def _is_in_testing_zone(self):
-
 
     def _get_additional_info(self, current_state: Dict[str, Any]) -> Dict[str, Any]:
         """Get additional task-specific info"""
@@ -133,7 +131,6 @@ class DroneNavigationTask(DroneEnvironment):
             'out_of_bounds': not current_state['in_boundaries'],
             'description': "Gym environment for reinforcement learning control of drones"
         }
-
 
     def sample_action(self, safety=True):
         if safety:
