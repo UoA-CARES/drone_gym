@@ -41,7 +41,6 @@ class DroneEnvironment(ABC):
         # Stop the current velocity
         self.drone.set_velocity_vector(0, 0, 0)
         time.sleep(0.5)
-        print(f"DEBUG: Current control target velocities {self.drone.get_control_target()}")
         self.steps = 0
         # Check that the drone is not already flying
         #

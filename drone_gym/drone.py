@@ -50,7 +50,7 @@ class Drone:
         }
         self.last_error = {"x": 0.0, "y": 0.0, "z": 0.0}
         self.integral = {"x": 0.0, "y": 0.0, "z": 0.0}
-        self.max_velocity = 0.25  # Maximum velocity in m/s
+        self.max_velocity = 0.15  # Maximum velocity in m/s
         self.position_deadband = 0.10  # Position error below which velocity will be zero (in meters)
 
         # Crazyflie objects - will be initialized in _run
@@ -79,10 +79,6 @@ class Drone:
         self.hardware_ready_event = Event()
         self.position_ready_event = Event()
 
-        # Start threads in coordinated sequence
-        self.thread = threading.Thread(target=self._run)
-        self._start_threads_coordinated()
-
         # Debugging parameters
         self.control_target_velocities = [0, 0, 0]
         self.control_target_lock = threading.Lock()
@@ -94,6 +90,10 @@ class Drone:
         self.velocity_validated_event = Event()
         self.expected_velocity = [0.0, 0.0, 0.0]
         self.velocity_validation_lock = threading.Lock()
+
+        # Start threads in coordinated sequence
+        self.thread = threading.Thread(target=self._run)
+        self._start_threads_coordinated()
 
     def _start_threads_coordinated(self):
 
@@ -170,6 +170,7 @@ class Drone:
 
                 # Set in_boundaries status
                 in_bounds = x_in_bounds and y_in_bounds and z_in_bounds
+                # Start threads in coordinated sequence
 
                 if not in_bounds:
                     self.in_boundaries = False
@@ -298,8 +299,6 @@ class Drone:
             print("[Crazyflie] Crazyflie armed.")
 
             self._setup_battery_logging()
-
-            self._setup_velocity_logging()
 
             # Signal that hardware is ready
             self.hardware_ready_event.set()
@@ -519,6 +518,7 @@ class Drone:
         if self.controller_active:
             self.controller_active = False
             if self.controller_thread and self.controller_thread.is_alive():
+
                 self.controller_thread.join()
             print("[Drone] Position controller stopped")
         else:
@@ -526,7 +526,7 @@ class Drone:
 
     def _position_control_loop(self, first_instance = 0, debugging = True):
         """Main control loop for position-based velocity control"""
-        control_rate = 0.05  # Control rate in seconds (20hz)
+        control_rate = 1  # Control rate in seconds (20hz)
         error_threshold = 0.15  # Error threshold to consider position reached (meters)
 
         print("[Drone] Position control loop started")
@@ -581,7 +581,6 @@ class Drone:
 
                 # Sleep to maintain control rate
                 time.sleep(control_rate)
-                print(f"DEBUG: Current control target velocities {self.get_control_target()}")
 
             except Exception as e:
                 print(f"[Drone] Error in position control loop: {str(e)}")

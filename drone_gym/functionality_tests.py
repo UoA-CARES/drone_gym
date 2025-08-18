@@ -9,7 +9,7 @@ def test_delay_time():
     drone.take_off()
     drone.is_flying_event.wait(timeout=15)
 
-    for i in range(12):  # Increased to 12 for 3 complete cycles of 4 vectors
+    for i in range(52):
         if i % 4 == 0:
             drone.set_velocity_vector(0, 0.5, 0)    # Forward
         elif i % 4 == 1:
@@ -18,7 +18,7 @@ def test_delay_time():
             drone.set_velocity_vector(0, -0.5, 0)   # Backward
         else:
             drone.set_velocity_vector(-0.5, 0, 0)   # Left
-        time.sleep(1)
+        time.sleep(2)
 
     drone.land()
     drone.is_landed_event.wait(timeout=15)
@@ -42,4 +42,4 @@ def test_position_control():
     drone.stop()
 
 if __name__ == "__main__":
-    test_position_control()
+    test_delay_time()
