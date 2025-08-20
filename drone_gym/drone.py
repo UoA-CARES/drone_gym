@@ -45,13 +45,13 @@ class Drone:
 
         # PID gains - separate for each axis for better tuning
         self.gains = {
-            "x": {"kp": 0.8, "kd": 0, "ki": 0.2},
-            "y": {"kp": 0.8, "kd": 0, "ki": 0.2},
-            "z": {"kp": 0.8, "kd": 0, "ki": 0.2}
+            "x": {"kp": 0.15, "kd": 0, "ki": 0.2},
+            "y": {"kp": 0.15, "kd": 0, "ki": 0.2},
+            "z": {"kp": 0.3, "kd": 0, "ki": 0.2}
         }
         self.last_error = {"x": 0.0, "y": 0.0, "z": 0.0}
         self.integral = {"x": 0.0, "y": 0.0, "z": 0.0}
-        self.max_velocity = 0.15  # Maximum velocity in m/s
+        self.max_velocity = 0.25  # Maximum velocity in m/s
         self.position_deadband = 0.10  # Position error below which velocity will be zero (in meters)
 
         # Continuous command system
@@ -186,11 +186,11 @@ class Drone:
     def _continuous_command_sender(self):
         """Continuously send velocity commands at specified rate for sustained flight"""
         print("[Drone] Continuous command sender thread started")
-        
+
         # Hardware should already be ready since this is started after initialization
         self.command_sender_active = True
         command_period = 1.0 / self.command_rate
-        
+
         while self.is_running() and self.command_sender_active and not self.emergency_event.is_set():
             try:
                 if self.is_flying_event.is_set() and self.commander:
@@ -199,22 +199,22 @@ class Drone:
                         vy = self.current_velocity_setpoint["y"]
                         vz = self.current_velocity_setpoint["z"]
                         yaw_rate = self.current_velocity_setpoint["yaw"]
-                    
+
                     self.commander.send_velocity_world_setpoint(vx, vy, vz, yaw_rate)
-                
+
                 time.sleep(command_period)
-                
+
             except Exception as e:
                 print(f"[Drone] Error in continuous command sender: {str(e)}")
                 time.sleep(0.1)
-        
+
         # Send zero velocity when stopping
         if self.commander and self.is_flying_event.is_set():
             try:
                 self.commander.send_velocity_world_setpoint(0, 0, 0, 0)
             except:
                 pass
-        
+
         print("[Drone] Continuous command sender thread stopped")
 
     def _execute_emergency_stop(self):
@@ -406,10 +406,10 @@ class Drone:
         """Properly shutdown Crazyflie connection"""
         try:
             print("In shutdown crazyflie")
-            
+
             # Stop command sender first to prevent new commands
             self.command_sender_active = False
-            
+
             if self.is_flying_event.is_set() and self.mc:
                 print("[Drone] Landing before shutdown...")
                 self.is_flying_event.clear()
@@ -475,7 +475,7 @@ class Drone:
                     # Reset velocity setpoint for takeoff
                     with self.velocity_setpoint_lock:
                         self.current_velocity_setpoint = {"x": 0.0, "y": 0.0, "z": 0.0, "yaw": 0.0}
-                    
+
                     self.mc = MotionCommander(self.scf, default_height=self.default_height)
                     self.mc.take_off()
                     self.is_landed_event.clear()
@@ -490,7 +490,7 @@ class Drone:
                     # Reset velocity setpoint for landing
                     with self.velocity_setpoint_lock:
                         self.current_velocity_setpoint = {"x": 0.0, "y": 0.0, "z": 0.0, "yaw": 0.0}
-                    
+
                     self.mc.land()
                     self.is_landed_event.set()
                     self.is_flying_event.clear()
@@ -617,7 +617,7 @@ class Drone:
                     with self.velocity_setpoint_lock:
                         self.current_velocity_setpoint = {
                             "x": velocity["x"],
-                            "y": velocity["y"], 
+                            "y": velocity["y"],
                             "z": velocity["z"],
                             "yaw": 0.0
                         }
@@ -683,7 +683,7 @@ class Drone:
             vx = max(-max_vel, min(max_vel, vx))
             vy = max(-max_vel, min(max_vel, vy))
             vz = max(-max_vel, min(max_vel, vz))
-            
+
             # Update velocity setpoint directly for continuous sender
             with self.velocity_setpoint_lock:
                 self.current_velocity_setpoint = {

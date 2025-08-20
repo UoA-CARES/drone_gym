@@ -239,6 +239,7 @@ class DroneEnvironment(ABC):
         self.drone.land()
         self.drone.is_landed_event.wait(timeout=15)
 
+        self._reset_control_properties()
         self.drone.pre_battery_change_cleanup()
 
         time.sleep(2)
