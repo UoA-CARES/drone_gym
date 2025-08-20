@@ -101,8 +101,10 @@ class DroneEnvironment(ABC):
 
         # Send velocity command to drone
         self.drone.set_velocity_vector(vx, vy, vz)
-        # Apply velocity for specified time - can improve this to be non-blocking
+        # Let velocity command run for specified time with continuous updates
         time.sleep(self.step_time)
+        # Stop velocity after step time
+        self.drone.set_velocity_vector(0, 0, 0)
 
         new_pos = self.drone.get_position()
         current_state = self._generate_state_dict(current_pos)

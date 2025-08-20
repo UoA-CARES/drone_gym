@@ -54,6 +54,13 @@ class Drone:
         self.max_velocity = 0.15  # Maximum velocity in m/s
         self.position_deadband = 0.10  # Position error below which velocity will be zero (in meters)
 
+        # Continuous command system
+        self.command_sender_active = False
+        self.command_sender_thread = None
+        self.current_velocity_setpoint = {"x": 0.0, "y": 0.0, "z": 0.0, "yaw": 0.0}
+        self.velocity_setpoint_lock = threading.Lock()
+        self.command_rate = 20  # Commands per second (20Hz)
+
         # Crazyflie objects - will be initialized in _run
         self.scf = None
         self.cf = None
@@ -120,7 +127,6 @@ class Drone:
         self.safety_thread = threading.Thread(target=self._check_boundaries)
         self.safety_thread.start()
 
-
         print("[Drone] All threads started successfully with coordination")
 
     def _check_boundaries(self):
@@ -177,6 +183,40 @@ class Drone:
 
         print("[Drone] Boundary monitoring thread stopped")
 
+    def _continuous_command_sender(self):
+        """Continuously send velocity commands at specified rate for sustained flight"""
+        print("[Drone] Continuous command sender thread started")
+        
+        # Hardware should already be ready since this is started after initialization
+        self.command_sender_active = True
+        command_period = 1.0 / self.command_rate
+        
+        while self.is_running() and self.command_sender_active and not self.emergency_event.is_set():
+            try:
+                if self.is_flying_event.is_set() and self.commander:
+                    with self.velocity_setpoint_lock:
+                        vx = self.current_velocity_setpoint["x"]
+                        vy = self.current_velocity_setpoint["y"]
+                        vz = self.current_velocity_setpoint["z"]
+                        yaw_rate = self.current_velocity_setpoint["yaw"]
+                    
+                    self.commander.send_velocity_world_setpoint(vx, vy, vz, yaw_rate)
+                
+                time.sleep(command_period)
+                
+            except Exception as e:
+                print(f"[Drone] Error in continuous command sender: {str(e)}")
+                time.sleep(0.1)
+        
+        # Send zero velocity when stopping
+        if self.commander and self.is_flying_event.is_set():
+            try:
+                self.commander.send_velocity_world_setpoint(0, 0, 0, 0)
+            except:
+                pass
+        
+        print("[Drone] Continuous command sender thread stopped")
+
     def _execute_emergency_stop(self):
 
         if not self.emergency_event.is_set():
@@ -188,6 +228,7 @@ class Drone:
             time.sleep(1)
 
         self.controller_active = False
+        self.command_sender_active = False
 
         if self.armed and self.cf:
             self.cf.platform.send_arming_request(False)
@@ -292,6 +333,11 @@ class Drone:
             self.commander = Commander(self.cf)
             print("[Drone] Commander initialized")
 
+            # Start continuous command sender now that commander is ready
+            self.command_sender_thread = threading.Thread(target=self._continuous_command_sender)
+            self.command_sender_thread.start()
+            print("[Drone] Continuous command sender started")
+
             self._setup_battery_logging()
 
             # Signal that hardware is ready
@@ -360,9 +406,20 @@ class Drone:
         """Properly shutdown Crazyflie connection"""
         try:
             print("In shutdown crazyflie")
+            
+            # Stop command sender first to prevent new commands
+            self.command_sender_active = False
+            
             if self.is_flying_event.is_set() and self.mc:
                 print("[Drone] Landing before shutdown...")
                 self.is_flying_event.clear()
+
+            # Send final stop command through commander if available
+            if self.commander:
+                try:
+                    self.commander.send_velocity_world_setpoint(0, 0, 0, 0)
+                except:
+                    pass
 
             if self.mc:
                 print("mc")
@@ -374,15 +431,15 @@ class Drone:
                 self.cf.platform.send_arming_request(False)
                 self.armed = False
 
-            if self.scf:
-                self.scf.close_link()
-                self.scf = None
-                print("scf object cleaned")
-
             if self.battery_log_config:
                 self.battery_log_config.stop()
                 self.battery_log_config.delete()
                 self.battery_log_config = None
+
+            if self.scf:
+                self.scf.close_link()
+                self.scf = None
+                print("scf object cleaned")
 
             self.set_running(False)
 
@@ -415,6 +472,10 @@ class Drone:
             elif "take_off" in command:
                 if not self.is_flying_event.is_set() and self.armed:
                     print("[Drone] Processing the take off command")
+                    # Reset velocity setpoint for takeoff
+                    with self.velocity_setpoint_lock:
+                        self.current_velocity_setpoint = {"x": 0.0, "y": 0.0, "z": 0.0, "yaw": 0.0}
+                    
                     self.mc = MotionCommander(self.scf, default_height=self.default_height)
                     self.mc.take_off()
                     self.is_landed_event.clear()
@@ -426,6 +487,10 @@ class Drone:
             elif "land" in command:
                 if self.is_flying_event.is_set() and self.mc:
                     print("[Drone] Landing drone")
+                    # Reset velocity setpoint for landing
+                    with self.velocity_setpoint_lock:
+                        self.current_velocity_setpoint = {"x": 0.0, "y": 0.0, "z": 0.0, "yaw": 0.0}
+                    
                     self.mc.land()
                     self.is_landed_event.set()
                     self.is_flying_event.clear()
@@ -433,16 +498,17 @@ class Drone:
                 else:
                     print("[Drone] Cannot land - not currently flying")
             elif "move" in command:
-                if self.is_flying_event.is_set() and self.commander:
-                    self.commander.send_velocity_world_setpoint(0, 0, 0, 0)
-                    time.sleep(0.01)  # Small delay to ensure command is processed
+                if self.is_flying_event.is_set():
+                    with self.velocity_setpoint_lock:
+                        self.current_velocity_setpoint = {"x": 0.0, "y": 0.0, "z": 0.0, "yaw": 0.0}
 
             elif "velocity_vector" in command:
-                if self.is_flying_event.is_set() and self.commander:
+                if self.is_flying_event.is_set():
                     vel_vector = command["velocity_vector"]
                     vx = vel_vector.get("x", 0.0)
                     vy = vel_vector.get("y", 0.0)
                     vz = vel_vector.get("z", 0.0)
+                    yaw_rate = vel_vector.get("yaw", 0.0)
 
                     # Apply velocity limits for safety
                     max_vel = getattr(self, 'max_velocity', 0.5)
@@ -450,13 +516,14 @@ class Drone:
                     vy = max(-max_vel, min(max_vel, vy))
                     vz = max(-max_vel, min(max_vel, vz))
 
-                    # Send velocity command using Commander
-                    if self.commander:
-                        self.commander.send_velocity_world_setpoint(vx, vy, vz, 0)
-                        time.sleep(0.01)  # Small delay to ensure command is processed
-                    print(f"[Drone] Velocity vector set: vx={vx:.2f}, vy={vy:.2f}, vz={vz:.2f}")
+                    # Update velocity setpoint for continuous sender
+                    with self.velocity_setpoint_lock:
+                        self.current_velocity_setpoint = {
+                            "x": vx, "y": vy, "z": vz, "yaw": yaw_rate
+                        }
+                    print(f"[Drone] Velocity setpoint updated: vx={vx:.2f}, vy={vy:.2f}, vz={vz:.2f}")
                 else:
-                    print("[Drone] Cannot set velocity - drone not flying or commander not available")
+                    print("[Drone] Cannot set velocity - drone not flying")
 
             else:
                 print(f"[Drone] Unknown command: {command}")
@@ -533,7 +600,7 @@ class Drone:
                     print(f"[Controller]: Position({current_pos['x']}, {current_pos['y']}, {current_pos['z']})")
 
                 # Calculate error magnitude to determine if position is reached
-                error_magnitude = (abs(error["x"])**2 + abs(error["y"])**2 + abs(error["z"]**2))**0.5
+                error_magnitude = (error["x"]**2 + error["y"]**2 + error["z"]**2)**0.5
 
                 # print(error_magnitude)
                 # print(self.get_battery())
@@ -545,16 +612,15 @@ class Drone:
                 velocity = self._calculate_pid_velocity(error, control_rate)
 
                 # Apply velocity command if flying
-                if self.is_flying_event.is_set() and self.mc:
-
-                    # Change velocity to be handled by the main thread
-                    self.set_velocity_vector(velocity["x"], velocity["y"], velocity["z"])
-
-                    # self.mc.start_linear_motion(
-                    #     velocity["x"],
-                    #     velocity["y"],
-                    #     velocity["z"]
-                    # )
+                if self.is_flying_event.is_set():
+                    # Update velocity setpoint directly for continuous sender
+                    with self.velocity_setpoint_lock:
+                        self.current_velocity_setpoint = {
+                            "x": velocity["x"],
+                            "y": velocity["y"], 
+                            "z": velocity["z"],
+                            "yaw": 0.0
+                        }
 
                     if debugging:
                         print(f"[Controller] Pos error: ({error['x']:.2f}, {error['y']:.2f}, {error['z']:.2f}) → "
@@ -609,17 +675,23 @@ class Drone:
 
         return velocity
 
-    def set_velocity_vector(self, vx: float, vy: float, vz: float) -> None:
-        velocity_command = {
-            "velocity_vector": {
-                "x": vx,
-                "y": vy,
-                "z": vz
-            }
-        }
-
-        self.send_command(velocity_command)
-        print(f"[Drone] Velocity vector command sent: vx={vx}, vy={vy}, vz={vz}")
+    def set_velocity_vector(self, vx: float, vy: float, vz: float, yaw_rate: float = 0.0) -> None:
+        """Set velocity vector directly for immediate response"""
+        if self.is_flying_event.is_set():
+            # Apply velocity limits for safety
+            max_vel = getattr(self, 'max_velocity', 0.5)
+            vx = max(-max_vel, min(max_vel, vx))
+            vy = max(-max_vel, min(max_vel, vy))
+            vz = max(-max_vel, min(max_vel, vz))
+            
+            # Update velocity setpoint directly for continuous sender
+            with self.velocity_setpoint_lock:
+                self.current_velocity_setpoint = {
+                    "x": vx, "y": vy, "z": vz, "yaw": yaw_rate
+                }
+            print(f"[Drone] Velocity setpoint set: vx={vx:.2f}, vy={vy:.2f}, vz={vz:.2f}")
+        else:
+            print("[Drone] Cannot set velocity - drone not flying")
 
     def set_velocity(self, velocity_vector) -> None:
         """Set velocity vector from a list or array [vx, vy, vz]"""
@@ -743,6 +815,7 @@ class Drone:
         """Set all shutdown flags so every thread leaves its loop ASAP."""
         self.set_running(False)
         self.controller_active = False
+        self.command_sender_active = False
         # Purge the command queue so no stale commands run after restart
         while not self.command_queue.empty():
             try:
@@ -758,6 +831,7 @@ class Drone:
             ("position", self.position_thread),
             ("safety", self.safety_thread),
             ("controller", self.controller_thread),
+            ("command_sender", self.command_sender_thread),
             ("main", self.thread)
         ]
 
@@ -792,9 +866,12 @@ class Drone:
         self.is_flying_event.clear()
         self.is_landed_event.set()
         self.deck_attached_event.clear()
-        # Misc
+        # Velocity control
         with self.velocity_lock:
             self.velocity = 0.0
+        with self.velocity_setpoint_lock:
+            self.current_velocity_setpoint = {"x": 0.0, "y": 0.0, "z": 0.0, "yaw": 0.0}
+        # Misc
         with self.battery_lock:
             self.battery_level = 5.0
         self.in_boundaries = True
@@ -809,6 +886,7 @@ class Drone:
         self.commander = None
 
     def pre_battery_change_cleanup(self):
+        self.command_sender_active = False
         self.cf  = None
         self.scf = None
         self.mc  = None
