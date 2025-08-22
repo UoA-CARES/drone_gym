@@ -45,13 +45,13 @@ class Drone:
 
         # PID gains - separate for each axis for better tuning
         self.gains = {
-            "x": {"kp": 0.15, "kd": 0, "ki": 0.2},
-            "y": {"kp": 0.15, "kd": 0, "ki": 0.2},
-            "z": {"kp": 0.3, "kd": 0, "ki": 0.2}
+            "x": {"kp": 0.45, "kd": 0.0625, "ki": 0},
+            "y": {"kp": 0.45, "kd": 0.0625, "ki": 0},
+            "z": {"kp": 0.3, "kd": 0.03, "ki": 0}
         }
         self.last_error = {"x": 0.0, "y": 0.0, "z": 0.0}
         self.integral = {"x": 0.0, "y": 0.0, "z": 0.0}
-        self.max_velocity = 0.25  # Maximum velocity in m/s
+        self.max_velocity = 0.40  # Maximum velocity in m/s
         self.position_deadband = 0.10  # Position error below which velocity will be zero (in meters)
 
         # Continuous command system
@@ -59,7 +59,7 @@ class Drone:
         self.command_sender_thread = None
         self.current_velocity_setpoint = {"x": 0.0, "y": 0.0, "z": 0.0, "yaw": 0.0}
         self.velocity_setpoint_lock = threading.Lock()
-        self.command_rate = 20  # Commands per second (20Hz)
+        self.command_rate = 30  # Commands per second (20Hz)
 
         # Crazyflie objects - will be initialized in _run
         self.scf = None
@@ -82,7 +82,7 @@ class Drone:
         self.emergency_event = Event()
 
         # Objective related
-        self.target_position = {"x": 0.0, "y": 0.0, "z": 0.0}
+        self.target_position = {"x": 0.0, "y": 0.0, "z": 1.0}
 
         # Thread coordination events
         self.hardware_ready_event = Event()
@@ -116,7 +116,6 @@ class Drone:
         # Start position tracking thread
         self.position_thread = threading.Thread(target=self._update_position)
         self.position_thread.start()
-
         # Wait for position system to stabilize
         if not self.position_ready_event.wait(timeout=10):
             print("[Drone] WARNING: Position system may not be ready")
@@ -200,6 +199,8 @@ class Drone:
                         vz = self.current_velocity_setpoint["z"]
                         yaw_rate = self.current_velocity_setpoint["yaw"]
 
+                    vz += 0.07
+                    # print(f"actual z velocity sent {vz}")
                     self.commander.send_velocity_world_setpoint(vx, vy, vz, yaw_rate)
 
                 time.sleep(command_period)
@@ -574,7 +575,7 @@ class Drone:
 
     def _position_control_loop(self, first_instance = 0, debugging = True):
         """Main control loop for position-based velocity control"""
-        control_rate = 1  # Control rate in seconds (20hz)
+        control_rate = 0.35  # Control rate in seconds (20hz)
         error_threshold = 0.15  # Error threshold to consider position reached (meters)
 
         print("[Drone] Position control loop started")
@@ -658,6 +659,7 @@ class Drone:
             p_term = self.gains[axis]["kp"] * error[axis]
             # Derivative term (rate of change of error)
             d_term = self.gains[axis]["kd"] * (error[axis] - self.last_error[axis]) / dt
+            print(f" d_term: {d_term} ")
             # Integral term (accumulating error)
             self.integral[axis] += error[axis] * dt
             # Anti-windup: reset integral when changing direction
@@ -858,7 +860,7 @@ class Drone:
         # Position and target
         with self.position_lock:
             self.position = {"x": 0.0, "y": 0.0, "z": 0.0}
-            self.target_position = {"x": 0.0, "y": 0.0, "z": 0.0}
+            self.target_position = {"x": 0.0, "y": 0.0, "z": 1.0}
         # PID
         self.last_error = {"x": 0.0, "y": 0.0, "z": 0.0}
         self.integral   = {"x": 0.0, "y": 0.0, "z": 0.0}

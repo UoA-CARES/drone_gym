@@ -445,6 +445,42 @@ def test_world_frame_directions():
 
     return results
 
+def height():
+    """Test position control with continuous commands"""
+    print("=== Testing Position Control ===")
+
+    drone = Drone()
+    drone.take_off()
+    drone.is_flying_event.wait(timeout=15)
+    drone.set_velocity_vector(0, 0, 0.09)
+    time.sleep(5)
+    drone.land()
+    time.sleep(1)
+    drone.stop()
+
+def control():
+    drone = Drone()
+    drone.take_off()
+    drone.is_flying_event.wait(timeout=15)
+    time.sleep(1)
+    drone.start_position_control()
+
+def beep():
+    drone = Drone()
+    drone.take_off()
+    drone.is_flying_event.wait(timeout=15)
+    time.sleep(2)
+    for i in range(12):
+        drone.set_velocity_vector(0, 0.5, 0.05)
+        time.sleep(3)
+        with drone.velocity_setpoint_lock:
+            print(drone.current_velocity_setpoint.copy())
+        drone.set_velocity_vector(0, -0.5, 0)
+        time.sleep(3)
+        with drone.velocity_setpoint_lock:
+            print(drone.current_velocity_setpoint.copy())
+    drone.land()
+    time.sleep(2)
 
 if __name__ == "__main__":
-    print(test_position_control())
+    print(beep())
