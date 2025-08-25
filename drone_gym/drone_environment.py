@@ -69,7 +69,7 @@ class DroneEnvironment(ABC):
         self.drone.start_position_control()
 
         # Wait for position to be reached
-        self.drone.at_reset_position.wait(timeout=12)
+        self.drone.at_reset_position.wait(timeout=20)
         time.sleep(1)
         self.drone.stop_position_control()
         self.drone.clear_reset_position_event()

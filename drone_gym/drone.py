@@ -43,6 +43,13 @@ class Drone:
         self.controller_thread = None
         self.at_reset_position = Event()
 
+        # Control monitoring for divergence detection
+        self.control_monitor_active = False
+        self.control_monitor_thread = None
+        self.error_history = []
+        self.error_history_lock = threading.Lock()
+        self.divergence_detected = Event()
+
         # PID gains - separate for each axis for better tuning
         self.gains = {
             "x": {"kp": 0.45, "kd": 0.0625, "ki": 0},
@@ -59,7 +66,7 @@ class Drone:
         self.command_sender_thread = None
         self.current_velocity_setpoint = {"x": 0.0, "y": 0.0, "z": 0.0, "yaw": 0.0}
         self.velocity_setpoint_lock = threading.Lock()
-        self.command_rate = 30  # Commands per second (20Hz)
+        self.command_rate = 15
 
         # Crazyflie objects - will be initialized in _run
         self.scf = None
@@ -336,6 +343,7 @@ class Drone:
 
             # Start continuous command sender now that commander is ready
             self.command_sender_thread = threading.Thread(target=self._continuous_command_sender)
+            self.command_sender_thread.daemon = True  # Daemon thread - will terminate when main thread exits
             self.command_sender_thread.start()
             print("[Drone] Continuous command sender started")
 
@@ -558,7 +566,11 @@ class Drone:
             self.controller_active = True
             self.controller_thread = threading.Thread(target=self._position_control_loop)
             self.controller_thread.start()
-            print("[Drone] Position controller started")
+
+            # Start control monitor to watch for divergence
+            self.start_control_monitor()
+
+            print("[Drone] Position controller started with divergence monitoring")
         else:
             print("[Drone] Position controller already active")
 
@@ -566,8 +578,11 @@ class Drone:
         """Stop the position controller thread"""
         if self.controller_active:
             self.controller_active = False
-            if self.controller_thread and self.controller_thread.is_alive():
 
+            # Stop control monitor
+            self.stop_control_monitor()
+
+            if self.controller_thread and self.controller_thread.is_alive():
                 self.controller_thread.join()
             print("[Drone] Position controller stopped")
         else:
@@ -581,6 +596,11 @@ class Drone:
         print("[Drone] Position control loop started")
         while self.is_running() and self.controller_active and not self.emergency_event.is_set():
             try:
+                # Check for divergence detection
+                if self.divergence_detected.is_set():
+                    print("[Controller] DIVERGENCE DETECTED! Restarting position controller...")
+                    self._restart_position_controller()
+                    continue
                 # Get current and target positions
                 current_pos = self.get_position_dict()
                 with self.position_lock:
@@ -603,8 +623,8 @@ class Drone:
                 # Calculate error magnitude to determine if position is reached
                 error_magnitude = (error["x"]**2 + error["y"]**2 + error["z"]**2)**0.5
 
-                # print(error_magnitude)
-                # print(self.get_battery())
+                # Store error in history for divergence monitoring
+                self._update_error_history(error_magnitude)
 
                 if error_magnitude < error_threshold :
                     print(f"[Controller] Position reached! Error: {error_magnitude:.2f}m")
@@ -676,6 +696,119 @@ class Drone:
             self.last_error[axis] = error[axis]
 
         return velocity
+
+    def _update_error_history(self, error_magnitude):
+        """Update error history for divergence monitoring"""
+        with self.error_history_lock:
+            # Keep last 10 error measurements (roughly 3.5 seconds at 0.35s rate)
+            self.error_history.append(error_magnitude)
+            if len(self.error_history) > 10:
+                self.error_history.pop(0)
+
+    def _control_monitor_loop(self):
+        """Monitor control performance and detect divergence"""
+        print("[Drone] Control monitor started")
+
+        # Wait a bit for controller to start and collect some history
+        time.sleep(3.0)
+
+        while self.is_running() and self.control_monitor_active and not self.emergency_event.is_set():
+            try:
+                with self.error_history_lock:
+                    history = self.error_history.copy()
+
+                if len(history) >= 8:  # Need at least 8 points (~2.6 seconds of data)
+                    # Check for divergence: error increasing consistently over last few measurements
+                    recent_errors = history[-8:]
+                    earlier_errors = history[-8:-4] if len(history) >= 6 else []
+
+                    if len(earlier_errors) >= 3:
+                        avg_earlier = sum(earlier_errors) / len(earlier_errors)
+                        avg_recent = sum(recent_errors[-3:]) / 3
+
+                        # Divergence conditions:
+                        # 1. Recent average error > 1.5x earlier average (getting worse)
+                        # 2. Recent error > 1.0m (significantly off target)
+                        # 3. Error trend is consistently increasing
+                        error_ratio = avg_recent / max(avg_earlier, 0.1)  # Avoid division by zero
+
+                        if (error_ratio > 1.5 and avg_recent > 1.0 and
+                            recent_errors[-1] > recent_errors[-3]):
+
+                            print(f"[Monitor] DIVERGENCE DETECTED! Recent error: {avg_recent:.3f}m, "
+                                  f"Earlier error: {avg_earlier:.3f}m, Ratio: {error_ratio:.2f}")
+                            self.divergence_detected.set()
+                            break
+
+                time.sleep(0.2)  # Check every 200ms
+
+            except Exception as e:
+                print(f"[Monitor] Error in control monitoring: {str(e)}")
+                time.sleep(0.5)
+
+        print("[Drone] Control monitor stopped")
+
+    def start_control_monitor(self):
+        """Start the control monitoring thread"""
+        if not self.control_monitor_active:
+            self.control_monitor_active = True
+            self.divergence_detected.clear()
+            with self.error_history_lock:
+                self.error_history.clear()
+
+            self.control_monitor_thread = threading.Thread(target=self._control_monitor_loop)
+            self.control_monitor_thread.start()
+            print("[Drone] Control monitor started")
+        else:
+            print("[Drone] Control monitor already active")
+
+    def stop_control_monitor(self):
+        """Stop the control monitoring thread"""
+        if self.control_monitor_active:
+            self.control_monitor_active = False
+            if self.control_monitor_thread and self.control_monitor_thread.is_alive():
+                self.control_monitor_thread.join(timeout=2.0)
+            print("[Drone] Control monitor stopped")
+        else:
+            print("[Drone] Control monitor already stopped")
+
+    def _restart_position_controller(self):
+        """Restart the position controller by resetting PID state and clearing divergence flag"""
+        print("[Controller] Resetting PID controller state...")
+
+        # Reset PID state variables
+        self.last_error = {"x": 0.0, "y": 0.0, "z": 0.0}
+        self.integral = {"x": 0.0, "y": 0.0, "z": 0.0}
+
+        # Clear velocity setpoint to stop current motion
+        with self.velocity_setpoint_lock:
+            self.current_velocity_setpoint = {"x": 0.0, "y": 0.0, "z": 0.0, "yaw": 0.0}
+
+        # Clear divergence flag and reset error history
+        self.divergence_detected.clear()
+        with self.error_history_lock:
+            self.error_history.clear()
+
+        # Clear reset position event so it can be re-triggered after restart
+        self.at_reset_position.clear()
+
+        # Brief pause to let drone stabilize
+        time.sleep(2)
+
+        print("[Controller] Position controller restarted")
+
+    def get_control_status(self):
+        """Get status information about the control system"""
+        with self.error_history_lock:
+            recent_errors = self.error_history[-3:] if len(self.error_history) >= 3 else self.error_history
+
+        return {
+            'controller_active': self.controller_active,
+            'monitor_active': self.control_monitor_active,
+            'divergence_detected': self.divergence_detected.is_set(),
+            'recent_errors': recent_errors,
+            'error_history_length': len(self.error_history)
+        }
 
     def set_velocity_vector(self, vx: float, vy: float, vz: float, yaw_rate: float = 0.0) -> None:
         """Set velocity vector directly for immediate response"""
@@ -818,6 +951,7 @@ class Drone:
         self.set_running(False)
         self.controller_active = False
         self.command_sender_active = False
+        self.control_monitor_active = False
         # Purge the command queue so no stale commands run after restart
         while not self.command_queue.empty():
             try:
@@ -833,6 +967,7 @@ class Drone:
             ("position", self.position_thread),
             ("safety", self.safety_thread),
             ("controller", self.controller_thread),
+            ("control_monitor", self.control_monitor_thread),
             ("command_sender", self.command_sender_thread),
             ("main", self.thread)
         ]
