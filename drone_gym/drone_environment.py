@@ -50,18 +50,17 @@ class DroneEnvironment(ABC):
 
         # Stop the current velocity
         self.drone.set_velocity_vector(0, 0, 0)
-        time.sleep(1.75)
+        time.sleep(1.5)
 
         self.steps = 0
         # Check that the drone is not already flying
         print("DRONE RESET")
 
         if not self.drone.is_flying_event.is_set():
-            print("Control: The drone is already flying")
             self.drone.take_off()
-
-        # Ensure drone is flying before setting target position
-        self.drone.is_flying_event.wait(timeout=15)
+            # Ensure drone is flying before setting target position
+            self.drone.is_flying_event.wait(timeout=15)
+            time.sleep(3)
 
         # Set reset target position only once (lazy initialization)
         self._ensure_reset_target_set()

@@ -66,7 +66,7 @@ class Drone:
         self.command_sender_thread = None
         self.current_velocity_setpoint = {"x": 0.0, "y": 0.0, "z": 0.0, "yaw": 0.0}
         self.velocity_setpoint_lock = threading.Lock()
-        self.command_rate = 15
+        self.command_rate = 5
 
         # Crazyflie objects - will be initialized in _run
         self.scf = None
@@ -206,9 +206,10 @@ class Drone:
                         vz = self.current_velocity_setpoint["z"]
                         yaw_rate = self.current_velocity_setpoint["yaw"]
 
-                    vz += 0.07
+                    vz += 0.08
                     # print(f"actual z velocity sent {vz}")
                     self.commander.send_velocity_world_setpoint(vx, vy, vz, yaw_rate)
+                    print(f"VELOCITY SENT x:{vx}, y:{vy}, z:{vz}")
 
                 time.sleep(command_period)
 
@@ -590,7 +591,7 @@ class Drone:
 
     def _position_control_loop(self, first_instance = 0, debugging = True):
         """Main control loop for position-based velocity control"""
-        control_rate = 0.35  # Control rate in seconds (20hz)
+        control_rate = 0.50  # Control rate in seconds (20hz)
         error_threshold = 0.15  # Error threshold to consider position reached (meters)
 
         print("[Drone] Position control loop started")
@@ -679,7 +680,7 @@ class Drone:
             p_term = self.gains[axis]["kp"] * error[axis]
             # Derivative term (rate of change of error)
             d_term = self.gains[axis]["kd"] * (error[axis] - self.last_error[axis]) / dt
-            print(f" d_term: {d_term} ")
+            # print(f" d_term: {d_term} ")
             # Integral term (accumulating error)
             self.integral[axis] += error[axis] * dt
             # Anti-windup: reset integral when changing direction
@@ -717,10 +718,10 @@ class Drone:
                 with self.error_history_lock:
                     history = self.error_history.copy()
 
-                if len(history) >= 8:  # Need at least 8 points (~2.6 seconds of data)
+                if len(history) >= 6:
                     # Check for divergence: error increasing consistently over last few measurements
-                    recent_errors = history[-8:]
-                    earlier_errors = history[-8:-4] if len(history) >= 6 else []
+                    recent_errors = history[-6:]
+                    earlier_errors = history[-6:-3] if len(history) >= 6 else []
 
                     if len(earlier_errors) >= 3:
                         avg_earlier = sum(earlier_errors) / len(earlier_errors)

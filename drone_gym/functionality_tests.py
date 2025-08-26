@@ -452,6 +452,7 @@ def height():
     drone = Drone()
     drone.take_off()
     drone.is_flying_event.wait(timeout=15)
+    time.sleep(2)
     drone.set_velocity_vector(0, 0, 0.09)
     time.sleep(5)
     drone.land()
@@ -483,4 +484,4 @@ def beep():
     time.sleep(2)
 
 if __name__ == "__main__":
-    print(beep())
+    print(height())
