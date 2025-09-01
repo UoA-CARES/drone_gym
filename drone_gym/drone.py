@@ -44,13 +44,13 @@ class Drone:
 
         # PID gains - separate for each axis for better tuning
         self.gains = {
-            "x": {"kp": 0.8, "kd": 0, "ki": 0.2},
-            "y": {"kp": 0.8, "kd": 0, "ki": 0.2},
-            "z": {"kp": 0.8, "kd": 0, "ki": 0.2}
+            "x": {"kp": 0.35, "kd": 0.0625, "ki": 0.15},
+            "y": {"kp": 0.35, "kd": 0.0625, "ki": 0.15},
+            "z": {"kp": 0.4, "kd": 0.03, "ki": 0.1}
         }
         self.last_error = {"x": 0.0, "y": 0.0, "z": 0.0}
         self.integral = {"x": 0.0, "y": 0.0, "z": 0.0}
-        self.max_velocity = 0.15  # Maximum velocity in m/s
+        self.max_velocity = 0.30 # Maximum velocity in m/s
         self.position_deadband = 0.10  # Position error below which velocity will be zero (in meters)
 
         # Crazyflie objects - will be initialized in _run
@@ -61,13 +61,13 @@ class Drone:
 
         # Vicon Integration
         self.position = {"x": 0.0, "y": 0.0, "z": 0.0}
-        self.drone_name = "NewCrazyflie"
+        self.drone_name = "Crzayme"
         self.vicon = vi()
         self.position_thread = None
         self.position_lock = threading.Lock()
 
         # Drone Safety
-        self.boundaries = {"x": 2.25, "y": 2.25, "z": 2.0}
+        self.boundaries = {"x": 2.25, "y": 2.25, "z": 2.25}
         self.safety_thread = None
         self.in_boundaries = True
         self.emergency_event = Event()
@@ -84,7 +84,7 @@ class Drone:
         self.control_target_lock = threading.Lock()
 
         # Velocity validation parameters
-        self.velocity_validation_enabled = True
+        self.velocity_validation_enabled = False
         self.velocity_tolerance = 0.02  # m/s tolerance for velocity validation
         self.velocity_validation_timeout = 2.0  # seconds to wait for validation
         self.velocity_validated_event = Event()
@@ -526,7 +526,7 @@ class Drone:
 
     def _position_control_loop(self, first_instance = 0, debugging = True):
         """Main control loop for position-based velocity control"""
-        control_rate = 1  # Control rate in seconds (20hz)
+        control_rate = 0.5  # Control rate in seconds (20hz)
         error_threshold = 0.15  # Error threshold to consider position reached (meters)
 
         print("[Drone] Position control loop started")

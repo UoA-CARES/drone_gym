@@ -8,7 +8,7 @@ from typing import Dict, List, Tuple, Any
 
 class DroneEnvironment(ABC):
     """Base drone environment that handles common drone operations"""
-    def __init__(self, max_velocity: float = 0.3,  step_time: float = 1, max_steps: int = 200):
+    def __init__(self, max_velocity: float = 0.25,  step_time: float = 0.5, max_steps: int = 200):
 
         self.drone = Drone()
         self.reset_position = [0, 0, 1]
@@ -40,7 +40,7 @@ class DroneEnvironment(ABC):
 
         # Stop the current velocity
         self.drone.set_velocity_vector(0, 0, 0)
-        time.sleep(0.5)
+        time.sleep(1.5)
         self.steps = 0
         # Check that the drone is not already flying
         #
