@@ -27,11 +27,21 @@ class DroneEnvironment(ABC):
         self.xy_limit = 1.0
         self.z_limit = 0.5
 
+        # Reset target position optimization
+        self._reset_target_set = False
+
     def _reset_control_properties(self):
         self.drone.clear_command_queue()
         time.sleep(0.5)  # Allow any in-flight commands to be processed
         self.drone.last_error = {"x": 0.0, "y": 0.0, "z": 0.0}
         self.drone.integral = {"x": 0.0, "y": 0.0, "z": 0.0}
+
+    def _ensure_reset_target_set(self):
+        """Set the reset target position once, only when first needed"""
+        if not self._reset_target_set:
+            self.drone.set_target_position(self.reset_position[0], self.reset_position[1], self.reset_position[2])
+            self._reset_target_set = True
+            print(f"[Environment] Reset target position set to {self.reset_position}")
 
     def reset(self):
         """Reset the drone to initial position and state"""
@@ -40,10 +50,10 @@ class DroneEnvironment(ABC):
 
         # Stop the current velocity
         self.drone.set_velocity_vector(0, 0, 0)
-        time.sleep(1.5)
+        time.sleep(0.5)
+
         self.steps = 0
         # Check that the drone is not already flying
-        #
         print("DRONE RESET")
 
         if not self.drone.is_flying_event.is_set():
@@ -53,7 +63,8 @@ class DroneEnvironment(ABC):
         # Ensure drone is flying before setting target position
         self.drone.is_flying_event.wait(timeout=15)
 
-        self.drone.set_target_position(self.reset_position[0], self.reset_position[1], self.reset_position[2])
+        # Set reset target position only once (lazy initialization)
+        self._ensure_reset_target_set()
         time.sleep(0.1)  # Allow target position to be set
         self.drone.start_position_control()
 
@@ -171,6 +182,15 @@ class DroneEnvironment(ABC):
         """Set the duration for each velocity command"""
         self.step_time = step_time
         print(f"Step time set to {step_time} seconds")
+
+    def set_reset_position(self, position: List[float]):
+        """Set a new reset position and invalidate the cached target"""
+        if len(position) != 3:
+            raise ValueError("Reset position must be a 3-element list [x, y, z]")
+
+        self.reset_position = position.copy()
+        self._reset_target_set = False  # Force re-setting on next reset
+        print(f"Reset position updated to {self.reset_position}")
 
     def close(self):
         """Clean up the drone environment"""

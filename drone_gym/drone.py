@@ -866,6 +866,7 @@ class Drone:
     def _final_cleanup(self):
         """Delete big objects so garbage collection can reclaim them."""
         # These will be re-created if the user ever calls start() again
+        # todo :close link first then remove the scf instance
         self.cf  = None
         self.scf = None
         self.mc  = None
