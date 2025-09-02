@@ -44,13 +44,13 @@ class Drone:
 
         # PID gains - separate for each axis for better tuning
         self.gains = {
-            "x": {"kp": 0.35, "kd": 0.0625, "ki": 0.15},
-            "y": {"kp": 0.35, "kd": 0.0625, "ki": 0.15},
-            "z": {"kp": 0.4, "kd": 0.03, "ki": 0.1}
+            "x": {"kp": 0.35, "kd": 0.1425, "ki": 0.08},
+            "y": {"kp": 0.35, "kd": 0.1425, "ki": 0.08},
+            "z": {"kp": 0.4, "kd": 0.03, "ki": 0}
         }
         self.last_error = {"x": 0.0, "y": 0.0, "z": 0.0}
         self.integral = {"x": 0.0, "y": 0.0, "z": 0.0}
-        self.max_velocity = 0.30 # Maximum velocity in m/s
+        self.max_velocity = 0.25 # Maximum velocity in m/s
         self.position_deadband = 0.10  # Position error below which velocity will be zero (in meters)
 
         # Crazyflie objects - will be initialized in _run
@@ -527,7 +527,7 @@ class Drone:
     def _position_control_loop(self, first_instance = 0, debugging = True):
         """Main control loop for position-based velocity control"""
         control_rate = 0.5  # Control rate in seconds (20hz)
-        error_threshold = 0.15  # Error threshold to consider position reached (meters)
+        error_threshold = 0.17  # Error threshold to consider position reached (meters)
 
         print("[Drone] Position control loop started")
         while self.is_running() and self.controller_active and not self.emergency_event.is_set():
