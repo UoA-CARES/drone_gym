@@ -41,5 +41,33 @@ def test_position_control():
     drone.is_landed_event.wait(timeout=15)
     drone.stop()
 
+
+def taking_off():
+    drone = Drone()
+
+    for i in range(10):
+        print(f"Flight cycle {i + 1}/10")
+
+        # Take off and fly
+        drone.take_off()
+        drone.is_flying_event.wait(timeout=15)
+        time.sleep(3)
+
+        # Land
+        drone.land()
+        drone.is_landed_event.wait(timeout=15)
+
+        if i < 9:  # Don't ask for battery change on the last cycle
+            drone.pre_battery_change_cleanup()
+            print("input:")
+            battery_changed = input()
+            print(battery_changed)
+            drone._initialise_crazyflie()
+        else:
+            time.sleep(3)
+
+    drone.stop()
+
+
 if __name__ == "__main__":
-    test_delay_time()
+    taking_off()

@@ -8,7 +8,7 @@ from typing import Dict, List, Tuple, Any
 
 class DroneEnvironment(ABC):
     """Base drone environment that handles common drone operations"""
-    def __init__(self, max_velocity: float = 0.25,  step_time: float = 0.5, exploration_steps: int = 200):
+    def __init__(self, max_velocity: float = 0.25,  step_time: float = 0.5, exploration_steps: int = 1000):
 
         self.drone = Drone()
         self.reset_position = [0, 0, 1]
@@ -21,8 +21,7 @@ class DroneEnvironment(ABC):
 
         self.total_steps = 0
 
-        self.battery_threshold = 3.0
-        # self.battery_threshold = 3.45
+        self.battery_threshold = 3.15
 
         self.observation_space = 8
 
@@ -60,7 +59,7 @@ class DroneEnvironment(ABC):
         if not self.drone.is_flying_event.is_set():
             print("Control: The drone is already flying")
             self.drone.take_off()
-            time.sleep(3)
+            time.sleep(1)
 
         # Ensure drone is flying before setting target position
         self.drone.is_flying_event.wait(timeout=15)

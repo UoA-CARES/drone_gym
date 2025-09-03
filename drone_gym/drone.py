@@ -291,6 +291,12 @@ class Drone:
             print("[Drone] Resetting all log configurations")
             self.cf.log.reset()
             time.sleep(0.5)
+
+            # --- Add the EKF reset here ---
+            print("[Drone] Resetting state estimation (EKF)...")
+            self.cf.param.set_value('kalman.resetEstimation', '1')
+            time.sleep(0.1) # A short delay to let the reset be processed
+
             # Arm the drone
             print("[Crazyflie] Arming Crazyflie...")
             self.cf.platform.send_arming_request(True)
@@ -875,10 +881,25 @@ class Drone:
         self.cf  = None
         self.scf = None
         self.mc  = None
-
+        self.clear_command_queue()
         self._reset_shared_state()
 
+    def reboot(self):
 
+        print("[Drone] Initiating remote reboot sequence...")
+        # Step 3: Perform the power cycle
+        print("[Drone] Executing STM32 power cycle via PowerSwitch...")
+        try:
+            # Re-initialize the PowerSwitch as the old connection may be stale
+            ps = PowerSwitch(self.URI)
+            ps.stm_power_cycle()
+            print("[Drone] Power cycle complete. Waiting for reboot...")
+            time.sleep(5)  # Give the Crazyflie time to reboot and restart
+        except Exception as e:
+            print(f"[Drone] ERROR during power cycle: {e}")
+            return False  # Return failure status
+
+        return True
 
 if __name__ == "__main__":
     # Testing instructions
