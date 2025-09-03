@@ -8,33 +8,24 @@ from typing import Dict, List, Tuple, Any
 
 class DroneEnvironment(ABC):
     """Base drone environment that handles common drone operations"""
-    def __init__(self, max_velocity: float = 0.25,  step_time: float = 0.5, exploration_steps: int = 1000):
+    def __init__(self, max_velocity: float = 0.25, step_time: float = 0.5):
 
         self.drone = Drone()
         self.reset_position = [0, 0, 1]
         self.max_velocity = max_velocity
         self.step_time = step_time
         self.steps = 0
-        self.exploration_steps = exploration_steps
-        self.truncate_next = False
         self.seed = 0
 
-        self.total_steps = 0
-
         self.battery_threshold = 3.15
-
         self.observation_space = 8
 
-        # Movement Boundary
+        # Movement Boundary - can be overridden by tasks
         self.xy_limit = 1.0
         self.z_limit = 0.5
 
         # Reset target position optimization
         self._reset_target_set = False
-
-        # Reward specific properties
-        self.exited_testing_boundary = False
-        self.boundary_penalise = False
 
     def _reset_control_properties(self):
         self.drone.clear_command_queue()
@@ -50,7 +41,6 @@ class DroneEnvironment(ABC):
         # Stop the current velocity
         self.drone.set_velocity_vector(0, 0, 0)
         time.sleep(0.5)
-
 
         self.steps = 0
         # Check that the drone is not already flying
@@ -75,12 +65,6 @@ class DroneEnvironment(ABC):
         time.sleep(1)
         self.drone.stop_position_control()
 
-        if self.exited_testing_boundary:
-            self.boundary_penalise = True
-            self.exited_testing_boundary = False
-            print("--------")
-            print(f"total steps: {self.total_steps}")
-            print("--------")
         self.drone.clear_reset_position_event()
 
         # Reset task-specific state
@@ -95,30 +79,15 @@ class DroneEnvironment(ABC):
         print(f"Battery level: {self.current_battery}")
 
         self.steps += 1
-        self.total_steps += 1
-
-        if self.total_steps == self.exploration_steps:
-
-            print("\n")
-            print("SWITCHING TO LEARNING PHASE...")
-            print("\n")
-
-            self.truncate_next = True
 
         print(f"action: {action}")
         if len(action) != 3:
             raise ValueError("Action must be a 3-element array [vx, vy, vz]")
 
-        if self.total_steps > self.exploration_steps:
-            # Denormalize action from [-1, 1] to [-max_velocity, max_velocity]
-            vx = action[0] * self.max_velocity
-            vy = action[1] * self.max_velocity
-            vz = action[2] * self.max_velocity
-        else:
-            # Denormalize action from [0, 1] to [-max_velocity, max_velocity]
-            vx = action[0] * (2 * self.max_velocity) - self.max_velocity  # [0,1] -> [-max_velocity, max_velocity]
-            vy = action[1] * (2 * self.max_velocity) - self.max_velocity
-            vz = action[2] * (2 * self.max_velocity) - self.max_velocity
+        # Denormalize action from [-1, 1] to [-max_velocity, max_velocity]
+        vx = action[0] * self.max_velocity
+        vy = action[1] * self.max_velocity
+        vz = action[2] * self.max_velocity
 
         current_pos = self.drone.get_position()
         # Store previous state for reward calculation
@@ -140,7 +109,7 @@ class DroneEnvironment(ABC):
         print("******")
         print(f"REWARD for current step {reward}")
         print(f"POSITION IN ACTION SPACE: {new_pos}")
-        print(f"Total steps: {self.total_steps}")
+        print(f"Episode steps: {self.steps}")
 
         # Check if episode is done using task-specific logic
         done = self._check_if_done(current_state)
@@ -249,15 +218,17 @@ class DroneEnvironment(ABC):
         """Generate the random seed for the environment"""
         self.seed = np.random.randint(0, 2**32 - 1)
 
-    def is_in_testing_zone(self):
-        x, y, z = self.drone.get_position()
-        in_height_range = self.z_limit < z < self.z_limit + self.reset_position[2]
-        if abs(x) > self.xy_limit or abs(y) > self.xy_limit:
-            return False
-        elif not in_height_range:
-            return False
+    def is_in_boundaries(self, position=None):
+        """Check if drone is within movement boundaries - can be overridden by tasks"""
+        if position is None:
+            x, y, z = self.drone.get_position()
+        else:
+            x, y, z = position
 
-        return True
+        in_height_range = self.z_limit < z < self.z_limit + self.reset_position[2]
+        in_xy_range = abs(x) <= self.xy_limit and abs(y) <= self.xy_limit
+
+        return in_xy_range and in_height_range
 
     def need_to_change_battery(self):
         self.drone.battery_level = self.drone.get_battery()
@@ -266,26 +237,36 @@ class DroneEnvironment(ABC):
         return False
 
     def change_battery(self):
+
         print("[Drone] Beginning battery change operation.")
         self.drone.land()
         self.drone.is_landed_event.wait(timeout=15)
 
         self.drone.pre_battery_change_cleanup()
-
         time.sleep(2)
+        #loop until you get a clear 'y' or 'n' from the user
+        while True:
+            response = input("Is the battery changed and ready to fly? (y/n): ").lower()
+            if response == 'y':
+                break  # Exit the loop and continue with take-off
+            elif response == 'n':
+                print("[Drone] Operation aborted by user.")
+                return False # Exit the function
+            else:
+                print("[Drone] Invalid input. Please enter 'y' for yes or 'n' to abort.")
 
-        print("Battery changed? y/n")
-        battery_changed = input()
-
-        if battery_changed == "y":
-            print("Continue training")
-
-        # Reinitialise crazyflie parametres
+        # re-initialize and take off
+        print("[Drone] Re-initializing...")
         self.drone._initialise_crazyflie()
+
         self.drone.take_off()
-        self.drone.is_flying_event.wait(timeout=15)
-        print("[Drone] Taking off after battery change successful.")
+        if not self.drone.is_flying_event.wait(timeout=15):
+            print("[ERROR] Drone failed to confirm take-off. MANUAL INTERVENTION REQUIRED.")
+            return False # Exit because the drone is in an uncertain state
+
+        print("[Drone] Take-off successful.")
         print("[Drone] Battery change operation complete.")
+        return True
 
 
     @property

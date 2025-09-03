@@ -5,11 +5,17 @@ from typing import Dict, List, Any
 from drone_gym.drone_environment import DroneEnvironment
 
 
-class DroneNavigationTask(DroneEnvironment):
-    """Drone navigation task - reach a target position"""
+class MoveToPosition(DroneEnvironment):
+    """Reinforcement learning task for drone navigation to a target position"""
 
-    def __init__(self, max_velocity: float = 0.25, step_time: float = 0.5):
+    def __init__(self, max_velocity: float = 0.25, step_time: float = 0.5,
+                 exploration_steps: int = 1000):
         super().__init__(max_velocity, step_time)
+
+        # RL Training parameters
+        self.exploration_steps = exploration_steps
+        self.total_steps = 0
+        self.truncate_next = False
 
         # Task-specific parameters
         self.goal_position = [0, 0.5, 0.5]  # Goal position
@@ -23,12 +29,48 @@ class DroneNavigationTask(DroneEnvironment):
 
         # Task state
         self.done = False
-        self.prior_state = None
+        self.boundary_penalise = False
+        self.exited_testing_boundary = False
+
+    def reset(self):
+        """Reset the drone to initial position and handle task-specific logic"""
+        # Handle boundary penalty from previous episode
+        if self.exited_testing_boundary:
+            self.boundary_penalise = True
+            self.exited_testing_boundary = False
+            print("--------")
+            print(f"total steps: {self.total_steps}")
+            print("--------")
+
+        # Call parent reset
+        state = super().reset()
+        return state
+
+    def step(self, action):
+        """Execute one step with RL-specific logic for exploration vs learning phases"""
+        # Handle exploration vs learning phase transition
+        self.total_steps += 1
+
+        if self.total_steps == self.exploration_steps:
+            print("\n")
+            print("SWITCHING TO LEARNING PHASE...")
+            print("\n")
+            self.truncate_next = True
+
+        # Modify action normalization based on phase
+        if self.total_steps > self.exploration_steps:
+            # Learning phase: action is already in [-1, 1]
+            processed_action = action
+        else:
+            # Exploration phase: convert from [0, 1] to [-1, 1]
+            processed_action = [action[0] * 2 - 1, action[1] * 2 - 1, action[2] * 2 - 1]
+
+        # Call parent step method with processed action
+        return super().step(processed_action)
 
     def _reset_task_state(self):
         """Reset task-specific state variables"""
         self.done = False
-        self.prior_state = None
 
     def _get_state(self) -> np.ndarray:
         """Get the current state representation for the navigation task"""
@@ -99,6 +141,10 @@ class DroneNavigationTask(DroneEnvironment):
 
         return False
 
+    def is_in_testing_zone(self):
+        """Check if drone is in the testing zone (task-specific boundary logic)"""
+        return self.is_in_boundaries()
+
     def _check_if_truncated(self, current_state: Dict[str, Any]) -> bool:
         """Check if episode should be truncated"""
         if self.need_to_change_battery():
@@ -115,7 +161,6 @@ class DroneNavigationTask(DroneEnvironment):
 
         return False
 
-
     def _get_additional_info(self, current_state: Dict[str, Any]) -> Dict[str, Any]:
         """Get additional task-specific info"""
         return {
@@ -125,12 +170,8 @@ class DroneNavigationTask(DroneEnvironment):
             'description': "Gym environment for reinforcement learning control of drones"
         }
 
-    def sample_action(self, safety=True):
-        if safety:
-            x, y , z= np.random.uniform(0, 1, size=(3,))
-            print("Sampled action:", x, y)
-            # z value is 0.5 which will be normalised to 0
-            return np.array([x, y, z])
+    def sample_action(self):
+        """Sample an action for exploration phase - returns action in [0, 1] range"""
         return np.random.uniform(0, 1, size=(3,))
 
     def _render_task_specific_info(self):
@@ -144,23 +185,10 @@ class DroneNavigationTask(DroneEnvironment):
         print(f"Success Threshold: {self.distance_threshold:.2f}")
         print(f"Done: {self.done}")
 
-    # Task-specific methods
-    def set_goal_position(self, target: List[float]):
-        """Set a new target position for the drone to reach"""
-        if len(target) != 3:
-            raise ValueError("Target must be a 3-element array [x, y, z]")
-        self.goal_position = target
-        print(f"Target position set to: {target}")
-
-    def set_distance_threshold(self, threshold: float):
-        """Set the distance threshold for considering target reached"""
-        self.distance_threshold = threshold
-        print(f"Distance threshold set to: {threshold}")
-
 
 if __name__ == "__main__":
     # quick sanity test
-    env = DroneNavigationTask()
+    env = MoveToPosition()
     env.reset()
     env.drone.set_velocity_vector(2, 0, 0)
     time.sleep(2)
@@ -171,7 +199,7 @@ if __name__ == "__main__":
     # for _ in range(3):
     #     a = env.sample_action()
     #     s, r, d, t, i = env.step(a)
-    #     assert s.shape == (9,)
-    #     assert -50 <= r <= 100
+    #     assert s.shape == (8,)  # Updated observation space size
+    #     assert -50 <= r <= 150  # Updated reward range
     env.close()
     print("Sanity-check passed")

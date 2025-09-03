@@ -292,10 +292,9 @@ class Drone:
             self.cf.log.reset()
             time.sleep(0.5)
 
-            # --- Add the EKF reset here ---
             print("[Drone] Resetting state estimation (EKF)...")
             self.cf.param.set_value('kalman.resetEstimation', '1')
-            time.sleep(0.1) # A short delay to let the reset be processed
+            time.sleep(0.1)
 
             # Arm the drone
             print("[Crazyflie] Arming Crazyflie...")
@@ -574,12 +573,6 @@ class Drone:
 
                     # Change velocity to be handled by the main thread
                     self.set_velocity_vector(velocity["x"], velocity["y"], velocity["z"])
-
-                    # self.mc.start_linear_motion(
-                    #     velocity["x"],
-                    #     velocity["y"],
-                    #     velocity["z"]
-                    # )
 
                     if debugging:
                         print(f"[Controller] Pos error: ({error['x']:.2f}, {error['y']:.2f}, {error['z']:.2f}) → "
