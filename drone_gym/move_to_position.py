@@ -20,17 +20,20 @@ class MoveToPosition(DroneEnvironment):
         # Task-specific parameters
         self.goal_position = [0, 0.5, 0.5]  # Goal position
         self.distance_threshold = 0.1  # Distance threshold to consider target reached
-        self.max_distance = 5.0  # Maximum distance for normalization
+        self.max_distance = 1  # Maximum distance for normalization
 
         # Reward parameters
         self.success_reward = 100.0
         self.out_of_bounds_penalty = -100.0
-        self.distance_improvement_multiplier = 10.0
+        self.distance_improvement_multiplier = 100.0
 
         # Task state
         self.done = False
         self.boundary_penalise = False
         self.exited_testing_boundary = False
+
+        # Distance tracking for reward calculation
+        self.previous_distance = self.max_distance
 
     def reset(self):
         """Reset the drone to initial position and handle task-specific logic"""
@@ -44,6 +47,10 @@ class MoveToPosition(DroneEnvironment):
 
         # Call parent reset
         state = super().reset()
+
+        # Initialize previous_distance for reward calculation
+        self.previous_distance = self._distance_to_target(self.drone.get_position())
+
         return state
 
     def step(self, action):
@@ -106,21 +113,20 @@ class MoveToPosition(DroneEnvironment):
 
     def _calculate_reward(self, current_state: Dict[str, Any]) -> float:
         """Calculate reward for navigation task"""
-        position = current_state['position']
-        distance = self._distance_to_target(position)
+        current_distance = current_state['distance_to_target']
 
-        # Base reward is negative distance (closer = higher reward)
-        # currently this reward will never be positive and is too low. assuming the max distance is (3,3,3) reward = -5.2.
-        # Changed from reward = -distance to reward = 50-10*distance
-        reward = 20 - 20*distance
+        distance_improvement = self.previous_distance - current_distance
+        reward = self.distance_improvement_multiplier * distance_improvement
 
-        # Bonus for reaching target
-        if distance < self.distance_threshold:
+        if current_distance < self.distance_threshold:
             reward += self.success_reward
 
         if self.boundary_penalise:
             reward += self.out_of_bounds_penalty
             self.boundary_penalise = False
+
+        # Update for the next step
+        self.previous_distance = current_distance
 
         return reward
 
