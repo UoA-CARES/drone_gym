@@ -8,24 +8,33 @@ from typing import Dict, List, Tuple, Any
 
 class DroneEnvironment(ABC):
     """Base drone environment that handles common drone operations"""
-    def __init__(self, max_velocity: float = 0.3,  step_time: float = 1, max_steps: int = 200):
+    def __init__(self, max_velocity: float = 0.25,  step_time: float = 0.5, exploration_steps: int = 1000):
 
         self.drone = Drone()
         self.reset_position = [0, 0, 1]
         self.max_velocity = max_velocity
         self.step_time = step_time
         self.steps = 0
-        self.max_steps = max_steps
+        self.exploration_steps = exploration_steps
+        self.truncate_next = False
         self.seed = 0
 
-        self.battery_threshold = 3.15
-        # self.battery_threshold = 3.45
+        self.total_steps = 0
 
-        self.observation_space = 6
+        self.battery_threshold = 3.15
+
+        self.observation_space = 8
 
         # Movement Boundary
         self.xy_limit = 1.0
         self.z_limit = 0.5
+
+        # Reset target position optimization
+        self._reset_target_set = False
+
+        # Reward specific properties
+        self.exited_testing_boundary = False
+        self.boundary_penalise = False
 
     def _reset_control_properties(self):
         self.drone.clear_command_queue()
@@ -41,19 +50,23 @@ class DroneEnvironment(ABC):
         # Stop the current velocity
         self.drone.set_velocity_vector(0, 0, 0)
         time.sleep(0.5)
+
+
         self.steps = 0
         # Check that the drone is not already flying
-        #
         print("DRONE RESET")
 
         if not self.drone.is_flying_event.is_set():
             print("Control: The drone is already flying")
             self.drone.take_off()
+            time.sleep(1)
 
         # Ensure drone is flying before setting target position
         self.drone.is_flying_event.wait(timeout=15)
 
-        self.drone.set_target_position(self.reset_position[0], self.reset_position[1], self.reset_position[2])
+        # Set reset target position only once (lazy initialization)
+        # self._ensure_reset_target_set()
+        self.drone.set_target_position(0, 0, 1)
         time.sleep(0.1)  # Allow target position to be set
         self.drone.start_position_control()
 
@@ -61,6 +74,13 @@ class DroneEnvironment(ABC):
         self.drone.at_reset_position.wait(timeout=12)
         time.sleep(1)
         self.drone.stop_position_control()
+
+        if self.exited_testing_boundary:
+            self.boundary_penalise = True
+            self.exited_testing_boundary = False
+            print("--------")
+            print(f"total steps: {self.total_steps}")
+            print("--------")
         self.drone.clear_reset_position_event()
 
         # Reset task-specific state
@@ -68,24 +88,37 @@ class DroneEnvironment(ABC):
 
         return self._get_state()
 
-    def step(self, action) -> Tuple[np.ndarray, float, bool, bool, Dict]:
+    def step(self, action):
         """Execute one step in the environment"""
         # Check that the current drone battery is above the threshold
         self.current_battery = self.drone.get_battery()
         print(f"Battery level: {self.current_battery}")
-        # if self.current_battery is not None:
-        #     if self.current_battery <= self.battery_threshold:
-        #         self.drone.land()
 
         self.steps += 1
+        self.total_steps += 1
+
+        if self.total_steps == self.exploration_steps:
+
+            print("\n")
+            print("SWITCHING TO LEARNING PHASE...")
+            print("\n")
+
+            self.truncate_next = True
+
         print(f"action: {action}")
         if len(action) != 3:
             raise ValueError("Action must be a 3-element array [vx, vy, vz]")
 
-        # Denormalize action from [0, 1] to [-max_velocity, max_velocity]
-        vx = action[0] * (2 * self.max_velocity) - self.max_velocity  # [0,1] -> [-max_velocity, max_velocity]
-        vy = action[1] * (2 * self.max_velocity) - self.max_velocity
-        vz = action[2] * (2 * self.max_velocity) - self.max_velocity
+        if self.total_steps > self.exploration_steps:
+            # Denormalize action from [-1, 1] to [-max_velocity, max_velocity]
+            vx = action[0] * self.max_velocity
+            vy = action[1] * self.max_velocity
+            vz = action[2] * self.max_velocity
+        else:
+            # Denormalize action from [0, 1] to [-max_velocity, max_velocity]
+            vx = action[0] * (2 * self.max_velocity) - self.max_velocity  # [0,1] -> [-max_velocity, max_velocity]
+            vy = action[1] * (2 * self.max_velocity) - self.max_velocity
+            vz = action[2] * (2 * self.max_velocity) - self.max_velocity
 
         current_pos = self.drone.get_position()
         # Store previous state for reward calculation
@@ -101,6 +134,14 @@ class DroneEnvironment(ABC):
 
         # Calculate reward using task-specific logic
         reward = self._calculate_reward(current_state)
+
+        # Debugging
+        print("\n")
+        print("******")
+        print(f"REWARD for current step {reward}")
+        print(f"POSITION IN ACTION SPACE: {new_pos}")
+        print(f"Total steps: {self.total_steps}")
+
         # Check if episode is done using task-specific logic
         done = self._check_if_done(current_state)
         truncated = self._check_if_truncated(current_state)
@@ -174,6 +215,15 @@ class DroneEnvironment(ABC):
         """Set the duration for each velocity command"""
         self.step_time = step_time
         print(f"Step time set to {step_time} seconds")
+
+    def set_reset_position(self, position: List[float]):
+        """Set a new reset position and invalidate the cached target"""
+        if len(position) != 3:
+            raise ValueError("Reset position must be a 3-element list [x, y, z]")
+
+        self.reset_position = position.copy()
+        self._reset_target_set = False  # Force re-setting on next reset
+        print(f"Reset position updated to {self.reset_position}")
 
     def close(self):
         """Clean up the drone environment"""
