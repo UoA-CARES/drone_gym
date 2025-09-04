@@ -3,6 +3,10 @@ import math
 import time
 from typing import Dict, List, Any
 from drone_gym.drone_environment import DroneEnvironment
+import matplotlib.pyplot as plt
+from mpl_toolkits.mplot3d import Axes3D
+import io
+import cv2
 
 
 class MoveToPosition(DroneEnvironment):
@@ -35,8 +39,16 @@ class MoveToPosition(DroneEnvironment):
         # Distance tracking for reward calculation
         self.previous_distance = self.max_distance
 
-    def reset(self):
+        # Evaluation mode tracking
+        self.successful_episodes_count = 0
+
+    def reset(self, training: bool = True):
         """Reset the drone to initial position and handle task-specific logic"""
+
+        # Reset successful episodes count when starting evaluation
+        if not training and not self._is_evaluating:
+            self.successful_episodes_count = 0
+
         # Handle boundary penalty from previous episode
         if self.exited_testing_boundary:
             self.boundary_penalise = True
@@ -46,7 +58,7 @@ class MoveToPosition(DroneEnvironment):
             print("--------")
 
         # Call parent reset
-        state = super().reset()
+        state = super().reset(training)
 
         # Initialize previous_distance for reward calculation
         self.previous_distance = self._distance_to_target(self.drone.get_position())
@@ -138,6 +150,9 @@ class MoveToPosition(DroneEnvironment):
         # Success condition
         if distance < self.distance_threshold:
             self.done = True
+            # Increment success counter only during evaluation
+            if self._is_evaluating:
+                self.successful_episodes_count += 1
             return True
 
         # Failure conditions
@@ -169,12 +184,18 @@ class MoveToPosition(DroneEnvironment):
 
     def _get_additional_info(self, current_state: Dict[str, Any]) -> Dict[str, Any]:
         """Get additional task-specific info"""
-        return {
+        info = {
             'goal_position': self.goal_position,
             'success': current_state['distance_to_target'] < self.distance_threshold,
             'out_of_bounds': not current_state['in_boundaries'],
             'description': "Gym environment for reinforcement learning control of drones"
         }
+
+        # Add success count during evaluation
+        if self._is_evaluating:
+            info['success_count'] = self.successful_episodes_count
+
+        return info
 
     def sample_action(self):
         """Sample an action for exploration phase - returns action in [0, 1] range"""
@@ -190,6 +211,68 @@ class MoveToPosition(DroneEnvironment):
         print(f"Distance to Target: {distance:.2f}")
         print(f"Success Threshold: {self.distance_threshold:.2f}")
         print(f"Done: {self.done}")
+
+    def grab_frame(self, height: int = 240, width: int = 300) -> np.ndarray:
+        """
+        Generate a 3D plot of the drone's trajectory, convert to image array for video recording
+        """
+        fig = plt.figure(figsize=(width / 100, height / 100), dpi=100)
+        ax = fig.add_subplot(111, projection='3d')
+
+        # Return black frame if no positions recorded yet
+        if not self.episode_positions:
+            plt.close(fig)
+            return np.zeros((height, width, 3), dtype=np.uint8)
+
+        # Convert positions to numpy array for easier manipulation
+        pos_array = np.array(self.episode_positions)
+        x, y, z = pos_array[:, 0], pos_array[:, 1], pos_array[:, 2]
+
+        # Plot the drone's trajectory
+        ax.plot(x, y, z, label='Drone Path', color='cyan', linewidth=2)
+
+        # Mark important points
+        ax.scatter(x[0], y[0], z[0], color='green', s=100, label='Start', depthshade=False)
+        ax.scatter(x[-1], y[-1], z[-1], color='red', s=100, label='Current', depthshade=False)
+        ax.scatter(self.goal_position[0], self.goal_position[1], self.goal_position[2],
+                   color='blue', marker='*', s=200, label='Goal', depthshade=False)
+
+        # Set consistent plot limits based on environment boundaries
+        ax.set_xlim([-self.xy_limit, self.xy_limit])
+        ax.set_ylim([-self.xy_limit, self.xy_limit])
+        ax.set_zlim([0, self.z_limit + self.reset_position[2]])
+
+        # Labels and title
+        ax.set_xlabel('X (m)')
+        ax.set_ylabel('Y (m)')
+        ax.set_zlabel('Z (m)')
+
+        # Add episode info to title
+        success_info = f"Successes: {self.successful_episodes_count}" if self._is_evaluating else ""
+        ax.set_title(f'Episode Trajectory (Step {self.steps}) {success_info}')
+        ax.legend()
+
+        # Convert matplotlib figure to image array
+        buf = io.BytesIO()
+        fig.savefig(buf, format='png', dpi=100, bbox_inches='tight', facecolor='white')
+        buf.seek(0)
+
+        # Decode the PNG buffer to numpy array
+        img_arr = np.frombuffer(buf.getvalue(), dtype=np.uint8)
+        buf.close()
+        plt.close(fig)
+
+        # Use cv2 to decode and resize
+        frame = cv2.imdecode(img_arr, cv2.IMREAD_COLOR)
+        if frame is not None:
+            frame = cv2.resize(frame, (width, height))
+            # Convert BGR to RGB for consistency
+            frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        else:
+            # Fallback to black frame if decode fails
+            frame = np.zeros((height, width, 3), dtype=np.uint8)
+
+        return frame
 
 
 if __name__ == "__main__":

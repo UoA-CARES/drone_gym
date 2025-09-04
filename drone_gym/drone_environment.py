@@ -27,14 +27,29 @@ class DroneEnvironment(ABC):
         # Reset target position optimization
         self._reset_target_set = False
 
+        # Episode tracking for evaluation mode
+        self._is_evaluating = False
+        self.episode_positions = []
+        self._log_path = None
+
     def _reset_control_properties(self):
         self.drone.clear_command_queue()
         time.sleep(0.5)  # Allow any in-flight commands to be processed
         self.drone.last_error = {"x": 0.0, "y": 0.0, "z": 0.0}
         self.drone.integral = {"x": 0.0, "y": 0.0, "z": 0.0}
 
-    def reset(self):
+    def reset(self, training: bool = True):
         """Reset the drone to initial position and state"""
+
+        # Handle evaluation mode detection
+        if not training and not self._is_evaluating:
+            print("--- STARTING NEW EVALUATION BLOCK ---")
+            self._is_evaluating = True
+        elif training:
+            self._is_evaluating = False
+
+        # Clear episode position tracking
+        self.episode_positions = []
 
         self._reset_control_properties()
 
@@ -70,6 +85,10 @@ class DroneEnvironment(ABC):
         # Reset task-specific state
         self._reset_task_state()
 
+        # Record initial position
+        initial_position = self.drone.get_position()
+        self.episode_positions.append(initial_position)
+
         return self._get_state()
 
     def step(self, action):
@@ -100,6 +119,9 @@ class DroneEnvironment(ABC):
 
         new_pos = self.drone.get_position()
         current_state = self._generate_state_dict(current_pos)
+
+        # Track position for episode trajectory
+        self.episode_positions.append(new_pos)
 
         # Calculate reward using task-specific logic
         reward = self._calculate_reward(current_state)
@@ -217,6 +239,11 @@ class DroneEnvironment(ABC):
     def set_seed(self):
         """Generate the random seed for the environment"""
         self.seed = np.random.randint(0, 2**32 - 1)
+
+    def grab_frame(self, height: int = 240, width: int = 300) -> np.ndarray:
+        """Generate a frame for video recording - to be overridden by tasks"""
+        # Default implementation returns white frame
+        return np.full((height, width, 3), 255, dtype=np.uint8)
 
     def is_in_boundaries(self, position=None):
         """Check if drone is within movement boundaries - can be overridden by tasks"""
