@@ -13,18 +13,23 @@ class MoveToPosition(DroneEnvironment):
     """Reinforcement learning task for drone navigation to a target position"""
 
     def __init__(self, max_velocity: float = 0.25, step_time: float = 0.5,
-                 exploration_steps: int = 1000):
+                 exploration_steps: int = 1000, episode_length: int = 40):
         super().__init__(max_velocity, step_time)
 
         # RL Training parameters
+        self.episode_length = episode_length
         self.exploration_steps = exploration_steps
         self.total_steps = 0
         self.truncate_next = False
 
         # Task-specific parameters
-        self.goal_position = [0, 0.5, 0.5]  # Goal position
+        self.goal_position = [0, 0.5, 1.0]  # Goal position
         self.distance_threshold = 0.1  # Distance threshold to consider target reached
         self.max_distance = 1  # Maximum distance for normalization
+        self.time_tolerance = 0.15 # tolerance time for calculating travel distance
+
+        # hard coded z limit
+        self.boundary = [self.xy_limit, self.xy_limit, self.z_limit, self.z_limit + 1]
 
         # Reward parameters
         self.success_reward = 100.0
@@ -41,6 +46,7 @@ class MoveToPosition(DroneEnvironment):
 
         # Evaluation mode tracking
         self.successful_episodes_count = 0
+
 
     def reset(self, training: bool = True):
         """Reset the drone to initial position and handle task-specific logic"""
@@ -84,8 +90,35 @@ class MoveToPosition(DroneEnvironment):
             # Exploration phase: convert from [0, 1] to [-1, 1]
             processed_action = [action[0] * 2 - 1, action[1] * 2 - 1, action[2] * 2 - 1]
 
+
+        # determine whether not the action we pass will exceed the boundary
+        position = self.drone.get_position()
+        vx = processed_action[0] * self.max_velocity
+        vy = processed_action[1] * self.max_velocity
+        vz = processed_action[2] * self.max_velocity
+
+        time_step = self.step_time + self.time_tolerance
+        sx = time_step * vx
+        sy = time_step * vy
+        sz = time_step * vz
+
+        new_position = [sx + position[0], sy + position[1], sz + position[2]]
+        print(f" new position is: {new_position}")
+        # Check if new position would exceed boundaries
+        # X boundary check
+        if new_position[0] < -self.boundary[0] or new_position[0] > self.boundary[0]:
+            return super().step([0, 0, 0])
+
+        # Y boundary check
+        if new_position[1] < -self.boundary[1] or new_position[1] > self.boundary[1]:
+            return super().step([0, 0, 0])
+
+        if new_position[2] <= self.boundary[2] or new_position[2] > self.boundary[3]:
+            return super().step([0, 0, 0])
+
         # Call parent step method with processed action
         return super().step(processed_action)
+
 
     def _reset_task_state(self):
         """Reset task-specific state variables"""
@@ -168,17 +201,18 @@ class MoveToPosition(DroneEnvironment):
 
     def _check_if_truncated(self, current_state: Dict[str, Any]) -> bool:
         """Check if episode should be truncated"""
-        if self.need_to_change_battery():
-            self.change_battery()
-            # truncates the current episode -> resets
+
+        if self.steps >= self.episode_length:
+            if self.need_to_change_battery():
+                self.change_battery()
             return True
 
         if self.truncate_next:
             self.truncate_next = False
             return True
-        elif not self.is_in_testing_zone():
-            self.exited_testing_boundary = True
-            return True
+        # elif not self.is_in_testing_zone():
+        #     self.exited_testing_boundary = True
+        #     return True
 
         return False
 
