@@ -13,7 +13,7 @@ class MoveToPosition(DroneEnvironment):
     """Reinforcement learning task for drone navigation to a target position"""
 
     def __init__(self, max_velocity: float = 0.25, step_time: float = 0.5,
-                 exploration_steps: int = 1000, episode_length: int = 40):
+                 exploration_steps: int = 40, episode_length: int = 40):
         super().__init__(max_velocity, step_time)
 
         # RL Training parameters
@@ -256,7 +256,7 @@ class MoveToPosition(DroneEnvironment):
         # Return black frame if no positions recorded yet
         if not self.episode_positions:
             plt.close(fig)
-            return np.zeros((height, width, 3), dtype=np.uint8)
+            return np.full((height, width, 3), 255, dtype=np.uint8)
 
         # Convert positions to numpy array for easier manipulation
         pos_array = np.array(self.episode_positions)

@@ -93,6 +93,8 @@ class DroneEnvironment(ABC):
 
     def step(self, action):
         """Execute one step in the environment"""
+
+        print(self.episode_positions)
         # Check that the current drone battery is above the threshold
         self.current_battery = self.drone.get_battery()
         print(f"Battery level: {self.current_battery}")
