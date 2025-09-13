@@ -17,7 +17,7 @@ class DroneEnvironment(ABC):
         self.steps = 0
         self.seed = 0
 
-        self.battery_threshold = 3.15
+        self.battery_threshold = 3.25
         self.observation_space = 8
 
         # Movement Boundary - can be overridden by tasks
@@ -94,7 +94,7 @@ class DroneEnvironment(ABC):
     def step(self, action):
         """Execute one step in the environment"""
 
-        print(self.episode_positions)
+        # print(self.episode_positions)
         # Check that the current drone battery is above the threshold
         self.current_battery = self.drone.get_battery()
         print(f"Battery level: {self.current_battery}")

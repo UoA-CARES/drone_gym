@@ -12,8 +12,8 @@ import cv2
 class MoveToPosition(DroneEnvironment):
     """Reinforcement learning task for drone navigation to a target position"""
 
-    def __init__(self, max_velocity: float = 0.25, step_time: float = 0.5,
-                 exploration_steps: int = 1000, episode_length: int = 40):
+    def __init__(self, max_velocity: float = 0.20, step_time: float = 0.25,
+                 exploration_steps: int = 1000, episode_length: int = 50):
         super().__init__(max_velocity, step_time)
 
         # RL Training parameters
@@ -246,14 +246,15 @@ class MoveToPosition(DroneEnvironment):
         print(f"Success Threshold: {self.distance_threshold:.2f}")
         print(f"Done: {self.done}")
 
-    def grab_frame(self, height: int = 240, width: int = 300) -> np.ndarray:
+    def grab_frame(self, height: int = 540, width: int = 960) -> np.ndarray:
         """
         Generate a 3D plot of the drone's trajectory, convert to image array for video recording
         """
-        fig = plt.figure(figsize=(width / 100, height / 100), dpi=100)
+        # Use better aspect ratio (16:9) and higher DPI for crisp text
+        fig = plt.figure(figsize=(width / 120, height / 120), dpi=120)
         ax = fig.add_subplot(111, projection='3d')
 
-        # Return black frame if no positions recorded yet
+        # Return white frame if no positions recorded yet
         if not self.episode_positions:
             plt.close(fig)
             return np.full((height, width, 3), 255, dtype=np.uint8)
@@ -263,32 +264,44 @@ class MoveToPosition(DroneEnvironment):
         x, y, z = pos_array[:, 0], pos_array[:, 1], pos_array[:, 2]
 
         # Plot the drone's trajectory
-        ax.plot(x, y, z, label='Drone Path', color='cyan', linewidth=2)
+        ax.plot(x, y, z, label='Drone Path', color='yellow', linewidth=3)
 
-        # Mark important points
-        ax.scatter(x[0], y[0], z[0], color='green', s=100, label='Start', depthshade=False)
-        ax.scatter(x[-1], y[-1], z[-1], color='red', s=100, label='Current', depthshade=False)
+        # Mark important points with better visibility
+        ax.scatter(x[0], y[0], z[0], color='green', s=150, label='Start', depthshade=False, edgecolors='black', linewidth=1)
+        ax.scatter(x[-1], y[-1], z[-1], color='blue', s=150, label='Current', depthshade=False, edgecolors='black', linewidth=1)
         ax.scatter(self.goal_position[0], self.goal_position[1], self.goal_position[2],
-                   color='blue', marker='*', s=200, label='Goal', depthshade=False)
+                   color='red', marker='*', s=300, label='Goal', depthshade=False, edgecolors='black', linewidth=1)
 
-        # Set consistent plot limits based on environment boundaries
-        ax.set_xlim([-self.xy_limit, self.xy_limit])
-        ax.set_ylim([-self.xy_limit, self.xy_limit])
-        ax.set_zlim([0, self.z_limit + self.reset_position[2]])
+        # Labels and title with better font sizes
+        ax.set_xlabel('X (m)', fontsize=12, labelpad=10)
+        ax.set_ylabel('Y (m)', fontsize=12, labelpad=10)
+        ax.set_zlabel('Z (m)', fontsize=12, labelpad=10)
 
-        # Labels and title
-        ax.set_xlabel('X (m)')
-        ax.set_ylabel('Y (m)')
-        ax.set_zlabel('Z (m)')
+        # Adjust tick parameters for better visibility
+        ax.tick_params(axis='x', labelsize=10)
+        ax.tick_params(axis='y', labelsize=10)
+        ax.tick_params(axis='z', labelsize=10)
 
-        # Add episode info to title
+        # Better viewing angle to show Z-axis clearly
+        ax.view_init(elev=20, azim=45)
+
+        # Add episode info to title with better formatting
         success_info = f"Successes: {self.successful_episodes_count}" if self._is_evaluating else ""
-        ax.set_title(f'Episode Trajectory (Step {self.steps}) {success_info}')
-        ax.legend()
+        ax.set_title(f'Episode Trajectory (Step {self.steps}) {success_info}', fontsize=14, pad=20)
 
-        # Convert matplotlib figure to image array
+        # Position legend better
+        ax.legend(loc='upper right', bbox_to_anchor=(1.15, 1), fontsize=10)
+
+        # Add grid for better depth perception
+        ax.grid(True, alpha=0.3)
+
+        # Ensure tight layout with more padding
+        plt.tight_layout(pad=2.0)
+
+        # Convert matplotlib figure to image array with higher quality
         buf = io.BytesIO()
-        fig.savefig(buf, format='png', dpi=100, bbox_inches='tight', facecolor='white')
+        fig.savefig(buf, format='png', dpi=120, bbox_inches='tight',
+                    facecolor='white', edgecolor='none', pad_inches=0.2)
         buf.seek(0)
 
         # Decode the PNG buffer to numpy array
@@ -299,12 +312,15 @@ class MoveToPosition(DroneEnvironment):
         # Use cv2 to decode and resize
         frame = cv2.imdecode(img_arr, cv2.IMREAD_COLOR)
         if frame is not None:
-            frame = cv2.resize(frame, (width, height))
+            # Only resize if necessary (maintain aspect ratio)
+            current_h, current_w = frame.shape[:2]
+            if current_h != height or current_w != width:
+                frame = cv2.resize(frame, (width, height), interpolation=cv2.INTER_LANCZOS4)
             # Convert BGR to RGB for consistency
             frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         else:
-            # Fallback to black frame if decode fails
-            frame = np.zeros((height, width, 3), dtype=np.uint8)
+            # Fallback to white frame if decode fails
+            frame = np.full((height, width, 3), 255, dtype=np.uint8)
 
         return frame
 

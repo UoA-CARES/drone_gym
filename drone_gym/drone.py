@@ -67,7 +67,7 @@ class Drone:
         self.position_lock = threading.Lock()
 
         # Drone Safety
-        self.boundaries = {"x": 2.25, "y": 2.25, "z": 2.25}
+        self.boundaries = {"x": 2.5, "y": 2.5, "z": 2.25}
         self.safety_thread = None
         self.in_boundaries = True
         self.emergency_event = Event()
