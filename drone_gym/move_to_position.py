@@ -247,19 +247,16 @@ class MoveToPosition(DroneEnvironment):
         print(f"Done: {self.done}")
 
     def grab_frame(self, height: int = 540, width: int = 960) -> np.ndarray:
-        """
-        Generate a 3D plot of the drone's trajectory, convert to image array for video recording
-        """
-        # Use better aspect ratio (16:9) and higher DPI for crisp text
+
         fig = plt.figure(figsize=(width / 120, height / 120), dpi=120)
-        ax = fig.add_subplot(111, projection='3d')
+        ax = fig.add_subplot(111, projection='3d', position = [0.1 , 0.1 , 0.8, 0.8])
 
         # Return white frame if no positions recorded yet
         if not self.episode_positions:
             plt.close(fig)
             return np.full((height, width, 3), 255, dtype=np.uint8)
 
-        # Convert positions to numpy array for easier manipulation
+        # Convert positions to numpy array
         pos_array = np.array(self.episode_positions)
         x, y, z = pos_array[:, 0], pos_array[:, 1], pos_array[:, 2]
 
@@ -267,10 +264,14 @@ class MoveToPosition(DroneEnvironment):
         ax.plot(x, y, z, label='Drone Path', color='yellow', linewidth=3)
 
         # Mark important points with better visibility
-        ax.scatter(x[0], y[0], z[0], color='green', s=150, label='Start', depthshade=False, edgecolors='black', linewidth=1)
-        ax.scatter(x[-1], y[-1], z[-1], color='blue', s=150, label='Current', depthshade=False, edgecolors='black', linewidth=1)
+        ax.scatter(x[0], y[0], z[0], color='green', s=150, label='Start', depthshade=False, edgecolors='black', linewidth=0.5)
+        ax.scatter(x[-1], y[-1], z[-1], color='blue', s=150, label='Current', depthshade=False, edgecolors='black', linewidth=0.5)
         ax.scatter(self.goal_position[0], self.goal_position[1], self.goal_position[2],
                    color='red', marker='*', s=300, label='Goal', depthshade=False, edgecolors='black', linewidth=1)
+
+        ax.set_xlim(-1.5, 1.5)
+        ax.set_ylim(-1.5, 1.5)
+        ax.set_zlim(0.25, 1.25)
 
         # Labels and title with better font sizes
         ax.set_xlabel('X (m)', fontsize=12, labelpad=10)
@@ -300,7 +301,7 @@ class MoveToPosition(DroneEnvironment):
 
         # Convert matplotlib figure to image array with higher quality
         buf = io.BytesIO()
-        fig.savefig(buf, format='png', dpi=120, bbox_inches='tight',
+        fig.savefig(buf, format='png', dpi=120,
                     facecolor='white', edgecolor='none', pad_inches=0.2)
         buf.seek(0)
 
