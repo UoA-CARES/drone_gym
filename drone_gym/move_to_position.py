@@ -24,7 +24,7 @@ class MoveToPosition(DroneEnvironment):
 
         # Task-specific parameters
         self.goal_position = [0, 0.5, 1.0]  # Goal position
-        self.distance_threshold = 0.1  # Distance threshold to consider target reached
+        self.distance_threshold = 0.15  # Distance threshold to consider target reached
         self.max_distance = 1  # Maximum distance for normalization
         self.time_tolerance = 0.15 # tolerance time for calculating travel distance
 
@@ -89,7 +89,6 @@ class MoveToPosition(DroneEnvironment):
         else:
             # Exploration phase: convert from [0, 1] to [-1, 1]
             processed_action = [action[0] * 2 - 1, action[1] * 2 - 1, action[2] * 2 - 1]
-
 
         # determine whether not the action we pass will exceed the boundary
         position = self.drone.get_position()
@@ -178,7 +177,6 @@ class MoveToPosition(DroneEnvironment):
     def _check_if_done(self, current_state: Dict[str, Any]) -> bool:
         """Check if navigation task is complete"""
         distance = current_state['distance_to_target']
-        position = current_state['position']
 
         # Success condition
         if distance < self.distance_threshold:
@@ -186,11 +184,6 @@ class MoveToPosition(DroneEnvironment):
             # Increment success counter only during evaluation
             if self._is_evaluating:
                 self.successful_episodes_count += 1
-            return True
-
-        # Failure conditions
-        if not current_state['in_boundaries'] or position[2] <= 0:
-            self.done = True
             return True
 
         return False
@@ -249,7 +242,8 @@ class MoveToPosition(DroneEnvironment):
     def grab_frame(self, height: int = 540, width: int = 960) -> np.ndarray:
 
         fig = plt.figure(figsize=(width / 120, height / 120), dpi=120)
-        ax = fig.add_subplot(111, projection='3d', position = [0.1 , 0.1 , 0.8, 0.8])
+        # Reserve space for external overlay: left 10%, bottom 15%, width 75%, height 80%
+        ax = fig.add_subplot(111, projection='3d', position=[0.1, 0.15, 0.75, 0.75])
 
         # Return white frame if no positions recorded yet
         if not self.episode_positions:
@@ -290,14 +284,14 @@ class MoveToPosition(DroneEnvironment):
         success_info = f"Successes: {self.successful_episodes_count}" if self._is_evaluating else ""
         ax.set_title(f'Episode Trajectory (Step {self.steps}) {success_info}', fontsize=14, pad=20)
 
-        # Position legend better
-        ax.legend(loc='upper right', bbox_to_anchor=(1.15, 1), fontsize=10)
+        # Position legend to avoid top-left overlay area (overlay starts at x=10, y=30)
+        ax.legend(loc='lower right', fontsize=10, framealpha=0.9)
 
         # Add grid for better depth perception
         ax.grid(True, alpha=0.3)
 
-        # Ensure tight layout with more padding
-        plt.tight_layout(pad=2.0)
+        # Ensure tight layout with reserved space for external overlay
+        plt.tight_layout(pad=1.0, rect=[0, 0, 0.85, 0.9])
 
         # Convert matplotlib figure to image array with higher quality
         buf = io.BytesIO()

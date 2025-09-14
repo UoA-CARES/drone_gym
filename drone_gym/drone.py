@@ -691,9 +691,7 @@ class Drone:
             except queue.Empty:
                 break
 
-    def set_max_velocity(self, velocity):
-        """Set the maximum velocity limit for the contset_velocity_vectorroller"""
-        self.max_velocity = float(velocity)
+
         print(f"[Drone] Maximum velocity set to {self.max_velocity} m/s")
 
     def _setup_battery_logging(self):

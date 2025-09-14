@@ -31,6 +31,9 @@ class DroneEnvironment(ABC):
         self._is_evaluating = False
         self.episode_positions = []
         self._log_path = None
+        
+        # Success tracking for learning phase
+        self.success_count = 0
 
     def _reset_control_properties(self):
         self.drone.clear_command_queue()
@@ -138,6 +141,10 @@ class DroneEnvironment(ABC):
         # Check if episode is done using task-specific logic
         done = self._check_if_done(current_state)
         truncated = self._check_if_truncated(current_state)
+        
+        # Increment success count if episode is done successfully (not truncated) and not in evaluation mode
+        if done and not truncated and not self._is_evaluating:
+            self.success_count += 1
 
         # Generate info dict
         info = {
@@ -148,6 +155,7 @@ class DroneEnvironment(ABC):
             'normalized_action': action,  # Store the original normalized action
             'in_boundaries': self.drone.in_boundaries,
             'steps': self.steps,
+            'success_count': self.success_count,
             **self._get_additional_info(current_state)
         }
 
@@ -198,16 +206,6 @@ class DroneEnvironment(ABC):
             'max_velocity_ms': self.max_velocity,
             'step_duration_s': self.step_time
         }
-
-    def set_max_velocity(self, max_vel: float):
-        """Set the maximum velocity for action scaling"""
-        self.max_velocity = max_vel
-        print(f"Max velocity set to {max_vel} m/s")
-
-    def set_step_time(self, step_time: float):
-        """Set the duration for each velocity command"""
-        self.step_time = step_time
-        print(f"Step time set to {step_time} seconds")
 
     def set_reset_position(self, position: List[float]):
         """Set a new reset position and invalidate the cached target"""
