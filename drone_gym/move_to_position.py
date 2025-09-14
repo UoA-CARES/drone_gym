@@ -270,7 +270,7 @@ class MoveToPosition(DroneEnvironment):
         # Labels and title with better font sizes
         ax.set_xlabel('X (m)', fontsize=12, labelpad=10)
         ax.set_ylabel('Y (m)', fontsize=12, labelpad=10)
-        ax.set_zlabel('Z (m)', fontsize=12, labelpad=10)
+        ax.set_zlabel('Z (m)', fontsize=10, labelpad=15)  # Adjusted for constrained space
 
         # Adjust tick parameters for better visibility
         ax.tick_params(axis='x', labelsize=10)
@@ -278,7 +278,7 @@ class MoveToPosition(DroneEnvironment):
         ax.tick_params(axis='z', labelsize=10)
 
         # Better viewing angle to show Z-axis clearly
-        ax.view_init(elev=20, azim=45)
+        ax.view_init(elev=30, azim=45)  # Increased elevation for better Z-axis visibility
 
         # Add episode info to title with better formatting
         success_info = f"Successes: {self.successful_episodes_count}" if self._is_evaluating else ""
