@@ -13,7 +13,7 @@ class MoveToPosition(DroneEnvironment):
     """Reinforcement learning task for drone navigation to a target position"""
 
     def __init__(self, max_velocity: float = 0.20, step_time: float = 0.25,
-                 exploration_steps: int = 1000, episode_length: int = 50):
+                 exploration_steps: int = 1000, episode_length: int = 100):
         super().__init__(max_velocity, step_time)
 
         # RL Training parameters
@@ -242,8 +242,8 @@ class MoveToPosition(DroneEnvironment):
     def grab_frame(self, height: int = 540, width: int = 960) -> np.ndarray:
 
         fig = plt.figure(figsize=(width / 120, height / 120), dpi=120)
-        # Reserve space for external overlay: left 10%, bottom 15%, width 75%, height 80%
-        ax = fig.add_subplot(111, projection='3d', position=[0.1, 0.15, 0.75, 0.75])
+        # Reserve space for external overlay
+        ax = fig.add_subplot(111, projection='3d', position=[0.1, 0.15, 0.90, 0.75])
 
         # Return white frame if no positions recorded yet
         if not self.episode_positions:
@@ -258,10 +258,10 @@ class MoveToPosition(DroneEnvironment):
         ax.plot(x, y, z, label='Drone Path', color='yellow', linewidth=3)
 
         # Mark important points with better visibility
-        ax.scatter(x[0], y[0], z[0], color='green', s=150, label='Start', depthshade=False, edgecolors='black', linewidth=0.5)
-        ax.scatter(x[-1], y[-1], z[-1], color='blue', s=150, label='Current', depthshade=False, edgecolors='black', linewidth=0.5)
+        ax.scatter(x[0], y[0], z[0], color='green', s=100, label='Start', depthshade=False, edgecolors='black', linewidth=0.5)
+        ax.scatter(x[-1], y[-1], z[-1], color='blue', s=100, label='Current', depthshade=False, edgecolors='black', linewidth=0.5)
         ax.scatter(self.goal_position[0], self.goal_position[1], self.goal_position[2],
-                   color='red', marker='*', s=300, label='Goal', depthshade=False, edgecolors='black', linewidth=1)
+                   color='red', marker='*', s=100, label='Goal', depthshade=False, edgecolors='black', linewidth=1)
 
         ax.set_xlim(-1.5, 1.5)
         ax.set_ylim(-1.5, 1.5)
@@ -278,20 +278,19 @@ class MoveToPosition(DroneEnvironment):
         ax.tick_params(axis='z', labelsize=10)
 
         # Better viewing angle to show Z-axis clearly
-        ax.view_init(elev=30, azim=45)  # Increased elevation for better Z-axis visibility
+        ax.view_init(elev=10, azim=25)
 
         # Add episode info to title with better formatting
-        success_info = f"Successes: {self.successful_episodes_count}" if self._is_evaluating else ""
-        ax.set_title(f'Episode Trajectory (Step {self.steps}) {success_info}', fontsize=14, pad=20)
+        ax.set_title(f'Episode Trajectory (Step {self.steps})', fontsize=14, pad=20)
 
         # Position legend to avoid top-left overlay area (overlay starts at x=10, y=30)
-        ax.legend(loc='lower right', fontsize=10, framealpha=0.9)
+        ax.legend(loc='upper left', fontsize=7, framealpha=0.9, markerscale = 0.70)
 
         # Add grid for better depth perception
         ax.grid(True, alpha=0.3)
 
         # Ensure tight layout with reserved space for external overlay
-        plt.tight_layout(pad=1.0, rect=[0, 0, 0.85, 0.9])
+        plt.tight_layout(pad=2.0, rect=[0, 0.1, 0.85, 0.9])
 
         # Convert matplotlib figure to image array with higher quality
         buf = io.BytesIO()
