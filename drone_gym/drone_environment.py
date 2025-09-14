@@ -2,7 +2,6 @@ from abc import ABC, abstractmethod
 from drone_gym.drone import Drone
 import time
 import numpy as np
-from typing import Dict, List, Tuple, Any
 
 # TODO - make naming more consistent
 
@@ -31,7 +30,7 @@ class DroneEnvironment(ABC):
         self._is_evaluating = False
         self.episode_positions = []
         self._log_path = None
-        
+
         # Success tracking for learning phase
         self.success_count = 0
 
@@ -141,7 +140,7 @@ class DroneEnvironment(ABC):
         # Check if episode is done using task-specific logic
         done = self._check_if_done(current_state)
         truncated = self._check_if_truncated(current_state)
-        
+
         # Increment success count if episode is done successfully (not truncated) and not in evaluation mode
         if done and not truncated and not self._is_evaluating:
             self.success_count += 1
