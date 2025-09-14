@@ -34,7 +34,7 @@ class MoveToPosition(DroneEnvironment):
         # Reward parameters
         self.success_reward = 100.0
         self.out_of_bounds_penalty = -100.0
-        self.distance_improvement_multiplier = 100.0
+        self.distance_improvement_multiplier = 300.0
 
         # Task state
         self.done = False
