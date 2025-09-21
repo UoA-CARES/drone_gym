@@ -2,6 +2,7 @@ from abc import ABC, abstractmethod
 from drone_gym.drone import Drone
 import time
 import numpy as np
+from typing import Dict, List, Tuple, Any
 
 # TODO - make naming more consistent
 
@@ -12,6 +13,7 @@ class DroneEnvironment(ABC):
         self.drone = Drone()
         self.reset_position = [0, 0, 1]
         self.max_velocity = max_velocity
+        self.max_velocity_z = 0.1 
         self.step_time = step_time
         self.steps = 0
         self.seed = 0
@@ -110,7 +112,7 @@ class DroneEnvironment(ABC):
         # Denormalize action from [-1, 1] to [-max_velocity, max_velocity]
         vx = action[0] * self.max_velocity
         vy = action[1] * self.max_velocity
-        vz = action[2] * self.max_velocity
+        vz = action[2] * self.max_velocity_z # topples when moving up --> limit z velocity
 
         current_pos = self.drone.get_position()
         # Store previous state for reward calculation
@@ -290,7 +292,6 @@ class DroneEnvironment(ABC):
             print("[ERROR] Drone failed to confirm take-off. MANUAL INTERVENTION REQUIRED.")
             return False # Exit because the drone is in an uncertain state
 
-        print("[Drone] Take-off successful.")
         print("[Drone] Battery change operation complete.")
         return True
 

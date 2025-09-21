@@ -17,13 +17,13 @@ class Drone:
 
     def __init__(self):
         # Drone Properties
-        self.URI = uri_helper.uri_from_env(default='radio://0/80/2M/E7E7E7E7E7')
+        self.URI = uri_helper.uri_from_env(default='radio://0/79/2M/E7E7E7E7E7') # changed radio channel in 22/9
         self.default_height = 0.5
         self.deck_attached_event = Event()
         self.battery_lock = threading.Lock()
         self.battery_log_config = None
-        self.battery_level = 5.0
-        self.ps = PowerSwitch('radio://0/80/2M/E7E7E7E7E7')
+        self.battery_level = 5.0 # default value
+        self.ps = PowerSwitch('radio://0/79/2M/E7E7E7E7E7') # changed radio channel in 22/9
 
         # Drone Events
         self.is_flying_event = Event()
@@ -690,9 +690,6 @@ class Drone:
                 self.command_queue.get_nowait()
             except queue.Empty:
                 break
-
-
-        print(f"[Drone] Maximum velocity set to {self.max_velocity} m/s")
 
     def _setup_battery_logging(self):
 

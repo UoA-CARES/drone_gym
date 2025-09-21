@@ -12,8 +12,8 @@ import cv2
 class MoveToPosition(DroneEnvironment):
     """Reinforcement learning task for drone navigation to a target position"""
 
-    def __init__(self, max_velocity: float = 0.20, step_time: float = 0.25,
-                 exploration_steps: int = 1000, episode_length: int = 100):
+    def __init__(self, max_velocity: float = 0.20, step_time: float = 0.5,
+                 exploration_steps: int = 1000, episode_length: int = 50):
         super().__init__(max_velocity, step_time)
 
         # RL Training parameters
@@ -23,7 +23,7 @@ class MoveToPosition(DroneEnvironment):
         self.truncate_next = False
 
         # Task-specific parameters
-        self.goal_position = [0, 0.5, 1.0]  # Goal position
+        self.goal_position = [0, 0.5, 1]  # Goal position
         self.distance_threshold = 0.15  # Distance threshold to consider target reached
         self.max_distance = 1  # Maximum distance for normalization
         self.time_tolerance = 0.15 # tolerance time for calculating travel distance
@@ -160,6 +160,12 @@ class MoveToPosition(DroneEnvironment):
         current_distance = current_state['distance_to_target']
 
         distance_improvement = self.previous_distance - current_distance
+
+        print("***")
+        print(f"Previous distance {self.previous_distance}. Current Distance {current_distance}")
+        print(f"Distance improve is {distance_improvement}")
+        print("***")
+
         reward = self.distance_improvement_multiplier * distance_improvement
 
         if current_distance < self.distance_threshold:
