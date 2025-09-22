@@ -13,7 +13,7 @@ class MoveToPosition(DroneEnvironment):
     """Reinforcement learning task for drone navigation to a target position"""
 
     def __init__(self, max_velocity: float = 0.20, step_time: float = 0.5,
-                 exploration_steps: int = 1000, episode_length: int = 50):
+                 exploration_steps: int = 1000, episode_length: int = 40):
         super().__init__(max_velocity, step_time)
 
         # RL Training parameters
@@ -223,6 +223,8 @@ class MoveToPosition(DroneEnvironment):
         if self.steps >= self.episode_length:
             if self.need_to_change_battery():
                 self.change_battery()
+            elif current_state["position"][2] <= 0.25:
+                self.restart()
             return True
 
         if self.truncate_next:

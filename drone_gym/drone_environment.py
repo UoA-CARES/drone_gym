@@ -295,7 +295,28 @@ class DroneEnvironment(ABC):
         print("[Drone] Battery change operation complete.")
         return True
 
+    def restart(self):
 
+        self.drone.pre_battery_change_cleanup()
+        time.sleep(2)
+
+        while True:
+            response = input("Is the drone ready to fly again? (y/n): ").lower()
+            if response == 'y':
+                break  # Exit the loop and continue with take-off
+            elif response == 'n':
+                print("[Drone] Operation aborted by user.")
+                return False # Exit the function
+            else:
+                print("[Drone] Invalid input. Please enter 'y' for yes or 'n' to abort.")
+
+        self.drone._initialise_crazyflie()
+
+        self.drone.take_off()
+        if not self.drone.is_flying_event.wait(timeout=15):
+            print("[ERROR] Drone failed to confirm take-off. MANUAL INTERVENTION REQUIRED.")
+            return False # Exit because the drone is in an uncertain state
+        return True
     @property
     def max_action_value(self):
         return self.max_velocity
