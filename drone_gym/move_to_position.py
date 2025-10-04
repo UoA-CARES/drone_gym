@@ -13,7 +13,7 @@ class MoveToPosition(DroneEnvironment):
     """Reinforcement learning task for drone navigation to a target position"""
 
     def __init__(self, max_velocity: float = 0.20, step_time: float = 0.5,
-                 exploration_steps: int = 1000, episode_length: int = 65):
+                 exploration_steps: int = 1000, episode_length: int = 40):
         super().__init__(max_velocity, step_time)
 
         # RL Training parameters
@@ -23,8 +23,8 @@ class MoveToPosition(DroneEnvironment):
         self.truncate_next = False
 
         # Task-specific parameters
-        self.goal_position = [0, 0.8, 1]  # Goal position
-        self.distance_threshold = 0.10  # Distance threshold to consider target reached
+        self.goal_position = [0, 0.5, 1]  # Goal position
+        self.distance_threshold = 0.05  # Distance threshold to consider target reached
         self.max_distance = 1  # Maximum distance for normalization
         self.time_tolerance = 0.15 # tolerance time for calculating travel distance
 
@@ -91,9 +91,9 @@ class MoveToPosition(DroneEnvironment):
 
         else:
             # Exploration phase: convert from [0, 1] to [-1, 1]
-            # processed_action = [action[0] * 2 - 1, action[1] * 2 - 1, action[2] * 2 - 1,] 
+            # processed_action = [action[0] * 2 - 1, action[1] * 2 - 1, action[2] * 2 - 1,]
             # # deleted the z-value
-            processed_action = [action[0] * 2 - 1, action[1] * 2 - 1] 
+            processed_action = [action[0] * 2 - 1, action[1] * 2 - 1]
 
         # determine whether not the action we pass will exceed the boundary
         position = self.drone.get_position()
@@ -155,11 +155,10 @@ class MoveToPosition(DroneEnvironment):
         }
 
     def _distance_to_target(self, position: List[float]) -> float:
-        """Calculate Euclidean distance to target position"""
+        """Calculate 2D Euclidean distance to target position (x, y only)"""
         return math.sqrt(
             (position[0] - self.goal_position[0])**2 +
-            (position[1] - self.goal_position[1])**2 +
-            (position[2] - self.goal_position[2])**2
+            (position[1] - self.goal_position[1])**2
         )
 
     # def _calculate_reward(self, current_state: Dict[str, Any]) -> float:
@@ -186,7 +185,7 @@ class MoveToPosition(DroneEnvironment):
     #     self.previous_distance = current_distance
 
     #     return reward
-    
+
     # def _calculate_reward(self, current_state: Dict[str, Any]) -> float:
     #     position = current_state['position']
     #     distance = self._distance_to_target(position)
@@ -205,7 +204,7 @@ class MoveToPosition(DroneEnvironment):
     #         self.boundary_penalise = False
 
     #     return reward
-    
+
     def _calculate_reward(self, current_state: Dict[str, Any]) -> float:
         position = current_state['position']
         distance = self._distance_to_target(position)
@@ -278,7 +277,7 @@ class MoveToPosition(DroneEnvironment):
 
     def sample_action(self):
         """Sample an action for exploration phase - returns action in [0, 1] range"""
-        return np.random.uniform(0, 1, size=(2,)) 
+        return np.random.uniform(0, 1, size=(2,))
 
     def _render_task_specific_info(self):
         """Render navigation task specific information"""
