@@ -4,7 +4,6 @@ import time
 from typing import Dict, List, Any
 from drone_gym.drone_environment import DroneEnvironment
 import matplotlib.pyplot as plt
-from mpl_toolkits.mplot3d import Axes3D
 import io
 import cv2
 
@@ -12,7 +11,7 @@ import cv2
 class MoveToPosition(DroneEnvironment):
     """Reinforcement learning task for drone navigation to a target position"""
 
-    def __init__(self, max_velocity: float = 0.20, step_time: float = 0.5,
+    def __init__(self, max_velocity: float = 0.25, step_time: float = 0.5,
                  exploration_steps: int = 1000, episode_length: int = 40):
         super().__init__(max_velocity, step_time)
 
