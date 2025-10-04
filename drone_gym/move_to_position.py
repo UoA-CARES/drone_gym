@@ -22,6 +22,8 @@ class MoveToPosition(DroneEnvironment):
         self.total_steps = 0
         self.truncate_next = False
 
+        self.learning = False
+
         # Task-specific parameters
         self.goal_position = [0, 0.5, 1]  # Goal position
         self.distance_threshold = 0.05  # Distance threshold to consider target reached
@@ -72,19 +74,20 @@ class MoveToPosition(DroneEnvironment):
 
         return state
 
-    def step(self, action, learning = True):
+    def step(self, action):
         """Execute one step with RL-specific logic for exploration vs learning phases"""
         # Handle exploration vs learning phase transition
         self.total_steps += 1
 
-        if self.total_steps == self.exploration_steps:
+        if self.total_steps == self.exploration_steps and not self.learning:
             print("\n")
             print("SWITCHING TO LEARNING PHASE...")
             print("\n")
             self.truncate_next = True
+            self.learning = True
 
         # Modify action normalization based on phase
-        if self.total_steps > self.exploration_steps or learning == True:
+        if self.learning:
             # Learning phase: action is already in [-1, 1]
             processed_action = action
             assert len(action)==2,'action should be length 2'
