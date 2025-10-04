@@ -14,16 +14,21 @@ from cflib.utils.power_switch import PowerSwitch
 
 
 class Drone:
-
     def __init__(self):
         # Drone Properties
-        self.URI = uri_helper.uri_from_env(default='radio://0/79/2M/E7E7E7E7E7') # changed radio channel in 22/9
+        self.URI = uri_helper.uri_from_env(
+            default="radio://0/100/2M/E7E7E7E7E7"
+        )  # changed radio channel in 22/9
         self.default_height = 0.5
         self.deck_attached_event = Event()
         self.battery_lock = threading.Lock()
         self.battery_log_config = None
-        self.battery_level = 5.0 # default value
-        self.ps = PowerSwitch('radio://0/79/2M/E7E7E7E7E7') # changed radio channel in 22/9
+        self.battery_level = 5.0  # default value
+        self.ps = PowerSwitch(
+            "radio://0/100/2M/E7E7E7E7E7"
+        )  # changed radio channel in 22/9
+
+        self._last_position_print = 0
 
         # Drone Events
         self.is_flying_event = Event()
@@ -46,12 +51,14 @@ class Drone:
         self.gains = {
             "x": {"kp": 0.35, "kd": 0.1425, "ki": 0.08},
             "y": {"kp": 0.35, "kd": 0.1425, "ki": 0.08},
-            "z": {"kp": 0.4, "kd": 0.03, "ki": 0}
+            "z": {"kp": 0.4, "kd": 0.03, "ki": 0},
         }
         self.last_error = {"x": 0.0, "y": 0.0, "z": 0.0}
         self.integral = {"x": 0.0, "y": 0.0, "z": 0.0}
-        self.max_velocity = 0.25 # Maximum velocity in m/s
-        self.position_deadband = 0.10  # Position error below which velocity will be zero (in meters)
+        self.max_velocity = 0.25  # Maximum velocity in m/s
+        self.position_deadband = (
+            0.10  # Position error below which velocity will be zero (in meters)
+        )
 
         # Crazyflie objects - will be initialized in _run
         self.scf = None
@@ -96,7 +103,6 @@ class Drone:
         self._start_threads_coordinated()
 
     def _start_threads_coordinated(self):
-
         print("[Drone] Starting threads with")
 
         # Start main thread first (initialises hardware)
@@ -127,7 +133,9 @@ class Drone:
 
         # Start velocity validation monitoring
         if self.velocity_validation_enabled:
-            self.velocity_monitor_thread = threading.Thread(target=self._velocity_validation_monitor)
+            self.velocity_monitor_thread = threading.Thread(
+                target=self._velocity_validation_monitor
+            )
             self.velocity_monitor_thread.start()
             print("[Drone] Velocity validation monitoring started")
 
@@ -139,7 +147,9 @@ class Drone:
 
         # Wait for position system to be ready before checking boundaries
         if not self.position_ready_event.wait(timeout=15):
-            print("[Drone] WARNING: Starting boundary check without confirmed position data")
+            print(
+                "[Drone] WARNING: Starting boundary check without confirmed position data"
+            )
 
         # Additional startup delay to let system stabilize
         time.sleep(2)
@@ -160,7 +170,11 @@ class Drone:
                     current_pos = self.position.copy()
 
                     # Additional safety: skip check if position is clearly invalid (all zeros)
-                    if current_pos["x"] == 0.0 and current_pos["y"] == 0.0 and current_pos["z"] == 0.0:
+                    if (
+                        current_pos["x"] == 0.0
+                        and current_pos["y"] == 0.0
+                        and current_pos["z"] == 0.0
+                    ):
                         time.sleep(0.01)
                         continue
 
@@ -174,7 +188,9 @@ class Drone:
 
                 if not in_bounds:
                     self.in_boundaries = False
-                    print(f"[Drone] BOUNDARY VIOLATION: Position {current_pos} exceeds limits {self.boundaries}")
+                    print(
+                        f"[Drone] BOUNDARY VIOLATION: Position {current_pos} exceeds limits {self.boundaries}"
+                    )
                     self._execute_emergency_stop()
                     break
                 else:
@@ -188,7 +204,6 @@ class Drone:
         print("[Drone] Boundary monitoring thread stopped")
 
     def _execute_emergency_stop(self):
-
         if not self.emergency_event.is_set():
             self.emergency_event.set()
             print("Emergency stop event triggered!!!")
@@ -238,7 +253,7 @@ class Drone:
                             self.position = {
                                 "x": position_array[0],
                                 "y": position_array[1],
-                                "z": position_array[2]
+                                "z": position_array[2],
                             }
 
                         # Signal ready on first successful position read
@@ -251,13 +266,17 @@ class Drone:
                         print("Drone position is not being updated")
                         # If timeout reached without position, signal anyway to prevent deadlock
                         if not position_ready and time.time() > ready_timeout:
-                            print("[Drone] WARNING: Position timeout - signaling ready anyway")
+                            print(
+                                "[Drone] WARNING: Position timeout - signaling ready anyway"
+                            )
                             self.position_ready_event.set()
                             position_ready = True
 
                     time.sleep(0.0166666)  # 60 Hz
                 except Exception as e:
-                    print(f"[Drone] Error: Position data could not be parsed correctly - {str(e)}")
+                    print(
+                        f"[Drone] Error: Position data could not be parsed correctly - {str(e)}"
+                    )
 
         except Exception as e:
             print(f"[Drone] Critical error in position thread: {str(e)}")
@@ -269,18 +288,20 @@ class Drone:
 
     # TODO - check for unsuccessful arming attempts
 
-    def _initialise_crazyflie(self):
+    def initialise_crazyflie(self):
         """Initialise Crazyflie connection and setup"""
         try:
             cflib.crtp.init_drivers()
             print("[Drone] Connecting to Crazyflie...")
 
-            self.scf = SyncCrazyflie(self.URI, cf=Crazyflie(rw_cache = './cache'))
+            self.scf = SyncCrazyflie(self.URI, cf=Crazyflie(rw_cache="./cache"))
             self.scf.open_link()
             self.cf = self.scf.cf
 
             # Setup deck detection
-            self.cf.param.add_update_callback(group='deck', name='bcFlow2', cb=self._param_deck_flow)
+            self.cf.param.add_update_callback(
+                group="deck", name="bcFlow2", cb=self._param_deck_flow
+            )
             time.sleep(1)
 
             if not self.deck_attached_event.wait(timeout=5):
@@ -293,7 +314,7 @@ class Drone:
             time.sleep(0.5)
 
             print("[Drone] Resetting state estimation (EKF)...")
-            self.cf.param.set_value('kalman.resetEstimation', '1')
+            self.cf.param.set_value("kalman.resetEstimation", "1")
             time.sleep(0.1)
 
             # Arm the drone
@@ -314,12 +335,12 @@ class Drone:
             print(f"[Drone] Failed to initialize Crazyflie: {str(e)}")
             return False
 
-    def _run(self, display = False):
+    def _run(self, display=False):
         """Main drone control loop"""
-        if not self._initialise_crazyflie():
+        if not self.initialise_crazyflie():
             self.set_running(False)
             print("[Drone] Hardware Initialisation failed...")
-            self.hardware_ready_event.set() # Even though the hardware did not initialise set to prevent deadlock
+            self.hardware_ready_event.set()  # Even though the hardware did not initialise set to prevent deadlock
             return
 
         try:
@@ -328,7 +349,7 @@ class Drone:
                 try:
                     if self.emergency_event.is_set():
                         self._handle_command({"land": True})
-                        self.is_landed_event.wait(timeout = 10)
+                        self.is_landed_event.wait(timeout=10)
                         break
                     # Get command with timeout
                     command = self.command_queue.get(timeout=0.1)
@@ -354,8 +375,8 @@ class Drone:
                     pass  # No command received; continue
 
                 # Display current position periodically
-                if display == True:
-                    if hasattr(self, '_last_position_print'):
+                if display:
+                    if hasattr(self, "_last_position_print"):
                         if time.time() - self._last_position_print > 0.2:
                             print(f"[Drone] Current position: {self.position}")
                             self._last_position_print = time.time()
@@ -426,7 +447,9 @@ class Drone:
             elif "take_off" in command:
                 if not self.is_flying_event.is_set() and self.armed:
                     print("[Drone] Processing the take off command")
-                    self.mc = MotionCommander(self.scf, default_height=self.default_height)
+                    self.mc = MotionCommander(
+                        self.scf, default_height=self.default_height
+                    )
                     self.mc.take_off()
                     self.is_landed_event.clear()
                     self.is_flying_event.set()
@@ -445,7 +468,7 @@ class Drone:
                     print("[Drone] Cannot land - not currently flying")
             elif "move" in command:
                 if self.is_flying_event.is_set() and self.mc:
-                    self.mc.start_linear_motion(0,0,0)
+                    self.mc.start_linear_motion(0, 0, 0)
 
             elif "velocity_vector" in command:
                 if self.is_flying_event.is_set() and self.mc:
@@ -455,32 +478,41 @@ class Drone:
                     vz = vel_vector.get("z", 0.0)
 
                     # Apply velocity limits for safety
-                    max_vel = getattr(self, 'max_velocity', 0.5)
+                    max_vel = getattr(self, "max_velocity", 0.5)
                     vx = max(-max_vel, min(max_vel, vx))
                     vy = max(-max_vel, min(max_vel, vy))
                     vz = max(-max_vel, min(max_vel, vz))
 
                     if self.velocity_validation_enabled:
-
                         with self.velocity_validation_lock:
                             self.expected_velocity = [vx, vy, vz]
                         self.velocity_validated_event.clear()
 
                         # Send velocity command
                         self.mc.start_linear_motion(vx, vy, vz)
-                        print(f"[Drone] Velocity vector set: vx={vx:.2f}, vy={vy:.2f}, vz={vz:.2f}")
+                        print(
+                            f"[Drone] Velocity vector set: vx={vx:.2f}, vy={vy:.2f}, vz={vz:.2f}"
+                        )
 
                         # Wait for validation
-                        if self.velocity_validated_event.wait(timeout=self.velocity_validation_timeout):
+                        if self.velocity_validated_event.wait(
+                            timeout=self.velocity_validation_timeout
+                        ):
                             print("[Drone] Velocity command validated successfully")
                         else:
-                            print(f"[Drone] WARNING: Velocity validation timed out after {self.velocity_validation_timeout}s")
+                            print(
+                                f"[Drone] WARNING: Velocity validation timed out after {self.velocity_validation_timeout}s"
+                            )
                     else:
                         # Send velocity command without validation
                         self.mc.start_linear_motion(vx, vy, vz)
-                        print(f"[Drone] Velocity vector set: vx={vx:.2f}, vy={vy:.2f}, vz={vz:.2f}")
+                        print(
+                            f"[Drone] Velocity vector set: vx={vx:.2f}, vy={vy:.2f}, vz={vz:.2f}"
+                        )
                 else:
-                    print("[Drone] Cannot set velocity - drone not flying or motion commander not available")
+                    print(
+                        "[Drone] Cannot set velocity - drone not flying or motion commander not available"
+                    )
 
             else:
                 print(f"[Drone] Unknown command: {command}")
@@ -501,18 +533,21 @@ class Drone:
         """Public method to take off"""
         self.send_command({"take_off": True})
         print("Take off command sent")
+
     def land(self):
         """Public method to land"""
         self.send_command({"land": True})
 
     def move(self):
-        self.send_command({"move" : True})
+        self.send_command({"move": True})
 
     def start_position_control(self):
         """Start the position controller thread for automatic position tracking"""
         if not self.controller_active:
             self.controller_active = True
-            self.controller_thread = threading.Thread(target=self._position_control_loop)
+            self.controller_thread = threading.Thread(
+                target=self._position_control_loop
+            )
             self.controller_thread.start()
             print("[Drone] Position controller started")
         else:
@@ -523,19 +558,22 @@ class Drone:
         if self.controller_active:
             self.controller_active = False
             if self.controller_thread and self.controller_thread.is_alive():
-
                 self.controller_thread.join()
             print("[Drone] Position controller stopped")
         else:
             print("[Drone] Position controller already stopped")
 
-    def _position_control_loop(self, first_instance = 0, debugging = True):
+    def _position_control_loop(self, first_instance=0, debugging=True):
         """Main control loop for position-based velocity control"""
         control_rate = 0.5  # Control rate in seconds (20hz)
         error_threshold = 0.17  # Error threshold to consider position reached (meters)
 
         print("[Drone] Position control loop started")
-        while self.is_running() and self.controller_active and not self.emergency_event.is_set():
+        while (
+            self.is_running()
+            and self.controller_active
+            and not self.emergency_event.is_set()
+        ):
             try:
                 # Get current and target positions
                 current_pos = self.get_position_dict()
@@ -550,33 +588,42 @@ class Drone:
                 error = {
                     "x": target_pos["x"] - current_pos["x"],
                     "y": target_pos["y"] - current_pos["y"],
-                    "z": target_pos["z"] - current_pos["z"]
+                    "z": target_pos["z"] - current_pos["z"],
                 }
 
                 if debugging:
-                    print(f"[Controller]: Position({current_pos['x']}, {current_pos['y']}, {current_pos['z']})")
+                    print(
+                        f"[Controller]: Position({current_pos['x']}, {current_pos['y']}, {current_pos['z']})"
+                    )
 
                 # Calculate error magnitude to determine if position is reached
-                error_magnitude = (abs(error["x"])**2 + abs(error["y"])**2 + abs(error["z"]**2))**0.5
+                error_magnitude = (
+                    abs(error["x"]) ** 2 + abs(error["y"]) ** 2 + abs(error["z"] ** 2)
+                ) ** 0.5
 
                 # print(error_magnitude)
                 # print(self.get_battery())
 
-                if error_magnitude < error_threshold :
-                    print(f"[Controller] Position reached! Error: {error_magnitude:.2f}m")
+                if error_magnitude < error_threshold:
+                    print(
+                        f"[Controller] Position reached! Error: {error_magnitude:.2f}m"
+                    )
                     self.at_reset_position.set()
                 # Calculate velocity command using PID control
                 velocity = self._calculate_pid_velocity(error, control_rate)
 
                 # Apply velocity command if flying
                 if self.is_flying_event.is_set() and self.mc:
-
                     # Change velocity to be handled by the main thread
-                    self.set_velocity_vector(velocity["x"], velocity["y"], velocity["z"])
+                    self.set_velocity_vector(
+                        velocity["x"], velocity["y"], velocity["z"]
+                    )
 
                     if debugging:
-                        print(f"[Controller] Pos error: ({error['x']:.2f}, {error['y']:.2f}, {error['z']:.2f}) → "
-                              f"Vel: ({velocity['x']:.2f}, {velocity['y']:.2f}, {velocity['z']:.2f})")
+                        print(
+                            f"[Controller] Pos error: ({error['x']:.2f}, {error['y']:.2f}, {error['z']:.2f}) → "
+                            + f"Vel: ({velocity['x']:.2f}, {velocity['y']:.2f}, {velocity['z']:.2f})"
+                        )
 
                 # Sleep to maintain control rate
                 time.sleep(control_rate)
@@ -621,20 +668,16 @@ class Drone:
             # Calculate raw velocity command (sum of PID terms)
             raw_velocity = p_term + d_term + i_term
             # Apply velocity limits
-            velocity[axis] = max(-self.max_velocity, min(self.max_velocity, raw_velocity))
+            velocity[axis] = max(
+                -self.max_velocity, min(self.max_velocity, raw_velocity)
+            )
             # Update last error for next iteration
             self.last_error[axis] = error[axis]
 
         return velocity
 
     def set_velocity_vector(self, vx: float, vy: float, vz: float) -> None:
-        velocity_command = {
-            "velocity_vector": {
-                "x": vx,
-                "y": vy,
-                "z": vz
-            }
-        }
+        velocity_command = {"velocity_vector": {"x": vx, "y": vy, "z": vz}}
 
         self.send_command(velocity_command)
         print(f"[Drone] Velocity vector command sent: vx={vx}, vy={vy}, vz={vz}")
@@ -643,27 +686,29 @@ class Drone:
         """Set velocity vector from a list or array [vx, vy, vz]"""
 
         if len(velocity_vector) != 3:
-            raise ValueError("Velocity vector must have exactly 3 elements [vx, vy, vz]")
+            raise ValueError(
+                "Velocity vector must have exactly 3 elements [vx, vy, vz]"
+            )
 
-        self.set_velocity_vector(velocity_vector[0], velocity_vector[1], velocity_vector[2])
+        self.set_velocity_vector(
+            velocity_vector[0], velocity_vector[1], velocity_vector[2]
+        )
 
     def set_target_position(self, x: float, y: float, z: float) -> None:
         """Set target position with boundary checking"""
         # Check the target position is within boundaries
-        if not (abs(x) <= self.boundaries["x"] and
-                abs(y) <= self.boundaries["y"] and
-                abs(z) <= self.boundaries["z"]):
-            print(f"[Drone] WARNING: Target position {x}, {y}, {z} is outside safe boundaries. Command rejected.")
+        if not (
+            abs(x) <= self.boundaries["x"]
+            and abs(y) <= self.boundaries["y"]
+            and abs(z) <= self.boundaries["z"]
+        ):
+            print(
+                f"[Drone] WARNING: Target position {x}, {y}, {z} is outside safe boundaries. Command rejected."
+            )
             return
 
         # Create and send a position command
-        position_command = {
-            "position": {
-                "x": x,
-                "y": y,
-                "z": z
-            }
-        }
+        position_command = {"position": {"x": x, "y": y, "z": z}}
 
         # Send the command to the queue
         self.send_command(position_command)
@@ -692,49 +737,57 @@ class Drone:
                 break
 
     def _setup_battery_logging(self):
-
         # Check if Crazyflie object is available
         if self.cf is None:
-            print('[Drone] Could not start battery logging, Crazyflie object not available.')
+            print(
+                "[Drone] Could not start battery logging, Crazyflie object not available."
+            )
             return
 
         # Check if log interface is available
-        if not hasattr(self.cf, 'log') or self.cf.log is None:
-            print('[Drone] Could not start battery logging, log interface not available.')
+        if not hasattr(self.cf, "log") or self.cf.log is None:
+            print(
+                "[Drone] Could not start battery logging, log interface not available."
+            )
             return
 
         try:
-            self.battery_log_config = LogConfig(name='Battery', period_in_ms=1000)
-            self.battery_log_config.add_variable('pm.vbat', 'float')
+            self.battery_log_config = LogConfig(name="Battery", period_in_ms=1000)
+            self.battery_log_config.add_variable("pm.vbat", "float")
 
             self.cf.log.add_config(self.battery_log_config)
             # Register the callback function that will receive the data
-            self.battery_log_config.data_received_cb.add_callback(self._battery_callback)
+            self.battery_log_config.data_received_cb.add_callback(
+                self._battery_callback
+            )
             # Start the logging
             self.battery_log_config.start()
             print("[Drone] Battery logging started.")
         except KeyError as e:
-            print(f'[Drone] Could not start battery logging: {e}')
+            print(f"[Drone] Could not start battery logging: {e}")
         except AttributeError:
-            print('[Drone] Could not start battery logging, Crazyflie object not available.')
+            print(
+                "[Drone] Could not start battery logging, Crazyflie object not available."
+            )
 
     def _battery_callback(self, timestamp, data, logconf):
         """Callback for when new battery data is received from the drone."""
-        voltage = data['pm.vbat']
+        voltage = data["pm.vbat"]
         with self.battery_lock:
             self.battery_level = voltage
 
-
     def get_motion_commander_setpoint(self):
         """Get the current hover setpoint from MotionCommander's internal thread"""
-        if self.mc and hasattr(self.mc, '_thread') and self.mc._thread:
+        if self.mc and hasattr(self.mc, "_thread") and self.mc._thread:
             try:
                 # Access the internal hover setpoint from the MotionCommander thread
                 hover_setpoint = self.mc._thread._hover_setpoint.copy()
                 # Return as [vx, vy, vz] (first 3 elements, ignoring yaw)
                 return hover_setpoint[:3]
             except AttributeError as e:
-                print(f"[Drone] Warning: Could not access MotionCommander setpoint: {e}")
+                print(
+                    f"[Drone] Warning: Could not access MotionCommander setpoint: {e}"
+                )
                 return [0.0, 0.0, 0.0]
         return [0.0, 0.0, 0.0]
 
@@ -744,7 +797,7 @@ class Drone:
 
         while self.is_running() and not self.emergency_event.is_set():
             try:
-                if self.mc and hasattr(self.mc, '_thread') and self.mc._thread:
+                if self.mc and hasattr(self.mc, "_thread") and self.mc._thread:
                     current_setpoint = self.get_motion_commander_setpoint()
 
                     with self.velocity_validation_lock:
@@ -752,14 +805,18 @@ class Drone:
 
                     # Check if current setpoint matches expected velocity (X and Y only)
                     velocity_match = True
-                    for i in range(2):  # vx, vy only (Z velocity not tracked in hover_setpoint)
+                    for i in range(
+                        2
+                    ):  # vx, vy only (Z velocity not tracked in hover_setpoint)
                         diff = abs(expected[i] - current_setpoint[i])
                         if diff > self.velocity_tolerance:
                             velocity_match = False
                             break
 
                     if velocity_match and not self.velocity_validated_event.is_set():
-                        print(f"[Drone] Velocity validation SUCCESS (X/Y only): Expected [{expected[0]:.3f}, {expected[1]:.3f}], Actual [{current_setpoint[0]:.3f}, {current_setpoint[1]:.3f}]")
+                        print(
+                            f"[Drone] Velocity validation SUCCESS (X/Y only): Expected [{expected[0]:.3f}, {expected[1]:.3f}], Actual [{current_setpoint[0]:.3f}, {current_setpoint[1]:.3f}]"
+                        )
                         self.velocity_validated_event.set()
 
                 time.sleep(0.05)  # Check every 50ms
@@ -815,8 +872,8 @@ class Drone:
             ("position", self.position_thread),
             ("safety", self.safety_thread),
             ("controller", self.controller_thread),
-            ("velocity_monitor", getattr(self, 'velocity_monitor_thread', None)),
-            ("main", self.thread)
+            ("velocity_monitor", getattr(self, "velocity_monitor_thread", None)),
+            ("main", self.thread),
         ]
 
         for name, thr in threads_to_join:
@@ -845,7 +902,7 @@ class Drone:
             self.target_position = {"x": 0.0, "y": 0.0, "z": 0.0}
         # PID
         self.last_error = {"x": 0.0, "y": 0.0, "z": 0.0}
-        self.integral   = {"x": 0.0, "y": 0.0, "z": 0.0}
+        self.integral = {"x": 0.0, "y": 0.0, "z": 0.0}
         # Events
         self.is_flying_event.clear()
         self.is_landed_event.set()
@@ -861,19 +918,18 @@ class Drone:
         """Delete big objects so garbage collection can reclaim them."""
         # These will be re-created if the user ever calls start() again
         # todo :close link first then remove the scf instance
-        self.cf  = None
+        self.cf = None
         self.scf = None
-        self.mc  = None
+        self.mc = None
 
     def pre_battery_change_cleanup(self):
-        self.cf  = None
+        self.cf = None
         self.scf = None
-        self.mc  = None
+        self.mc = None
         self.clear_command_queue()
         self._reset_shared_state()
 
     def reboot(self):
-
         print("[Drone] Initiating remote reboot sequence...")
         # Step 3: Perform the power cycle
         print("[Drone] Executing STM32 power cycle via PowerSwitch...")
@@ -888,6 +944,7 @@ class Drone:
             return False  # Return failure status
 
         return True
+
 
 if __name__ == "__main__":
     # Testing instructions
@@ -905,7 +962,7 @@ if __name__ == "__main__":
         drone.stop()
 
     drone.start_position_control()
-    time.sleep(2) # Let the controller stabilise first
+    time.sleep(2)  # Let the controller stabilise first
     print("Setting target position")
     drone.set_target_position(0, 0, 1)  # Move 1m forward on x-axis
     # Let the position controller run for 15 seconds

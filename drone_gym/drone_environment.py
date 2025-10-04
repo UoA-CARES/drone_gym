@@ -2,18 +2,19 @@ from abc import ABC, abstractmethod
 from drone_gym.drone import Drone
 import time
 import numpy as np
-from typing import Dict, List, Tuple, Any
+from typing import Dict, List, Any
 
 # TODO - make naming more consistent
 
+
 class DroneEnvironment(ABC):
     """Base drone environment that handles common drone operations"""
-    def __init__(self, max_velocity: float = 0.25, step_time: float = 0.5):
 
+    def __init__(self, max_velocity: float = 0.25, step_time: float = 0.5):
         self.drone = Drone()
         self.reset_position = [0, 0, 1]
         self.max_velocity = max_velocity
-        self.max_velocity_z = 0.1 
+        self.max_velocity_z = 0.1
         self.step_time = step_time
         self.steps = 0
         self.seed = 0
@@ -106,13 +107,14 @@ class DroneEnvironment(ABC):
         self.steps += 1
 
         print(f"action: {action}")
-        if len(action) != 3:
-            raise ValueError("Action must be a 3-element array [vx, vy, vz]")
+        if len(action) != 2:  # changed from 3 to 2
+            raise ValueError("Action must be a 3-element array [vx, vy]")
 
         # Denormalize action from [-1, 1] to [-max_velocity, max_velocity]
         vx = action[0] * self.max_velocity
         vy = action[1] * self.max_velocity
-        vz = action[2] * self.max_velocity_z # topples when moving up --> limit z velocity
+        # vz = action[2] * self.max_velocity_z # topples when moving up --> limit z velocity
+        vz = 0
 
         current_pos = self.drone.get_position()
         # Store previous state for reward calculation
@@ -149,15 +151,15 @@ class DroneEnvironment(ABC):
 
         # Generate info dict
         info = {
-            'current_position': new_pos,
-            'previous_position': current_pos,
-            'distance_to_target': self._distance_to_target(new_pos),
-            'applied_velocity': [vx, vy, vz],  # Store the denorm
-            'normalized_action': action,  # Store the original normalized action
-            'in_boundaries': self.drone.in_boundaries,
-            'steps': self.steps,
-            'success_count': self.success_count,
-            **self._get_additional_info(current_state)
+            "current_position": new_pos,
+            "previous_position": current_pos,
+            "distance_to_target": self._distance_to_target(new_pos),
+            "applied_velocity": [vx, vy, vz],  # Store the denorm
+            "normalized_action": action,  # Store the original normalized action
+            "in_boundaries": self.drone.in_boundaries,
+            "steps": self.steps,
+            "success_count": self.success_count,
+            **self._get_additional_info(current_state),
         }
 
         return self._get_state(), reward, done, truncated, info
@@ -165,10 +167,10 @@ class DroneEnvironment(ABC):
     def _generate_state_dict(self, position: List[float]) -> Dict[str, Any]:
         """Generate a state dictionary with common drone information"""
         return {
-            'position': position,
-            'in_boundaries': self.drone.in_boundaries,
-            'steps': self.steps,
-            'distance_to_target' : self._distance_to_target(position),
+            "position": position,
+            "in_boundaries": self.drone.in_boundaries,
+            "steps": self.steps,
+            "distance_to_target": self._distance_to_target(position),
         }
 
     def _generate_action_dict(self, action: List[float]) -> np.ndarray:
@@ -176,7 +178,7 @@ class DroneEnvironment(ABC):
         action = [
             action[0],  # x velocity
             action[1],  # y velocity
-            action[2],  # z velocity
+            # action[2],  # z velocity
         ]
         return np.array(action, dtype=np.float32)
 
@@ -186,26 +188,22 @@ class DroneEnvironment(ABC):
 
     def get_action_bounds(self) -> Dict:
         """Get the bounds for action space"""
-        return {
-            'low': [-1.0, -1.0, -1.0],
-            'high': [1.0, 1.0, 1.0],
-            'shape': (3,)
-        }
+        return {"low": [-1.0, -1.0, -1.0], "high": [1.0, 1.0, 1.0], "shape": (3,)}
 
     def get_action_space_info(self) -> Dict:
         """Get detailed action space information"""
         return {
-            'type': 'continuous',
-            'shape': (3,),
-            'low': [-1.0, -1.0, -1.0],
-            'high': [1.0, 1.0, 1.0],
-            'description': {
-                'vx': 'Velocity in the X direction (-1 to 1, scaled to m/s)',
-                'vy': 'Velocity in the Y direction (-1 to 1, scaled to m/s)',
-                'vz': 'Velocity in the Z direction (-1 to 1, scaled to m/s)'
+            "type": "continuous",
+            "shape": (3,),
+            "low": [-1.0, -1.0, -1.0],
+            "high": [1.0, 1.0, 1.0],
+            "description": {
+                "vx": "Velocity in the X direction (-1 to 1, scaled to m/s)",
+                "vy": "Velocity in the Y direction (-1 to 1, scaled to m/s)",
+                "vz": "Velocity in the Z direction (-1 to 1, scaled to m/s)",
             },
-            'max_velocity_ms': self.max_velocity,
-            'step_duration_s': self.step_time
+            "max_velocity_ms": self.max_velocity,
+            "step_duration_s": self.step_time,
         }
 
     def set_reset_position(self, position: List[float]):
@@ -227,9 +225,9 @@ class DroneEnvironment(ABC):
         # time.sleep(5)
         self.drone.stop()
 
-    def render(self, mode='human'):
+    def render(self, mode="human"):
         """Render the environment state"""
-        if mode == 'human':
+        if mode == "human":
             pos = self.drone.get_position()
             print(f"Drone Position: [{pos[0]:.2f}, {pos[1]:.2f}, {pos[2]:.2f}]")
             print(f"In Bounds: {self.drone.in_boundaries}")
@@ -265,58 +263,65 @@ class DroneEnvironment(ABC):
         return False
 
     def change_battery(self):
-
         print("[Drone] Beginning battery change operation.")
         self.drone.land()
         self.drone.is_landed_event.wait(timeout=15)
 
         self.drone.pre_battery_change_cleanup()
         time.sleep(2)
-        #loop until you get a clear 'y' or 'n' from the user
+        # loop until you get a clear 'y' or 'n' from the user
         while True:
             response = input("Is the battery changed and ready to fly? (y/n): ").lower()
-            if response == 'y':
+            if response == "y":
                 break  # Exit the loop and continue with take-off
-            elif response == 'n':
+            elif response == "n":
                 print("[Drone] Operation aborted by user.")
-                return False # Exit the function
+                return False  # Exit the function
             else:
-                print("[Drone] Invalid input. Please enter 'y' for yes or 'n' to abort.")
+                print(
+                    "[Drone] Invalid input. Please enter 'y' for yes or 'n' to abort."
+                )
 
         # re-initialize and take off
         print("[Drone] Re-initializing...")
-        self.drone._initialise_crazyflie()
+        self.drone.initialise_crazyflie()
 
         self.drone.take_off()
         if not self.drone.is_flying_event.wait(timeout=15):
-            print("[ERROR] Drone failed to confirm take-off. MANUAL INTERVENTION REQUIRED.")
-            return False # Exit because the drone is in an uncertain state
+            print(
+                "[ERROR] Drone failed to confirm take-off. MANUAL INTERVENTION REQUIRED."
+            )
+            return False  # Exit because the drone is in an uncertain state
 
         print("[Drone] Battery change operation complete.")
         return True
 
     def restart(self):
-
         self.drone.pre_battery_change_cleanup()
         time.sleep(2)
 
         while True:
             response = input("Is the drone ready to fly again? (y/n): ").lower()
-            if response == 'y':
+            if response == "y":
                 break  # Exit the loop and continue with take-off
-            elif response == 'n':
+            elif response == "n":
                 print("[Drone] Operation aborted by user.")
-                return False # Exit the function
+                return False  # Exit the function
             else:
-                print("[Drone] Invalid input. Please enter 'y' for yes or 'n' to abort.")
+                print(
+                    "[Drone] Invalid input. Please enter 'y' for yes or 'n' to abort."
+                )
 
-        self.drone._initialise_crazyflie()
+        self.drone.initialise_crazyflie()
 
         self.drone.take_off()
         if not self.drone.is_flying_event.wait(timeout=15):
-            print("[ERROR] Drone failed to confirm take-off. MANUAL INTERVENTION REQUIRED.")
-            return False # Exit because the drone is in an uncertain state
+            print(
+                "[ERROR] Drone failed to confirm take-off. MANUAL INTERVENTION REQUIRED."
+            )
+            return False  # Exit because the drone is in an uncertain state
         return True
+
     @property
     def max_action_value(self):
         return self.max_velocity
@@ -327,12 +332,14 @@ class DroneEnvironment(ABC):
 
     @property
     def action_num(self):
-        return 3
+        # return 3
+        # on x and y values
+        return 2
 
     # Abstract methods to be implemented by task-specific environments
 
     @abstractmethod
-    def sample_action(self) -> Any:
+    def sample_action(self):
         pass
 
     @abstractmethod

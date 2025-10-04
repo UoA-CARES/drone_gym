@@ -13,7 +13,7 @@ class MoveToPosition(DroneEnvironment):
     """Reinforcement learning task for drone navigation to a target position"""
 
     def __init__(self, max_velocity: float = 0.20, step_time: float = 0.5,
-                 exploration_steps: int = 1000, episode_length: int = 40):
+                 exploration_steps: int = 1000, episode_length: int = 65):
         super().__init__(max_velocity, step_time)
 
         # RL Training parameters
@@ -23,8 +23,8 @@ class MoveToPosition(DroneEnvironment):
         self.truncate_next = False
 
         # Task-specific parameters
-        self.goal_position = [0, 0.5, 1]  # Goal position
-        self.distance_threshold = 0.15  # Distance threshold to consider target reached
+        self.goal_position = [0, 0.8, 1]  # Goal position
+        self.distance_threshold = 0.10  # Distance threshold to consider target reached
         self.max_distance = 1  # Maximum distance for normalization
         self.time_tolerance = 0.15 # tolerance time for calculating travel distance
 
@@ -32,7 +32,8 @@ class MoveToPosition(DroneEnvironment):
         self.boundary = [self.xy_limit, self.xy_limit, self.z_limit, self.z_limit + 1]
 
         # Reward parameters
-        self.success_reward = 100.0
+        self.success_reward = 50
+        self.reward_multiplier = 10.0
         self.out_of_bounds_penalty = -100.0
         self.distance_improvement_multiplier = 300.0
 
@@ -71,7 +72,7 @@ class MoveToPosition(DroneEnvironment):
 
         return state
 
-    def step(self, action):
+    def step(self, action, learning = True):
         """Execute one step with RL-specific logic for exploration vs learning phases"""
         # Handle exploration vs learning phase transition
         self.total_steps += 1
@@ -83,18 +84,23 @@ class MoveToPosition(DroneEnvironment):
             self.truncate_next = True
 
         # Modify action normalization based on phase
-        if self.total_steps > self.exploration_steps:
+        if self.total_steps > self.exploration_steps or learning == True:
             # Learning phase: action is already in [-1, 1]
             processed_action = action
+            assert len(action)==2,'action should be length 2'
+
         else:
             # Exploration phase: convert from [0, 1] to [-1, 1]
-            processed_action = [action[0] * 2 - 1, action[1] * 2 - 1, action[2] * 2 - 1]
+            # processed_action = [action[0] * 2 - 1, action[1] * 2 - 1, action[2] * 2 - 1,] 
+            # # deleted the z-value
+            processed_action = [action[0] * 2 - 1, action[1] * 2 - 1] 
 
         # determine whether not the action we pass will exceed the boundary
         position = self.drone.get_position()
         vx = processed_action[0] * self.max_velocity
         vy = processed_action[1] * self.max_velocity
-        vz = processed_action[2] * self.max_velocity
+        # vz = processed_action[2] * self.max_velocity
+        vz = 0
 
         time_step = self.step_time + self.time_tolerance
         sx = time_step * vx
@@ -105,15 +111,16 @@ class MoveToPosition(DroneEnvironment):
         print(f" new position is: {new_position}")
         # Check if new position would exceed boundaries
         # X boundary check
+        # step is [0, 0] isn't of [0, 0, 0]
         if new_position[0] < -self.boundary[0] or new_position[0] > self.boundary[0]:
-            return super().step([0, 0, 0])
+            return super().step([0, 0])
 
         # Y boundary check
         if new_position[1] < -self.boundary[1] or new_position[1] > self.boundary[1]:
-            return super().step([0, 0, 0])
+            return super().step([0, 0])
 
         if new_position[2] <= self.boundary[2] or new_position[2] > self.boundary[3]:
-            return super().step([0, 0, 0])
+            return super().step([0, 0])
 
         # Call parent step method with processed action
         return super().step(processed_action)
@@ -180,6 +187,25 @@ class MoveToPosition(DroneEnvironment):
 
     #     return reward
     
+    # def _calculate_reward(self, current_state: Dict[str, Any]) -> float:
+    #     position = current_state['position']
+    #     distance = self._distance_to_target(position)
+
+    #     # Base reward is negative distance (closer = higher reward)
+    #     # currently this reward will never be positive and is too low. assuming the max distance is (3,3,3) reward = -5.2.
+    #     # Changed from reward = -distance to reward = 50-10*distance
+    #     reward = 20 - 20*distance
+
+    #     # Bonus for reaching target
+    #     if distance < self.distance_threshold:
+    #         reward += self.success_reward
+
+    #     if self.boundary_penalise:
+    #         reward += self.out_of_bounds_penalty
+    #         self.boundary_penalise = False
+
+    #     return reward
+    
     def _calculate_reward(self, current_state: Dict[str, Any]) -> float:
         position = current_state['position']
         distance = self._distance_to_target(position)
@@ -187,17 +213,13 @@ class MoveToPosition(DroneEnvironment):
         # Base reward is negative distance (closer = higher reward)
         # currently this reward will never be positive and is too low. assuming the max distance is (3,3,3) reward = -5.2.
         # Changed from reward = -distance to reward = 50-10*distance
-        reward = 20 - 20*distance
+        reward = 1 / (1 + distance)
 
         # Bonus for reaching target
         if distance < self.distance_threshold:
             reward += self.success_reward
 
-        if self.boundary_penalise:
-            reward += self.out_of_bounds_penalty
-            self.boundary_penalise = False
-
-        return reward
+        return reward * self.reward_multiplier
 
     def _check_if_done(self, current_state: Dict[str, Any]) -> bool:
         """Check if navigation task is complete"""
@@ -207,6 +229,9 @@ class MoveToPosition(DroneEnvironment):
         if distance < self.distance_threshold:
             self.done = True
             # Increment success counter only during evaluation
+            if self.need_to_change_battery():
+                self.change_battery()
+
             if self._is_evaluating:
                 self.successful_episodes_count += 1
             return True
@@ -253,7 +278,7 @@ class MoveToPosition(DroneEnvironment):
 
     def sample_action(self):
         """Sample an action for exploration phase - returns action in [0, 1] range"""
-        return np.random.uniform(0, 1, size=(3,))
+        return np.random.uniform(0, 1, size=(2,)) 
 
     def _render_task_specific_info(self):
         """Render navigation task specific information"""
