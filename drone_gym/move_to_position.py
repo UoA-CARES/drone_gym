@@ -292,101 +292,133 @@ class MoveToPosition(DroneEnvironment):
         print(f"Success Threshold: {self.distance_threshold:.2f}")
         print(f"Done: {self.done}")
 
-def grab_frame(self, height: int = 540, width: int = 960) -> np.ndarray:
-    """Generate a frame showing the drone's 3D trajectory."""
-    
-    # Return white frame if no positions recorded yet
-    if not self.episode_positions:
-        return np.full((height, width, 3), 255, dtype=np.uint8)
-    
-    # Create figure with exact pixel dimensions
-    dpi = 100
-    fig = plt.figure(figsize=(width / dpi, height / dpi), dpi=dpi)
-    ax = fig.add_subplot(111, projection='3d')
-    
-    try:
+    def grab_frame(self, height: int = 540, width: int = 960) -> np.ndarray:
+        # Create figure with two subplots side by side
+        fig = plt.figure(figsize=(width / 120, height / 120), dpi=120)
+
+        # Return white frame if no positions recorded yet
+        if not self.episode_positions:
+            plt.close(fig)
+            return np.full((height, width, 3), 255, dtype=np.uint8)
+
         # Convert positions to numpy array
         pos_array = np.array(self.episode_positions)
         x, y, z = pos_array[:, 0], pos_array[:, 1], pos_array[:, 2]
-        
-        # Plot trajectory
-        ax.plot(x, y, z, color='gold', linewidth=2.5, alpha=0.8, label='Path')
-        
-        # Mark key points
-        ax.scatter(x[0], y[0], z[0], color='lime', s=150, 
-                  label='Start', depthshade=False, edgecolors='darkgreen', linewidth=2, zorder=5)
-        ax.scatter(x[-1], y[-1], z[-1], color='dodgerblue', s=150, 
-                  label='Current', depthshade=False, edgecolors='darkblue', linewidth=2, zorder=5)
-        ax.scatter(self.goal_position[0], self.goal_position[1], self.goal_position[2],
-                  color='red', marker='*', s=300, label='Goal', 
-                  depthshade=False, edgecolors='darkred', linewidth=2, zorder=5)
-        
-        # Set consistent bounds
-        ax.set_xlim(-1.5, 1.5)
-        ax.set_ylim(-1.5, 1.5)
-        ax.set_zlim(0.25, 1.25)
-        
-        # **FIX 1: Force equal aspect ratio**
-        # This ensures that 1 unit in X = 1 unit in Y = 1 unit in Z visually
-        ax.set_box_aspect([
-            (1.5 - (-1.5)),  # X range: 3.0
-            (1.5 - (-1.5)),  # Y range: 3.0
-            (1.25 - 0.25)    # Z range: 1.0
-        ])
-        
-        # **FIX 2: Disable automatic scaling**
-        ax.set_proj_type('ortho')  # Use orthographic projection instead of perspective
-        
-        # Labels
-        ax.set_xlabel('X (m)', fontsize=11, labelpad=8)
-        ax.set_ylabel('Y (m)', fontsize=11, labelpad=8)
-        ax.set_zlabel('Z (m)', fontsize=11, labelpad=8)
-        
-        # Tick styling
-        ax.tick_params(axis='both', labelsize=9)
-        
-        # Better viewing angle
-        ax.view_init(elev=20, azim=45)
-        
+
+        # Use GridSpec with equal widths and minimal spacing
+        from matplotlib.gridspec import GridSpec
+        gs = GridSpec(1, 2, figure=fig, wspace=0.25, width_ratios=[1.25, 1])
+
+        # LEFT SUBPLOT: 3D trajectory view
+        ax1 = fig.add_subplot(gs[0, 0], projection='3d')
+
+        # Plot the drone's trajectory
+        ax1.plot(x, y, z, label='Drone Path', color='yellow', linewidth=2.5)
+
+        # Mark important points with better visibility
+        ax1.scatter(x[0], y[0], z[0], color='green', s=80, label='Start',
+                    depthshade=False, edgecolors='black', linewidth=0.5)
+        ax1.scatter(x[-1], y[-1], z[-1], color='blue', s=80, label='Current',
+                    depthshade=False, edgecolors='black', linewidth=0.5)
+        ax1.scatter(self.goal_position[0], self.goal_position[1], self.goal_position[2],
+                    color='red', marker='*', s=120, label='Goal',
+                    depthshade=False, edgecolors='black', linewidth=1)
+
+        ax1.set_xlim(-1.5, 1.5)
+        ax1.set_ylim(-1.5, 1.5)
+        ax1.set_zlim(0.25, 1.25)
+
+        # Labels and title
+        ax1.set_xlabel('X (m)', fontsize=10, labelpad=8)
+        ax1.set_ylabel('Y (m)', fontsize=10, labelpad=8)
+        ax1.set_zlabel('Z (m)', fontsize=9, labelpad=10)
+
+        # Adjust tick parameters
+        ax1.tick_params(axis='x', labelsize=8)
+        ax1.tick_params(axis='y', labelsize=8)
+        ax1.tick_params(axis='z', labelsize=8)
+
+        # Viewing angle
+        ax1.view_init(elev=10, azim=25)
+
         # Title
-        ax.set_title(f'Episode Trajectory (Step {self.steps})', 
-                    fontsize=13, pad=15, weight='semibold')
-        
-        # Legend positioned to avoid top-left overlay
-        ax.legend(loc='upper right', fontsize=9, framealpha=0.95, 
-                 markerscale=0.6, edgecolor='gray')
-        
+        ax1.set_title('3D Trajectory', fontsize=12, pad=15)
+
+        # Legend
+        ax1.legend(loc='upper left', fontsize=6, framealpha=0.9, markerscale=0.60)
+
         # Grid
-        ax.grid(True, alpha=0.25, linestyle='--')
-        
-        # Tight layout
-        plt.tight_layout(pad=1.0)
-        
-        # Render to buffer
+        ax1.grid(True, alpha=0.3)
+
+        # Set equal aspect ratio for 3D plot
+        ax1.set_box_aspect([1, 1, 0.67])
+
+        # RIGHT SUBPLOT: 2D X-Y view (top-down view)
+        ax2 = fig.add_subplot(gs[0, 1])
+
+        # Plot the drone's trajectory in X-Y plane
+        ax2.plot(x, y, color='yellow', linewidth=2.5, label='Drone Path', zorder=1)
+
+        # Mark important points
+        ax2.scatter(x[0], y[0], color='green', s=80, label='Start',
+                    edgecolors='black', linewidth=0.5, zorder=3)
+        ax2.scatter(x[-1], y[-1], color='blue', s=80, label='Current',
+                    edgecolors='black', linewidth=0.5, zorder=3)
+        ax2.scatter(self.goal_position[0], self.goal_position[1],
+                    color='red', marker='*', s=120, label='Goal',
+                    edgecolors='black', linewidth=1, zorder=3)
+
+        ax2.set_xlim(-1.5, 1.5)
+        ax2.set_ylim(-1.5, 1.5)
+
+        # Labels and title
+        ax2.set_xlabel('X (m)', fontsize=10)
+        ax2.set_ylabel('Y (m)', fontsize=10)
+        ax2.set_title('Top-Down View (X-Y)', fontsize=12, pad=15)
+
+        # Equal aspect ratio for accurate representation
+        ax2.set_aspect('equal', adjustable='box')
+
+        # Legend
+        ax2.legend(loc='upper left', fontsize=6, framealpha=0.9, markerscale=0.60)
+
+        # Grid
+        ax2.grid(True, alpha=0.3)
+
+        # Tick parameters
+        ax2.tick_params(axis='both', labelsize=8)
+
+        # Add main title at the top
+        fig.suptitle(f'Episode Trajectory (Step {self.steps})', fontsize=13, y=0.98)
+
+        # Adjust layout
+        plt.tight_layout(rect=[0, 0, 1, 0.96])
+
+        # Convert matplotlib figure to image array with higher quality
         buf = io.BytesIO()
-        fig.savefig(buf, format='png', dpi=dpi, 
-                   facecolor='white', edgecolor='none', bbox_inches='tight')
+        fig.savefig(buf, format='png', dpi=120,
+                    facecolor='white', edgecolor='none', bbox_inches='tight')
         buf.seek(0)
-        
-        # Decode image
+
+        # Decode the PNG buffer to numpy array
         img_arr = np.frombuffer(buf.getvalue(), dtype=np.uint8)
-        frame = cv2.imdecode(img_arr, cv2.IMREAD_COLOR)
-        
-        if frame is not None:
-            # Resize if needed
-            if frame.shape[:2] != (height, width):
-                frame = cv2.resize(frame, (width, height), 
-                                 interpolation=cv2.INTER_AREA)
-            frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        else:
-            frame = np.full((height, width, 3), 255, dtype=np.uint8)
-            
-    finally:
-        # Ensure cleanup
         buf.close()
         plt.close(fig)
-    
-    return frame
+
+        # Use cv2 to decode and resize
+        frame = cv2.imdecode(img_arr, cv2.IMREAD_COLOR)
+        if frame is not None:
+            # Only resize if necessary
+            current_h, current_w = frame.shape[:2]
+            if current_h != height or current_w != width:
+                frame = cv2.resize(frame, (width, height), interpolation=cv2.INTER_LANCZOS4)
+            # Convert BGR to RGB for consistency
+            frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        else:
+            # Fallback to white frame if decode fails
+            frame = np.full((height, width, 3), 255, dtype=np.uint8)
+
+        return frame
 
 
 if __name__ == "__main__":
