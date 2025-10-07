@@ -307,7 +307,7 @@ class MoveToPosition(DroneEnvironment):
 
         # Use GridSpec with equal widths and minimal spacing
         from matplotlib.gridspec import GridSpec
-        gs = GridSpec(1, 2, figure=fig, wspace=0.25, width_ratios=[1.25, 1])
+        gs = GridSpec(1, 2, figure=fig, wspace=0.25, width_ratios=[1, 1])
 
         # LEFT SUBPLOT: 3D trajectory view
         ax1 = fig.add_subplot(gs[0, 0], projection='3d')
