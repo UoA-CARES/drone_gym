@@ -21,7 +21,7 @@ class MoveToPosition(DroneEnvironment):
         self.total_steps = 0
         self.truncate_next = False
 
-        self.learning = False
+        self.learning = True
 
         # Task-specific parameters
         self.goal_position = [0, 0.5, 1]  # Goal position
@@ -292,84 +292,101 @@ class MoveToPosition(DroneEnvironment):
         print(f"Success Threshold: {self.distance_threshold:.2f}")
         print(f"Done: {self.done}")
 
-    def grab_frame(self, height: int = 540, width: int = 960) -> np.ndarray:
-
-        fig = plt.figure(figsize=(width / 120, height / 120), dpi=120)
-        # Reserve space for external overlay
-        ax = fig.add_subplot(111, projection='3d', position=[0.1, 0.15, 0.90, 0.75])
-
-        # Return white frame if no positions recorded yet
-        if not self.episode_positions:
-            plt.close(fig)
-            return np.full((height, width, 3), 255, dtype=np.uint8)
-
+def grab_frame(self, height: int = 540, width: int = 960) -> np.ndarray:
+    """Generate a frame showing the drone's 3D trajectory."""
+    
+    # Return white frame if no positions recorded yet
+    if not self.episode_positions:
+        return np.full((height, width, 3), 255, dtype=np.uint8)
+    
+    # Create figure with exact pixel dimensions
+    dpi = 100
+    fig = plt.figure(figsize=(width / dpi, height / dpi), dpi=dpi)
+    ax = fig.add_subplot(111, projection='3d')
+    
+    try:
         # Convert positions to numpy array
         pos_array = np.array(self.episode_positions)
         x, y, z = pos_array[:, 0], pos_array[:, 1], pos_array[:, 2]
-
-        # Plot the drone's trajectory
-        ax.plot(x, y, z, label='Drone Path', color='yellow', linewidth=3)
-
-        # Mark important points with better visibility
-        ax.scatter(x[0], y[0], z[0], color='green', s=100, label='Start', depthshade=False, edgecolors='black', linewidth=0.5)
-        ax.scatter(x[-1], y[-1], z[-1], color='blue', s=100, label='Current', depthshade=False, edgecolors='black', linewidth=0.5)
+        
+        # Plot trajectory
+        ax.plot(x, y, z, color='gold', linewidth=2.5, alpha=0.8, label='Path')
+        
+        # Mark key points
+        ax.scatter(x[0], y[0], z[0], color='lime', s=150, 
+                  label='Start', depthshade=False, edgecolors='darkgreen', linewidth=2, zorder=5)
+        ax.scatter(x[-1], y[-1], z[-1], color='dodgerblue', s=150, 
+                  label='Current', depthshade=False, edgecolors='darkblue', linewidth=2, zorder=5)
         ax.scatter(self.goal_position[0], self.goal_position[1], self.goal_position[2],
-                   color='red', marker='*', s=100, label='Goal', depthshade=False, edgecolors='black', linewidth=1)
-
+                  color='red', marker='*', s=300, label='Goal', 
+                  depthshade=False, edgecolors='darkred', linewidth=2, zorder=5)
+        
+        # Set consistent bounds
         ax.set_xlim(-1.5, 1.5)
         ax.set_ylim(-1.5, 1.5)
         ax.set_zlim(0.25, 1.25)
-
-        # Labels and title with better font sizes
-        ax.set_xlabel('X (m)', fontsize=12, labelpad=10)
-        ax.set_ylabel('Y (m)', fontsize=12, labelpad=10)
-        ax.set_zlabel('Z (m)', fontsize=10, labelpad=15)  # Adjusted for constrained space
-
-        # Adjust tick parameters for better visibility
-        ax.tick_params(axis='x', labelsize=10)
-        ax.tick_params(axis='y', labelsize=10)
-        ax.tick_params(axis='z', labelsize=10)
-
-        # Better viewing angle to show Z-axis clearly
-        ax.view_init(elev=10, azim=25)
-
-        # Add episode info to title with better formatting
-        ax.set_title(f'Episode Trajectory (Step {self.steps})', fontsize=14, pad=20)
-
-        # Position legend to avoid top-left overlay area (overlay starts at x=10, y=30)
-        ax.legend(loc='upper left', fontsize=7, framealpha=0.9, markerscale = 0.70)
-
-        # Add grid for better depth perception
-        ax.grid(True, alpha=0.3)
-
-        # Ensure tight layout with reserved space for external overlay
-        plt.tight_layout(pad=2.0, rect=[0, 0.1, 0.85, 0.9])
-
-        # Convert matplotlib figure to image array with higher quality
+        
+        # **FIX 1: Force equal aspect ratio**
+        # This ensures that 1 unit in X = 1 unit in Y = 1 unit in Z visually
+        ax.set_box_aspect([
+            (1.5 - (-1.5)),  # X range: 3.0
+            (1.5 - (-1.5)),  # Y range: 3.0
+            (1.25 - 0.25)    # Z range: 1.0
+        ])
+        
+        # **FIX 2: Disable automatic scaling**
+        ax.set_proj_type('ortho')  # Use orthographic projection instead of perspective
+        
+        # Labels
+        ax.set_xlabel('X (m)', fontsize=11, labelpad=8)
+        ax.set_ylabel('Y (m)', fontsize=11, labelpad=8)
+        ax.set_zlabel('Z (m)', fontsize=11, labelpad=8)
+        
+        # Tick styling
+        ax.tick_params(axis='both', labelsize=9)
+        
+        # Better viewing angle
+        ax.view_init(elev=20, azim=45)
+        
+        # Title
+        ax.set_title(f'Episode Trajectory (Step {self.steps})', 
+                    fontsize=13, pad=15, weight='semibold')
+        
+        # Legend positioned to avoid top-left overlay
+        ax.legend(loc='upper right', fontsize=9, framealpha=0.95, 
+                 markerscale=0.6, edgecolor='gray')
+        
+        # Grid
+        ax.grid(True, alpha=0.25, linestyle='--')
+        
+        # Tight layout
+        plt.tight_layout(pad=1.0)
+        
+        # Render to buffer
         buf = io.BytesIO()
-        fig.savefig(buf, format='png', dpi=120,
-                    facecolor='white', edgecolor='none', pad_inches=0.2)
+        fig.savefig(buf, format='png', dpi=dpi, 
+                   facecolor='white', edgecolor='none', bbox_inches='tight')
         buf.seek(0)
-
-        # Decode the PNG buffer to numpy array
+        
+        # Decode image
         img_arr = np.frombuffer(buf.getvalue(), dtype=np.uint8)
-        buf.close()
-        plt.close(fig)
-
-        # Use cv2 to decode and resize
         frame = cv2.imdecode(img_arr, cv2.IMREAD_COLOR)
+        
         if frame is not None:
-            # Only resize if necessary (maintain aspect ratio)
-            current_h, current_w = frame.shape[:2]
-            if current_h != height or current_w != width:
-                frame = cv2.resize(frame, (width, height), interpolation=cv2.INTER_LANCZOS4)
-            # Convert BGR to RGB for consistency
+            # Resize if needed
+            if frame.shape[:2] != (height, width):
+                frame = cv2.resize(frame, (width, height), 
+                                 interpolation=cv2.INTER_AREA)
             frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         else:
-            # Fallback to white frame if decode fails
             frame = np.full((height, width, 3), 255, dtype=np.uint8)
-
-        return frame
+            
+    finally:
+        # Ensure cleanup
+        buf.close()
+        plt.close(fig)
+    
+    return frame
 
 
 if __name__ == "__main__":
