@@ -2,6 +2,7 @@ import threading
 import queue
 import time
 from threading import Event
+from collections import deque
 from drone_gym.utils.vicon_connection_class import ViconInterface as vi
 
 import cflib.crtp
@@ -72,6 +73,14 @@ class Drone:
         self.vicon = vi()
         self.position_thread = None
         self.position_lock = threading.Lock()
+
+        # Velocity calculation (from position differentiation)
+        self.calculated_velocity = {"x": 0.0, "y": 0.0}
+        self.velocity_calculation_lock = threading.Lock()
+        self.position_history = deque(maxlen=10)  # Store last 10 positions for moving average
+        self.velocity_update_rate = 0.05  # 20Hz velocity calculation rate
+        self.position_update_rate = 0.0166666  # 60Hz position update rate
+        self.last_velocity_calculation_time = 0.0
 
         # Drone Safety
         self.boundaries = {"x": 2.5, "y": 2.5, "z": 2.25}
@@ -232,7 +241,6 @@ class Drone:
             self.running = value
 
     def _update_position(self):
-        """Update position from Vicon with proper initialization signaling"""
         vicon_thread = None
         try:
             # It takes some time for the vicon to get values
@@ -244,17 +252,30 @@ class Drone:
             # Wait for first valid position reading before signaling ready
             position_ready = False
             ready_timeout = time.time() + 6  # 6 second timeout for first position
+            self.last_velocity_calculation_time = time.time()
 
             while self.is_running() and not self.emergency_event.is_set():
                 try:
                     position_array = self.vicon.getPos(self.drone_name)
                     if position_array is not None:
+                        current_time = time.time()
+
                         with self.position_lock:
                             self.position = {
                                 "x": position_array[0],
                                 "y": position_array[1],
                                 "z": position_array[2],
                             }
+                            current_pos = self.position.copy()
+
+                        # Store position with timestamp for velocity calculation
+                        self.position_history.append((current_time, current_pos))
+
+                        # Calculate velocity at 20Hz (every 0.05s)
+                        if (current_time - self.last_velocity_calculation_time) >= self.velocity_update_rate:
+                            if len(self.position_history) >= 2:
+                                self._calculate_velocity()
+                            self.last_velocity_calculation_time = current_time
 
                         # Signal ready on first successful position read
                         if not position_ready:
@@ -272,7 +293,7 @@ class Drone:
                             self.position_ready_event.set()
                             position_ready = True
 
-                    time.sleep(0.0166666)  # 60 Hz
+                    time.sleep(self.position_update_rate)  # 60 Hz
                 except Exception as e:
                     print(
                         f"[Drone] Error: Position data could not be parsed correctly - {str(e)}"
@@ -285,6 +306,37 @@ class Drone:
             self.vicon.run_interface = False
             if vicon_thread is not None:
                 vicon_thread.join()
+
+    def _calculate_velocity(self):
+        """Calculate velocity using moving average filter over position history (x and y only)"""
+        if len(self.position_history) < 2:
+            return
+
+        # Calculate velocities for each time step in history
+        velocities = {"x": [], "y": []}
+
+        for i in range(1, len(self.position_history)):
+            t_prev, pos_prev = self.position_history[i - 1]
+            t_curr, pos_curr = self.position_history[i]
+
+            dt = t_curr - t_prev
+
+            if dt > 0:
+                # Calculate velocity for x and y axes only
+                for axis in ["x", "y"]:
+                    vel = (pos_curr[axis] - pos_prev[axis]) / dt
+                    velocities[axis].append(vel)
+
+        # Apply moving average filter
+        with self.velocity_calculation_lock:
+            for axis in ["x", "y"]:
+                if len(velocities[axis]) > 0:
+                    self.calculated_velocity[axis] = sum(velocities[axis]) / len(velocities[axis])
+
+    def get_calculated_velocity(self):
+        """Get the calculated velocity from position differentiation (x and y only)"""
+        with self.velocity_calculation_lock:
+            return self.calculated_velocity.copy()
 
     # TODO - check for unsuccessful arming attempts
 
@@ -900,6 +952,10 @@ class Drone:
         with self.position_lock:
             self.position = {"x": 0.0, "y": 0.0, "z": 0.0}
             self.target_position = {"x": 0.0, "y": 0.0, "z": 0.0}
+        # Velocity calculation
+        with self.velocity_calculation_lock:
+            self.calculated_velocity = {"x": 0.0, "y": 0.0}
+        self.position_history.clear()
         # PID
         self.last_error = {"x": 0.0, "y": 0.0, "z": 0.0}
         self.integral = {"x": 0.0, "y": 0.0, "z": 0.0}
