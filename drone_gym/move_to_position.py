@@ -140,8 +140,7 @@ class MoveToPosition(DroneEnvironment):
         state = [
             position[0], position[1], position[2],  # Current position
             self.goal_position[0], self.goal_position[1], self.goal_position[2],  # Target position
-            self._distance_to_target(position) / self.max_distance,  # Normalized distance
-            1.0 if self.drone.in_boundaries else 0.0,  # In boundaries flag
+            self._distance_to_target(position) / self.max_distance
         ]
 
         return np.array(state, dtype=np.float32)
