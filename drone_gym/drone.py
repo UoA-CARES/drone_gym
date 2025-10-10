@@ -48,6 +48,11 @@ class Drone:
         self.controller_thread = None
         self.at_reset_position = Event()
 
+        # Velocity controller parameters
+        self.velocity_controller_active = False
+        self.velocity_controller_thread = None
+        self.velocity_control_rate = 0.1  # 10Hz velocity control rate
+
         # PID gains - separate for each axis for better tuning
         self.gains = {
             "x": {"kp": 0.35, "kd": 0.1425, "ki": 0.08},
@@ -56,6 +61,16 @@ class Drone:
         }
         self.last_error = {"x": 0.0, "y": 0.0, "z": 0.0}
         self.integral = {"x": 0.0, "y": 0.0, "z": 0.0}
+
+        # Velocity control PID gains and state
+        self.velocity_gains = {
+            "x": {"kp": 1.0, "kd": 0.1, "ki": 0.05},
+            "y": {"kp": 1.0, "kd": 0.1, "ki": 0.05},
+            "z": {"kp": 1.0, "kd": 0.1, "ki": 0.05},
+        }
+        self.velocity_last_error = {"x": 0.0, "y": 0.0, "z": 0.0}
+        self.velocity_integral = {"x": 0.0, "y": 0.0, "z": 0.0}
+        self.target_velocity = {"x": 0.0, "y": 0.0, "z": 0.0}
         self.max_velocity = 0.25  # Maximum velocity in m/s
         self.position_deadband = (
             0.10  # Position error below which velocity will be zero (in meters)
@@ -519,11 +534,19 @@ class Drone:
                     vy = max(-max_vel, min(max_vel, vy))
                     vz = max(-max_vel, min(max_vel, vz))
 
-                    # Send velocity command
-                    self.mc.start_linear_motion(vx, vy, vz)
-                    print(
-                        f"[Drone] Velocity vector set: vx={vx:.2f}, vy={vy:.2f}, vz={vz:.2f}"
-                    )
+                    if self.velocity_controller_active:
+                        # Set target velocity for velocity controller
+                        with self.velocity_lock:
+                            self.target_velocity = {"x": vx, "y": vy, "z": vz}
+                        print(
+                            f"[Drone] Target velocity set for controller: vx={vx:.2f}, vy={vy:.2f}, vz={vz:.2f}"
+                        )
+                    else:
+                        # Send direct velocity command
+                        self.mc.start_linear_motion(vx, vy, vz)
+                        print(
+                            f"[Drone] Direct velocity vector set: vx={vx:.2f}, vy={vy:.2f}, vz={vz:.2f}"
+                        )
                 else:
                     print(
                         "[Drone] Cannot set velocity - drone not flying or motion commander not available"
@@ -577,6 +600,28 @@ class Drone:
             print("[Drone] Position controller stopped")
         else:
             print("[Drone] Position controller already stopped")
+
+    def start_velocity_control(self):
+        """Start the velocity controller thread for automatic velocity tracking"""
+        if not self.velocity_controller_active:
+            self.velocity_controller_active = True
+            self.velocity_controller_thread = threading.Thread(
+                target=self._velocity_control_loop
+            )
+            self.velocity_controller_thread.start()
+            print("[Drone] Velocity controller started")
+        else:
+            print("[Drone] Velocity controller already active")
+
+    def stop_velocity_control(self):
+        """Stop the velocity controller thread"""
+        if self.velocity_controller_active:
+            self.velocity_controller_active = False
+            if self.velocity_controller_thread and self.velocity_controller_thread.is_alive():
+                self.velocity_controller_thread.join()
+            print("[Drone] Velocity controller stopped")
+        else:
+            print("[Drone] Velocity controller already stopped")
 
     def _position_control_loop(self, first_instance=0, debugging=True):
         """Main control loop for position-based velocity control"""
@@ -649,6 +694,43 @@ class Drone:
 
         print("[Drone] Position control loop stopped")
 
+    def _velocity_control_loop(self):
+        """Main control loop for velocity tracking using outer PID control"""
+        print("[Drone] Velocity control loop started")
+
+        while (
+            self.is_running()
+            and self.velocity_controller_active
+            and not self.emergency_event.is_set()
+        ):
+            try:
+                # Get target and actual velocities
+                with self.velocity_lock:
+                    target_vel = self.target_velocity.copy()
+
+                actual_vel = self.get_calculated_velocity()
+
+                # Calculate corrected velocity command using PID
+                corrected_velocity = self._calculate_velocity_pid(target_vel, actual_vel, self.velocity_control_rate)
+
+                # Apply corrected velocity command if flying
+                if self.is_flying_event.is_set() and self.mc:
+                    # Send corrected velocity to MotionCommander
+                    self.mc.start_linear_motion(
+                        corrected_velocity["x"],
+                        corrected_velocity["y"],
+                        corrected_velocity["z"]
+                    )
+
+                # Sleep to maintain control rate
+                time.sleep(self.velocity_control_rate)
+
+            except Exception as e:
+                print(f"[Drone] Error in velocity control loop: {str(e)}")
+                time.sleep(0.5)  # Sleep longer on error
+
+        print("[Drone] Velocity control loop stopped")
+
     def clear_reset_position_event(self):
         self.at_reset_position.clear()
 
@@ -691,11 +773,57 @@ class Drone:
 
         return velocity
 
-    def set_velocity_vector(self, vx: float, vy: float, vz: float) -> None:
-        velocity_command = {"velocity_vector": {"x": vx, "y": vy, "z": vz}}
+    def _calculate_velocity_pid(self, target_velocity, actual_velocity, dt):
+        """Calculate velocity corrections using PID control for velocity tracking (x, y only)
 
-        self.send_command(velocity_command)
-        print(f"[Drone] Velocity vector command sent: vx={vx}, vy={vy}, vz={vz}")
+        Args:
+            target_velocity: Target velocity in each axis as dictionary
+            actual_velocity: Actual velocity in each axis as dictionary
+            dt: Time step for derivative and integral calculations
+        """
+        corrected_velocity = {"x": 0.0, "y": 0.0, "z": 0.0}
+
+        # For x and y axes only (z is always 0)
+        for axis in ["x", "y"]:
+            # Calculate velocity error
+            error = target_velocity[axis] - actual_velocity[axis]
+
+            # Proportional term
+            p_term = self.velocity_gains[axis]["kp"] * error
+
+            # Derivative term (rate of change of error)
+            d_term = self.velocity_gains[axis]["kd"] * (error - self.velocity_last_error[axis]) / dt
+
+            # Integral term (accumulating error)
+            self.velocity_integral[axis] += error * dt
+            # Anti-windup: reset integral when changing direction
+            if (error * self.velocity_last_error[axis]) < 0:
+                self.velocity_integral[axis] = 0.0
+            # Apply integral term with limits to prevent windup
+            i_term = self.velocity_gains[axis]["ki"] * self.velocity_integral[axis]
+
+            # Calculate corrected velocity command (sum of PID terms)
+            raw_velocity = p_term + d_term + i_term
+            # Apply velocity limits
+            corrected_velocity[axis] = max(
+                -self.max_velocity, min(self.max_velocity, raw_velocity)
+            )
+            # Update last error for next iteration
+            self.velocity_last_error[axis] = error
+
+        return corrected_velocity
+
+    def set_velocity_vector(self, vx: float, vy: float, vz: float) -> None:
+        if self.velocity_controller_active:
+            # Set target velocity for velocity controller
+            with self.velocity_lock:
+                self.target_velocity = {"x": vx, "y": vy, "z": vz}
+            print(f"[Drone] Target velocity set for controller: vx={vx}, vy={vy}, vz={vz}")
+        else:
+            # Direct velocity command to MotionCommander
+            velocity_command = {"velocity_vector": {"x": vx, "y": vy, "z": vz}}
+            self.send_command(velocity_command)
+            print(f"[Drone] Direct velocity command sent: vx={vx}, vy={vy}, vz={vz}")
 
     def set_velocity(self, velocity_vector) -> None:
         """Set velocity vector from a list or array [vx, vy, vz]"""
@@ -836,6 +964,7 @@ class Drone:
         """Set all shutdown flags so every thread leaves its loop ASAP."""
         self.set_running(False)
         self.controller_active = False
+        self.velocity_controller_active = False
         # Purge the command queue so no stale commands run after restart
         while not self.command_queue.empty():
             try:
@@ -851,6 +980,7 @@ class Drone:
             ("position", self.position_thread),
             ("safety", self.safety_thread),
             ("controller", self.controller_thread),
+            ("velocity_controller", self.velocity_controller_thread),
             ("main", self.thread),
         ]
 
@@ -885,6 +1015,10 @@ class Drone:
         # PID
         self.last_error = {"x": 0.0, "y": 0.0, "z": 0.0}
         self.integral = {"x": 0.0, "y": 0.0, "z": 0.0}
+        # Velocity PID
+        self.velocity_last_error = {"x": 0.0, "y": 0.0, "z": 0.0}
+        self.velocity_integral = {"x": 0.0, "y": 0.0, "z": 0.0}
+        self.target_velocity = {"x": 0.0, "y": 0.0, "z": 0.0}
         # Events
         self.is_flying_event.clear()
         self.is_landed_event.set()
@@ -932,9 +1066,6 @@ if __name__ == "__main__":
     # Testing instructions
 
     drone = Drone()
-    # while True:
-    #     position = drone.get_position()
-    #     print(position)
     print("Drone class initiated")
     drone.take_off()
     drone.is_flying_event.wait(timeout=15)
@@ -947,18 +1078,12 @@ if __name__ == "__main__":
     time.sleep(2)  # Let the controller stabilise first
     print("Setting target position")
     drone.set_target_position(0, 0, 1)  # Move 1m forward on x-axis
-    # Let the position controller run for 15 seconds
     time.sleep(30)
-    # print("post 35 seconds pause")
-    # drone.set_target_position(0.0, 0.0, 0.5)  # Return to origin (x,y)
-    # time.sleep(15)
-    # drone.set_target_position(1.0, 1.0, 0.5)  # Move along y-axis and change height
-    # time.sleep(15)
     drone.stop_position_control()
-    # # Land and stop
     drone.land()
     drone.is_landed_event.wait(timeout=30)
     if not drone.is_landed_event.is_set():
         print("Drone is failing to land....")
         print("Forcing stop")
-    # time.sleep(5)
+    drone.stop()
+
