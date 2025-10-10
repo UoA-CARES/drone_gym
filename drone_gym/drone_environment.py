@@ -20,7 +20,7 @@ class DroneEnvironment(ABC):
         self.seed = 0
 
         self.battery_threshold = 3.25
-        self.observation_space = 8
+        self.observation_space = 9
 
         # Movement Boundary - can be overridden by tasks
         self.xy_limit = 1.0

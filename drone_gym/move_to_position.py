@@ -133,15 +133,47 @@ class MoveToPosition(DroneEnvironment):
         self.done = False
 
     def _get_state(self) -> np.ndarray:
-        """Get the current state representation for the navigation task"""
+        """Get the current state representation for the 2D navigation task"""
         position = self.drone.get_position()
 
-        # State includes: current position, target position, distance to target, normalized
+        # Use relative position instead of absolute positions
+        relative_x = self.goal_position[0] - position[0]
+        relative_y = self.goal_position[1] - position[1]
+        distance = np.sqrt(relative_x**2 + relative_y**2)
+
+        # Direction to goal (normalized) - helps agent understand "which way"
+        direction_x = relative_x / (distance + 1e-6)
+        direction_y = relative_y / (distance + 1e-6)
+
+        # Velocity information
+        vel_x = self.drone.calculated_velocity["x"]
+        vel_y = self.drone.calculated_velocity["y"]
+        velocity_magnitude = np.sqrt(vel_x**2 + vel_y**2)
+
+        # How well velocity aligns with goal direction (1 = perfect, -1 = opposite)
+        velocity_alignment = (vel_x * direction_x + vel_y * direction_y) / (velocity_magnitude + 1e-6) if velocity_magnitude > 0 else 0
+
         state = [
-            position[0], position[1], position[2],  # Current position
-            self.goal_position[0], self.goal_position[1], self.goal_position[2],  # Target position
-            self._distance_to_target(position) / self.max_distance,  # Normalized distance
-            1.0 if self.drone.in_boundaries else 0.0,  # In boundaries flag
+            # Relative position to goal (2) - better than absolute positions
+            relative_x / self.max_distance,
+            relative_y / self.max_distance,
+
+            # Distance to goal (1)
+            distance / self.max_distance,
+
+            # Direction to goal - unit vector (2) - helps with directional awareness
+            direction_x,
+            direction_y,
+
+            # Current velocity (2)
+            vel_x / self.max_velocity,
+            vel_y / self.max_velocity,
+
+            # Velocity magnitude (1) - overall speed
+            velocity_magnitude / self.max_velocity,
+
+            # Velocity alignment with goal (1) - are we heading the right way?
+            velocity_alignment
         ]
 
         return np.array(state, dtype=np.float32)
