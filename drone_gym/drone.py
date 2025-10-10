@@ -64,9 +64,9 @@ class Drone:
 
         # Velocity control PID gains and state
         self.velocity_gains = {
-            "x": {"kp": 1.0, "kd": 0.1, "ki": 0.05},
-            "y": {"kp": 1.0, "kd": 0.1, "ki": 0.05},
-            "z": {"kp": 1.0, "kd": 0.1, "ki": 0.05},
+            "x": {"kp": 1.30, "kd": 0.25, "ki": 0},
+            "y": {"kp": 1.35, "kd": 0.25, "ki": 0},
+            "z": {"kp": 0, "kd": 0, "ki": 0},
         }
         self.velocity_last_error = {"x": 0.0, "y": 0.0, "z": 0.0}
         self.velocity_integral = {"x": 0.0, "y": 0.0, "z": 0.0}
@@ -75,6 +75,11 @@ class Drone:
         self.position_deadband = (
             0.10  # Position error below which velocity will be zero (in meters)
         )
+
+        # NEW: Velocity ramping for smooth transitions
+        self.current_commanded_velocity = {"x": 0.0, "y": 0.0, "z": 0.0}
+        self.max_velocity_change_rate = 0.075 #Maximum change in velocity per second (m/s²)
+        self.velocity_command_lock = threading.Lock()
 
         # Crazyflie objects - will be initialized in _run
         self.scf = None
@@ -93,7 +98,7 @@ class Drone:
         self.calculated_velocity = {"x": 0.0, "y": 0.0}
         self.velocity_calculation_lock = threading.Lock()
         self.position_history = deque(maxlen=15)  # Store last 15 positions for moving average
-        self.velocity_update_rate = 0.05  # 20Hz velocity calculation rate
+        self.velocity_update_rate = 0.10  # 20Hz velocity calculation rate
         self.position_update_rate = 0.0166666  # 60Hz position update rate
         self.last_velocity_calculation_time = 0.0
 
@@ -695,7 +700,7 @@ class Drone:
         print("[Drone] Position control loop stopped")
 
     def _velocity_control_loop(self):
-        """Main control loop for velocity tracking using outer PID control"""
+        """Main control loop for velocity tracking using outer PID control with gradual ramping"""
         print("[Drone] Velocity control loop started")
 
         while (
@@ -711,15 +716,23 @@ class Drone:
                 actual_vel = self.get_calculated_velocity()
 
                 # Calculate corrected velocity command using PID
-                corrected_velocity = self._calculate_velocity_pid(target_vel, actual_vel, self.velocity_control_rate)
+                desired_velocity = self._calculate_velocity_pid(target_vel, actual_vel, self.velocity_control_rate)
 
-                # Apply corrected velocity command if flying
+                # Apply gradual ramping to the velocity command
+                ramped_velocity = self._apply_velocity_ramping(desired_velocity, self.velocity_control_rate)
+
+                print(f"Target: ({target_vel['x']:.3f}, {target_vel['y']:.3f}), "
+                    f"Actual: ({actual_vel['x']:.3f}, {actual_vel['y']:.3f}), "
+                    f"Desired: ({desired_velocity['x']:.3f}, {desired_velocity['y']:.3f}), "
+                    f"Ramped: ({ramped_velocity['x']:.3f}, {ramped_velocity['y']:.3f})")
+
+                # Apply ramped velocity command if flying
                 if self.is_flying_event.is_set() and self.mc:
-                    # Send corrected velocity to MotionCommander
+                    # Send ramped velocity to MotionCommander
                     self.mc.start_linear_motion(
-                        corrected_velocity["x"],
-                        corrected_velocity["y"],
-                        corrected_velocity["z"]
+                        ramped_velocity["x"],
+                        ramped_velocity["y"],
+                        0
                     )
 
                 # Sleep to maintain control rate
@@ -730,6 +743,30 @@ class Drone:
                 time.sleep(0.5)  # Sleep longer on error
 
         print("[Drone] Velocity control loop stopped")
+
+    def _apply_velocity_ramping(self, desired_velocity, dt):
+
+        ramped_velocity = {"x": 0.0, "y": 0.0, "z": 0.0}
+        
+        # Calculate maximum allowed velocity change in this time step
+        max_delta = self.max_velocity_change_rate * dt
+        
+        with self.velocity_command_lock:
+            for axis in ["x", "y", "z"]:
+                # Calculate the desired change in velocity
+                delta = desired_velocity[axis] - self.current_commanded_velocity[axis]
+                
+                # Limit the change to the maximum allowed rate
+                if abs(delta) > max_delta:
+                    delta = max_delta if delta > 0 else -max_delta
+                
+                # Apply the limited change
+                ramped_velocity[axis] = self.current_commanded_velocity[axis] + delta
+                
+                # Update the current commanded velocity for next iteration
+                self.current_commanded_velocity[axis] = ramped_velocity[axis]
+        
+        return ramped_velocity
 
     def clear_reset_position_event(self):
         self.at_reset_position.clear()
@@ -1019,6 +1056,9 @@ class Drone:
         self.velocity_last_error = {"x": 0.0, "y": 0.0, "z": 0.0}
         self.velocity_integral = {"x": 0.0, "y": 0.0, "z": 0.0}
         self.target_velocity = {"x": 0.0, "y": 0.0, "z": 0.0}
+        # NEW: Reset ramped velocity
+        with self.velocity_command_lock:
+            self.current_commanded_velocity = {"x": 0.0, "y": 0.0, "z": 0.0}
         # Events
         self.is_flying_event.clear()
         self.is_landed_event.set()

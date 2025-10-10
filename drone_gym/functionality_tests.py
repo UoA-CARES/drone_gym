@@ -94,7 +94,7 @@ def test_velocity_controller():
     for i in range(10):
         time.sleep(0.2)
         pos1 = drone.get_position()
-        time.sleep(0.1)  # 100ms sampling
+        time.sleep(1)  # 100ms sampling
         pos2 = drone.get_position()
         
         measured_vx = (pos2[0] - pos1[0]) / 0.1
