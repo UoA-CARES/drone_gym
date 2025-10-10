@@ -26,7 +26,8 @@ class MoveToPosition(DroneEnvironment):
         # Task-specific parameters
         self.goal_position = [0, 0.5, 1]  # Goal position
         self.distance_threshold = 0.05  # Distance threshold to consider target reached
-        self.max_distance = 1  # Maximum distance for normalization
+        self.max_xy_range = 2.0  # Maximum range in x or y direction (for normalizing components)
+        self.max_distance = 2.83  # Maximum distance for normalization (diagonal of 2m x 2m space)
         self.time_tolerance = 0.15 # tolerance time for calculating travel distance
 
         # hard coded z limit
@@ -155,8 +156,8 @@ class MoveToPosition(DroneEnvironment):
 
         state = [
             # Relative position to goal (2) - better than absolute positions
-            relative_x / self.max_distance,
-            relative_y / self.max_distance,
+            relative_x / self.max_xy_range,
+            relative_y / self.max_xy_range,
 
             # Distance to goal (1)
             distance / self.max_distance,
