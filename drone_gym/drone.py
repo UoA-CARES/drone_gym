@@ -1091,6 +1091,10 @@ class Drone:
         self.mc = None
 
     def pre_battery_change_cleanup(self):
+        if self.velocity_controller_active:
+            self.stop_velocity_control()
+        if self.controller_active:
+            self.stop_position_control()
         self.cf = None
         self.scf = None
         self.mc = None
