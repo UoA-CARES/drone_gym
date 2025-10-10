@@ -140,7 +140,8 @@ class MoveToPosition(DroneEnvironment):
         state = [
             position[0], position[1], position[2],  # Current position
             self.goal_position[0], self.goal_position[1], self.goal_position[2],  # Target position
-            self._distance_to_target(position) / self.max_distance
+            self._distance_to_target(position) / self.max_distance,
+            self.drone.calculated_velocity["x"], self.drone.calculated_velocity["y"]
         ]
 
         return np.array(state, dtype=np.float32)
