@@ -42,6 +42,9 @@ class DroneEnvironment(ABC):
         time.sleep(0.5)  # Allow any in-flight commands to be processed
         self.drone.last_error = {"x": 0.0, "y": 0.0, "z": 0.0}
         self.drone.integral = {"x": 0.0, "y": 0.0, "z": 0.0}
+        self.drone.velocity_last_error = {"x": 0.0, "y": 0.0, "z": 0.0}
+        self.drone.velocity_integral = {"x": 0.0, "y": 0.0, "z": 0.0}
+        self.drone.target_velocity = {"x": 0.0, "y": 0.0, "z": 0.0}
 
     def reset(self, training: bool = True):
         """Reset the drone to initial position and state"""
@@ -57,6 +60,11 @@ class DroneEnvironment(ABC):
         self.episode_positions = []
 
         self._reset_control_properties()
+
+        # Stop velocity controller to prevent conflict with position controller
+        if self.drone.velocity_controller_active:
+            print("[Reset] Stopping velocity controller for reset")
+            self.drone.stop_velocity_control()
 
         # Stop the current velocity
         self.drone.set_velocity_vector(0, 0, 0)
