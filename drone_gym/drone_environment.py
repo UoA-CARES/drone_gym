@@ -102,6 +102,9 @@ class DroneEnvironment(ABC):
         initial_position = self.drone.get_position()
         self.episode_positions.append(initial_position)
 
+        # Start velocity controller for episode steps
+        self.drone.start_velocity_control()
+
         return self._get_state()
 
     def step(self, action):
