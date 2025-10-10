@@ -752,19 +752,32 @@ class Drone:
         max_delta = self.max_velocity_change_rate * dt
 
         with self.velocity_command_lock:
-            for axis in ["x", "y", "z"]:
-                # Calculate the desired change in velocity
-                delta = desired_velocity[axis] - self.current_commanded_velocity[axis]
+            # Calculate the desired change vector (x and y only)
+            delta = {
+                "x": desired_velocity["x"] - self.current_commanded_velocity["x"],
+                "y": desired_velocity["y"] - self.current_commanded_velocity["y"]
+            }
 
-                # Limit the change to the maximum allowed rate
-                if abs(delta) > max_delta:
-                    delta = max_delta if delta > 0 else -max_delta
+            # Calculate the magnitude of the change vector (x and y only)
+            delta_magnitude = (delta["x"]**2 + delta["y"]**2)**0.5
 
-                # Apply the limited change
-                ramped_velocity[axis] = self.current_commanded_velocity[axis] + delta
+            # If the desired change is larger than allowed, scale it down while preserving direction
+            if delta_magnitude > max_delta:
+                scale = max_delta / delta_magnitude
+                delta["x"] *= scale
+                delta["y"] *= scale
 
-                # Update the current commanded velocity for next iteration
-                self.current_commanded_velocity[axis] = ramped_velocity[axis]
+            # Apply the limited change for x and y
+            ramped_velocity["x"] = self.current_commanded_velocity["x"] + delta["x"]
+            ramped_velocity["y"] = self.current_commanded_velocity["y"] + delta["y"]
+            
+            # Z is always 0
+            ramped_velocity["z"] = 0.0
+
+            # Update the current commanded velocity for next iteration
+            self.current_commanded_velocity["x"] = ramped_velocity["x"]
+            self.current_commanded_velocity["y"] = ramped_velocity["y"]
+            self.current_commanded_velocity["z"] = 0.0
 
         return ramped_velocity
 
