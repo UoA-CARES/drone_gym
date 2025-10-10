@@ -77,7 +77,7 @@ class Drone:
         # Velocity calculation (from position differentiation)
         self.calculated_velocity = {"x": 0.0, "y": 0.0}
         self.velocity_calculation_lock = threading.Lock()
-        self.position_history = deque(maxlen=10)  # Store last 10 positions for moving average
+        self.position_history = deque(maxlen=15)  # Store last 10 positions for moving average
         self.velocity_update_rate = 0.05  # 20Hz velocity calculation rate
         self.position_update_rate = 0.0166666  # 60Hz position update rate
         self.last_velocity_calculation_time = 0.0
