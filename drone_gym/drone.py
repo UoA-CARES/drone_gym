@@ -25,6 +25,11 @@ class Drone:
         self.battery_lock = threading.Lock()
         self.battery_log_config = None
         self.battery_level = 5.0  # default value
+        self.velocity_log_lock = threading.Lock()
+        self.velocity_log_config = None
+        self.internal_vx = 0.0
+        self.internal_vy = 0.0
+        self.internal_vz = 0.0
         self.ps = PowerSwitch(
             "radio://0/100/2M/E7E7E7E7E7"
         )  # changed radio channel in 22/9
@@ -381,6 +386,7 @@ class Drone:
             print("[Crazyflie] Crazyflie armed.")
 
             self._setup_battery_logging()
+            self._setup_velocity_logging()
 
             # Signal that hardware is ready
             self.hardware_ready_event.set()
@@ -471,6 +477,11 @@ class Drone:
                 self.battery_log_config.stop()
                 self.battery_log_config.delete()
                 self.battery_log_config = None
+
+            if self.velocity_log_config:
+                self.velocity_log_config.stop()
+                self.velocity_log_config.delete()
+                self.velocity_log_config = None
 
             self.set_running(False)
 
@@ -916,6 +927,11 @@ class Drone:
         with self.position_lock:
             return self.position.copy()
 
+    def get_internal_velocity(self):
+        """Get current velocity from Crazyflie internal state estimate"""
+        with self.velocity_log_lock:
+            return (self.internal_vx, self.internal_vy, self.internal_vz)
+
     def send_command(self, command):
         """Send command to the command queue"""
         self.command_queue.put(command)
@@ -967,6 +983,45 @@ class Drone:
         voltage = data["pm.vbat"]
         with self.battery_lock:
             self.battery_level = voltage
+
+    def _setup_velocity_logging(self):
+        if self.cf is None:
+            print(
+                "[Drone] Could not start velocity logging, Crazyflie object not available."
+            )
+            return
+
+        if not hasattr(self.cf, "log") or self.cf.log is None:
+            print(
+                "[Drone] Could not start velocity logging, log interface not available."
+            )
+            return
+
+        try:
+            self.velocity_log_config = LogConfig(name="Velocity", period_in_ms=100)
+            self.velocity_log_config.add_variable("stateEstimate.vx", "float")
+            self.velocity_log_config.add_variable("stateEstimate.vy", "float")
+            self.velocity_log_config.add_variable("stateEstimate.vz", "float")
+
+            self.cf.log.add_config(self.velocity_log_config)
+            self.velocity_log_config.data_received_cb.add_callback(
+                self._velocity_callback
+            )
+            self.velocity_log_config.start()
+            print("[Drone] Velocity logging started.")
+        except KeyError as e:
+            print(f"[Drone] Could not start velocity logging: {e}")
+        except AttributeError:
+            print(
+                "[Drone] Could not start velocity logging, Crazyflie object not available."
+            )
+
+    def _velocity_callback(self, timestamp, data, logconf):
+        """Callback for when new velocity data is received from the drone."""
+        with self.velocity_log_lock:
+            self.internal_vx = data["stateEstimate.vx"]
+            self.internal_vy = data["stateEstimate.vy"]
+            self.internal_vz = data["stateEstimate.vz"]
 
     def get_motion_commander_setpoint(self):
         """Get the current hover setpoint from MotionCommander's internal thread"""
