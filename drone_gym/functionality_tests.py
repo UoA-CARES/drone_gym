@@ -190,7 +190,7 @@ def test_velocity_tracking_with_graphs():
     drone.set_velocity_vector(target_vx, target_vy, 0)
     
     start_time = time.time()
-    test_duration = 10.0
+    test_duration = 15
     sample_rate = 0.1
     
     print(f"  Collecting data for {test_duration} seconds at {1/sample_rate}Hz...")
@@ -201,6 +201,10 @@ def test_velocity_tracking_with_graphs():
     while (time.time() - start_time) < test_duration:
         current_time = time.time()
         elapsed = current_time - start_time
+        
+        # Check again after getting current time to avoid overshooting
+        if elapsed >= test_duration:
+            break
         
         current_pos = drone.get_position()
         internal_vel = drone.get_internal_velocity()
@@ -226,7 +230,12 @@ def test_velocity_tracking_with_graphs():
         
         prev_pos = current_pos
         prev_time = current_time
-        time.sleep(sample_rate)
+        
+        # Sleep only the remaining time needed for consistent sampling
+        next_sample_time = start_time + (len(timestamps) * sample_rate)
+        sleep_duration = max(0, next_sample_time - time.time())
+        if sleep_duration > 0:
+            time.sleep(sleep_duration)
     
     # Stop movement
     drone.set_velocity_vector(0, 0, 0)
@@ -288,7 +297,6 @@ def test_velocity_tracking_with_graphs():
     drone.stop()
     
     print("\n[Test] Velocity tracking with graphs complete!")
-
 
 if __name__ == "__main__":
     test_velocity_tracking_with_graphs()

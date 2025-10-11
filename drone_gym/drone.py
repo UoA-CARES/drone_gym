@@ -69,21 +69,21 @@ class Drone:
 
         # Velocity control PID gains and state
         self.velocity_gains = {
-            "x": {"kp": 1.38, "kd": 0.25, "ki": 0},
-            "y": {"kp": 1.38, "kd": 0.25, "ki": 0},
+            "x": {"kp": 0.3, "kd": 0.1, "ki": 0.05},
+            "y": {"kp": 0.3, "kd": 0.1, "ki": 0.05},  # Higher Kd for Y due to oscillations
             "z": {"kp": 0, "kd": 0, "ki": 0},
         }
         self.velocity_last_error = {"x": 0.0, "y": 0.0, "z": 0.0}
         self.velocity_integral = {"x": 0.0, "y": 0.0, "z": 0.0}
         self.target_velocity = {"x": 0.0, "y": 0.0, "z": 0.0}
-        self.max_velocity = 0.25  # Maximum velocity in m/s
+        self.max_velocity = 0.40  # Maximum velocity in m/s
         self.position_deadband = (
             0.10  # Position error below which velocity will be zero (in meters)
         )
 
         # NEW: Velocity ramping for smooth transitions
         self.current_commanded_velocity = {"x": 0.0, "y": 0.0, "z": 0.0}
-        self.max_velocity_change_rate = 0.075 #Maximum change in velocity per second (m/s²)
+        self.max_velocity_change_rate = 0.50 #Maximum change in velocity per second (m/s²)
         self.velocity_command_lock = threading.Lock()
 
         # Crazyflie objects - will be initialized in _run
@@ -834,43 +834,29 @@ class Drone:
         return velocity
 
     def _calculate_velocity_pid(self, target_velocity, actual_velocity, dt):
-        """Calculate velocity corrections using PID control for velocity tracking (x, y only)
-
-        Args:
-            target_velocity: Target velocity in each axis as dictionary
-            actual_velocity: Actual velocity in each axis as dictionary
-            dt: Time step for derivative and integral calculations
-        """
         corrected_velocity = {"x": 0.0, "y": 0.0, "z": 0.0}
-
-        # For x and y axes only (z is always 0)
+        
         for axis in ["x", "y"]:
-            # Calculate velocity error
             error = target_velocity[axis] - actual_velocity[axis]
-
-            # Proportional term
+            
+            # PID terms
             p_term = self.velocity_gains[axis]["kp"] * error
-
-            # Derivative term (rate of change of error)
             d_term = self.velocity_gains[axis]["kd"] * (error - self.velocity_last_error[axis]) / dt
-
-            # Integral term (accumulating error)
+            
             self.velocity_integral[axis] += error * dt
-            # Anti-windup: reset integral when changing direction
-            if (error * self.velocity_last_error[axis]) < 0:
-                self.velocity_integral[axis] = 0.0
-            # Apply integral term with limits to prevent windup
+            max_integral = 0.2
+            self.velocity_integral[axis] = max(-max_integral, min(max_integral, self.velocity_integral[axis]))
             i_term = self.velocity_gains[axis]["ki"] * self.velocity_integral[axis]
-
-            # Calculate corrected velocity command (sum of PID terms)
-            raw_velocity = p_term + d_term + i_term
-            # Apply velocity limits
-            corrected_velocity[axis] = max(
-                -self.max_velocity, min(self.max_velocity, raw_velocity)
-            )
-            # Update last error for next iteration
+            
+            # Feed-forward term (NEW)
+            ff_term = target_velocity[axis]  # Direct pass-through of target
+            
+            # Combine all terms
+            raw_velocity = ff_term + p_term + d_term + i_term
+            corrected_velocity[axis] = max(-self.max_velocity, min(self.max_velocity, raw_velocity))
+            
             self.velocity_last_error[axis] = error
-
+        
         return corrected_velocity
 
     def set_velocity_vector(self, vx: float, vy: float, vz: float) -> None:
