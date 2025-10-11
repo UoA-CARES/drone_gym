@@ -64,8 +64,8 @@ class Drone:
 
         # Velocity control PID gains and state
         self.velocity_gains = {
-            "x": {"kp": 1.30, "kd": 0.25, "ki": 0},
-            "y": {"kp": 1.35, "kd": 0.25, "ki": 0},
+            "x": {"kp": 1.38, "kd": 0.25, "ki": 0},
+            "y": {"kp": 1.38, "kd": 0.25, "ki": 0},
             "z": {"kp": 0, "kd": 0, "ki": 0},
         }
         self.velocity_last_error = {"x": 0.0, "y": 0.0, "z": 0.0}
