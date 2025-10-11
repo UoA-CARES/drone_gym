@@ -1,5 +1,6 @@
 import time
 import numpy as np
+import matplotlib.pyplot as plt
 
 from drone_gym.drone import Drone
 
@@ -70,9 +71,97 @@ def taking_off():
 
 
 def test_velocity_controller():
-    """Test the outer velocity controller tracking accuracy with detailed logging and graphs"""
-    import matplotlib.pyplot as plt
+    """Test the outer velocity controller tracking accuracy"""
+    drone = Drone()
     
+    # Take off
+    print("[Test] Taking off...")
+    drone.take_off()
+    drone.is_flying_event.wait(timeout=15)
+    time.sleep(2)
+    
+    # Start velocity controller
+    print("[Test] Starting velocity controller...")
+    drone.start_velocity_control()
+    time.sleep(1)
+    
+    # Test 1: Command constant velocity and measure tracking
+    print("\n[Test 1] Testing velocity tracking accuracy...")
+    target_vx, target_vy = 0.2, 0.0
+    drone.set_velocity_vector(target_vx, target_vy, 0)
+    
+    # Measure velocity over multiple samples
+    velocities = []
+    for i in range(10):
+        time.sleep(0.2)
+        pos1 = drone.get_position()
+        time.sleep(0.1)
+        pos2 = drone.get_position()
+        
+        measured_vx = (pos2[0] - pos1[0]) / 0.1
+        measured_vy = (pos2[1] - pos1[1]) / 0.1
+        velocities.append([measured_vx, measured_vy])
+        print(f"  Sample {i+1}: vx={measured_vx:.3f} m/s (target: {target_vx}), vy={measured_vy:.3f} m/s (target: {target_vy})")
+    
+    # Calculate average and error
+    avg_velocities = np.mean(velocities, axis=0)
+    vx_error = abs(avg_velocities[0] - target_vx)
+    vy_error = abs(avg_velocities[1] - target_vy)
+    print(f"\n  Average: vx={avg_velocities[0]:.3f} m/s, vy={avg_velocities[1]:.3f} m/s")
+    print(f"  Error: vx={vx_error:.3f} m/s, vy={vy_error:.3f} m/s")
+    
+    # Stop and reset
+    drone.set_velocity_vector(0, 0, 0)
+    time.sleep(1)
+    
+    # Test 2: Simulate step() behavior - change velocity multiple times
+    print("\n[Test 2] Simulating environment step() behavior...")
+    test_velocities = [
+        (0.15, 0.15),
+        (-0.1, 0.2),
+        (0.0, -0.15),
+        (0.25, 0.0),
+    ]
+    
+    for idx, (vx, vy) in enumerate(test_velocities):
+        print(f"\n  Step {idx+1}: Commanding vx={vx}, vy={vy}")
+        pos_start = drone.get_position()
+        
+        drone.set_velocity_vector(vx, vy, 0)
+        time.sleep(0.5)
+        
+        pos_end = drone.get_position()
+        actual_displacement = [
+            pos_end[0] - pos_start[0],
+            pos_end[1] - pos_start[1]
+        ]
+        expected_displacement = [vx * 0.5, vy * 0.5]
+        
+        error = [
+            abs(actual_displacement[0] - expected_displacement[0]),
+            abs(actual_displacement[1] - expected_displacement[1])
+        ]
+        
+        print(f"    Expected displacement: x={expected_displacement[0]:.4f}, y={expected_displacement[1]:.4f}")
+        print(f"    Actual displacement:   x={actual_displacement[0]:.4f}, y={actual_displacement[1]:.4f}")
+        print(f"    Error: x={error[0]:.4f} m, y={error[1]:.4f} m")
+    
+    # Stop velocity controller and land
+    print("\n[Test] Stopping velocity controller...")
+    drone.stop_velocity_control()
+    drone.set_velocity_vector(0, 0, 0)
+    time.sleep(1)
+    
+    print("[Test] Landing...")
+    drone.land()
+    drone.is_landed_event.wait(timeout=15)
+    drone.stop()
+    
+    print("\n[Test] Velocity controller test complete!")
+
+
+def test_velocity_tracking_with_graphs():
+    """Test velocity controller with detailed data logging and graphing"""
     drone = Drone()
     
     # Take off
@@ -163,7 +252,7 @@ def test_velocity_controller():
     fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 8))
     
     # X-axis velocity plot
-    ax1.plot(timestamps, target_velocities_x, 'k--', label='Target vx', linewidth=2)
+    ax1.plot(timestamps, target_velocities_x, 'k--', label='Target vx (0.2 m/s)', linewidth=2)
     ax1.plot(timestamps, internal_velocities_x, 'b-', label='Internal vx (Crazyflie)', alpha=0.7)
     ax1.plot(timestamps, calculated_velocities_x, 'r-', label='Calculated vx (Vicon)', alpha=0.7)
     ax1.set_xlabel('Time (s)')
@@ -173,7 +262,7 @@ def test_velocity_controller():
     ax1.grid(True, alpha=0.3)
     
     # Y-axis velocity plot
-    ax2.plot(timestamps, target_velocities_y, 'k--', label='Target vy', linewidth=2)
+    ax2.plot(timestamps, target_velocities_y, 'k--', label='Target vy (0.0 m/s)', linewidth=2)
     ax2.plot(timestamps, internal_velocities_y, 'b-', label='Internal vy (Crazyflie)', alpha=0.7)
     ax2.plot(timestamps, calculated_velocities_y, 'r-', label='Calculated vy (Vicon)', alpha=0.7)
     ax2.set_xlabel('Time (s)')
@@ -198,8 +287,8 @@ def test_velocity_controller():
     drone.is_landed_event.wait(timeout=15)
     drone.stop()
     
-    print("\n[Test] Velocity controller test complete!")
+    print("\n[Test] Velocity tracking with graphs complete!")
 
 
 if __name__ == "__main__":
-    test_velocity_controller()
+    test_velocity_tracking_with_graphs()
