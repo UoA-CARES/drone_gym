@@ -275,8 +275,8 @@ class DroneEnvironment(ABC):
 
     def change_battery(self):
 
-        if self.velocity_controller_active:
-            self.stop_velocity_control()
+        if self.drone.velocity_controller_active:
+            self.drone.stop_velocity_control()
         print("[Drone] Beginning battery change operation.")
         self.drone.land()
         self.drone.is_landed_event.wait(timeout=15)
