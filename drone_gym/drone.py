@@ -58,6 +58,9 @@ class Drone:
         self.velocity_controller_thread = None
         self.velocity_control_rate = 0.1  # 10Hz velocity control rate
 
+        # filtered velocity tracking
+        self.velocity_filter_alpha = 1
+
         # PID gains - separate for each axis for better tuning
         self.gains = {
             "x": {"kp": 0.35, "kd": 0.1425, "ki": 0.08},
@@ -69,8 +72,8 @@ class Drone:
 
         # Velocity control PID gains and state
         self.velocity_gains = {
-            "x": {"kp": 0.3, "kd": 0.1, "ki": 0.05},
-            "y": {"kp": 0.3, "kd": 0.1, "ki": 0.05},  # Higher Kd for Y due to oscillations
+            "x": {"kp": 0.105, "kd": 0.05, "ki": 0.03},
+            "y": {"kp": 0.105, "kd": 0.05, "ki": 0.03},  # Higher Kd for Y due to oscillations
             "z": {"kp": 0, "kd": 0, "ki": 0},
         }
         self.velocity_last_error = {"x": 0.0, "y": 0.0, "z": 0.0}
@@ -83,7 +86,7 @@ class Drone:
 
         # NEW: Velocity ramping for smooth transitions
         self.current_commanded_velocity = {"x": 0.0, "y": 0.0, "z": 0.0}
-        self.max_velocity_change_rate = 0.50 #Maximum change in velocity per second (m/s²)
+        self.max_velocity_change_rate = 100 #Maximum change in velocity per second (m/s²)
         self.velocity_command_lock = threading.Lock()
 
         # Crazyflie objects - will be initialized in _run
@@ -103,7 +106,7 @@ class Drone:
         self.calculated_velocity = {"x": 0.0, "y": 0.0}
         self.velocity_calculation_lock = threading.Lock()
         self.position_history = deque(maxlen=15)  # Store last 15 positions for moving average
-        self.velocity_update_rate = 0.10  # 20Hz velocity calculation rate
+        self.velocity_update_rate = 0.20  # 20Hz velocity calculation rate
         self.position_update_rate = 0.0166666  # 60Hz position update rate
         self.last_velocity_calculation_time = 0.0
 
@@ -316,8 +319,9 @@ class Drone:
             if vicon_thread is not None:
                 vicon_thread.join()
 
+
     def _calculate_velocity(self):
-        """Calculate velocity using moving average filter over position history (x and y only)"""
+        """Calculate velocity using moving average filter over position history with additional low-pass filtering"""
         if len(self.position_history) < 2:
             return
 
@@ -331,7 +335,6 @@ class Drone:
             dt = t_curr - t_prev
 
             if dt > 0:
-                # Calculate velocity for x and y axes only
                 for axis in ["x", "y"]:
                     vel = (pos_curr[axis] - pos_prev[axis]) / dt
                     velocities[axis].append(vel)
@@ -340,7 +343,13 @@ class Drone:
         with self.velocity_calculation_lock:
             for axis in ["x", "y"]:
                 if len(velocities[axis]) > 0:
-                    self.calculated_velocity[axis] = sum(velocities[axis]) / len(velocities[axis])
+                    raw_velocity = sum(velocities[axis]) / len(velocities[axis])
+                    
+                    # Apply exponential low-pass filter for smoothing
+                    self.calculated_velocity[axis] = (
+                        self.velocity_filter_alpha * raw_velocity +
+                        (1 - self.velocity_filter_alpha) * self.calculated_velocity[axis]
+                    )
 
     def get_calculated_velocity(self):
         """Get the calculated velocity from position differentiation (x and y only)"""
@@ -1132,8 +1141,7 @@ class Drone:
         self.mc = None
 
     def pre_battery_change_cleanup(self):
-        if self.velocity_controller_active:
-            self.stop_velocity_control()
+
         if self.controller_active:
             self.stop_position_control()
         self.cf = None

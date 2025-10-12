@@ -186,7 +186,7 @@ def test_velocity_tracking_with_graphs():
     
     # Test: Command constant velocity in X direction and measure tracking
     print("\n[Test] Testing velocity tracking - moving in +X direction...")
-    target_vx, target_vy = 0.2, 0.0
+    target_vx, target_vy = 0.05, 0.0
     drone.set_velocity_vector(target_vx, target_vy, 0)
     
     start_time = time.time()
