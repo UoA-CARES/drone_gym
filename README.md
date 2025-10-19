@@ -5,9 +5,10 @@ Gym for Reinforcement Learning control of Drones
 Before you start, make sure you are inducted in the Motion Capture Lab! If the Vicon system is not connected, there will be an error message saying "Drone position is not being updated".
 
 1. Turn the cameras on by clicking on the two buttons shown in the picture. Both top and bottom should be on
-<div style="text-align: center;">
-<img src="https://github.com/user-attachments/assets/721651c8-8104-4b07-b570-9dceae6f8fc1" width="400" alt="Vicon cameras on/off buttons">
-</div>
+<p align="center">
+  <img src="https://github.com/user-attachments/assets/721651c8-8104-4b07-b570-9dceae6f8fc1" width="400" alt="Vicon cameras on/off buttons">
+</p>
+
 
 2. Open the Vicon Tracker app (the green one). On the Systems tab, click on the "Local Vicon System" tab, and then press "SHOW ADVANCED"
 <div style="text-align: center;">
