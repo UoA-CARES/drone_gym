@@ -18,6 +18,7 @@ Before you start, make sure you are inducted in the Motion Capture Lab!
 
 # Useful shortcuts for Vicon
 Zoom in/out - press on the right hand of the mouse and drag
+
 pan - press down on scroll wheel of mouse
 
 # Setting up the drone position
