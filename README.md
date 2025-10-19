@@ -27,4 +27,8 @@ Before turning on the drone, make sure the marker board is on the ground. This s
 ![Image](https://github.com/user-attachments/assets/d8177450-425e-4ec1-803f-796a6c5fd4ef)
 
 # Fixing drone issues
-Check the "Issues" tab for known issues. If the drone keeps flipping in one direction (i.e. tips at one motor), it is likely due to either the motor mount being too loose or the motor overheating. First check if the motor mount is loose by pulling the motor mount off. If there is almost no resistance and the motor mount slides, you should swap it with another one. There is a Crazyflie kit in the drone lab (ask the technician to find it) If the motor is hot at touch, replace the motors (should be extras labelled "New" in the CARES container) For motor replacement, refer to: https://www.bitcraze.io/documentation/tutorials/getting-started-with-crazyflie-2-x/
+Check the "Issues" tab for known issues. If the drone keeps flipping in one direction (i.e. tips at one motor), it is likely due to either the motor mount being too loose or the motor overheating. First check if the motor mount is loose by pulling the motor mount off. If there is almost no resistance and the motor mount slides, you should swap it with another one. There is a Crazyflie kit in the drone lab (ask the technician to find it) If the motor is hot to touch, replace the motors (should be extras labelled "New" in the CARES container) For motor replacement, refer to: https://www.bitcraze.io/documentation/tutorials/getting-started-with-crazyflie-2-x/
+
+# Battery levels
+
+Battery life is around 5 minutes for the regular (250mAh) and 7 minutes for 350mAh batteries when they are fully charged. You can use a multimeter to measure the voltage level of the battery. 4.2V is when the battery is fully charged, and batteries need to be charged when the battery levels are lower than 3.8V. It is recommended to use a battery with more than 4.1V for flying. It takes around 30-40 minutes to charge a battery.
