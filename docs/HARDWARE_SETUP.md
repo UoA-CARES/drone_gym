@@ -2,7 +2,7 @@
 
 This guide covers physical drone setup, positioning, battery management, and troubleshooting for the Crazyflie drone.
 
-** Related Documentation:**
+**📚 Related Documentation:**
 - [← Back to Main README](../README.md)
 - [Vicon System Setup](VICON_SETUP.md) - Configure motion capture system
 

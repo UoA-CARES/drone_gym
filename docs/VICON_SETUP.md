@@ -2,7 +2,7 @@
 
 This guide covers how to connect and configure the Vicon motion capture system for use with the CARES Drone Gym.
 
-** Related Documentation:**
+**📚 Related Documentation:**
 - [← Back to Main README](../README.md)
 - [Hardware Setup Guide](HARDWARE_SETUP.md) - Drone positioning and troubleshooting
 
