@@ -1,47 +1,113 @@
-# drone_gym
-Gym for Reinforcement Learning control of Drones
+<h1 align="center">CARES Drone Gym</h1>
 
-# Connecting Vicon system
-Before you start, make sure you are inducted in the Motion Capture Lab! If the Vicon system is not connected, there will be an error message saying "Drone position is not being updated".
+<div align="center">
 
-1. Turn the cameras on by clicking on the two buttons shown in the picture. Both top and bottom should be on
-<p align="center">
-  <img src="https://github.com/user-attachments/assets/721651c8-8104-4b07-b570-9dceae6f8fc1" width="400" alt="Vicon cameras on/off buttons">
-</p>
+[![Python 3.10](https://img.shields.io/badge/python-3.10-blue.svg)](https://www.python.org/downloads/release/python-3100/)
 
-
-2. Open the Vicon Tracker app (the green one). On the Systems tab, click on the "Local Vicon System" tab, and then press "SHOW ADVANCED"
-<div style="text-align: center;">
-<img src="https://github.com/user-attachments/assets/a9cbd0de-4a1a-4e6b-9bcf-9ccdb84f2231" width="400" alt="Vicon Tracker app Systems tab">
+This repository contains the code used to control and train the grippers currently being designed and used in the CARES lab at the The University of Auckland. 
 </div>
 
-3. Scroll down to the "UDP OBJECT STREAM" section and enable the UDP stream. Change the IP address to 10.104.144.214
-<div style="text-align: center;">
-<img src="https://github.com/user-attachments/assets/edff9550-3619-4c04-8682-79550698886c" width="400" alt="UDP OBJECT STREAM configuration">
-</div>
+## Installation
 
-4. Double check if the Crazyflie object is on. Navigate to the OBJECT tab and make sure "Crzayme" is checked
-<div style="text-align: center;">
-<img src="https://github.com/user-attachments/assets/d97d3e0d-b75d-451b-9609-e2a5ca4da27f" width="400" alt="Crazyflie object enabled in OBJECT tab">
-</div>
+### Prerequisites
+- Python 3.8 or higher (tested with Python 3.10)
+- Crazyflie drone with flow deck attached
+- Access to Vicon motion capture system
 
-# Useful shortcuts for Vicon
-Zoom in/out - press on the right hand of the mouse and drag
-pan - press down on scroll wheel of mouse
+### Setup Instructions
 
-# Setting up the drone position
-Before turning on the drone, make sure the marker board is on the ground. This stabilises the drone takeoff/flight as the optical flow deck relies on the change of texture (verified by trial and error). Turn the drone on while it is on the ground (there is a small push button at the side of the drone). In terms of coordinates, the direction towards forward (facing towards the window) is the positive y-axis shown as green, and the right is the positive x-axis (red). The drone "Front" should be in the positive x-direction.
+1. **Clone the repository**
+   ```bash
+   git clone https://github.com/UoA-CARES/drone_gym.git
+   cd drone_gym
+   ```
 
-<div style="text-align: center;">
-<img src="https://github.com/user-attachments/assets/93923ad5-50b7-4fd1-ad6a-6e8a362e8e78" width="400" alt="Drone coordinate system diagram 1">
-</div>
+2. **Create a virtual environment (recommended)**
+   ```bash
+   python3 -m venv venv
+   source venv/bin/activate  # On Windows: venv\Scripts\activate
+   ```
 
-<div style="text-align: center;">
-<img src="https://github.com/user-attachments/assets/d8177450-425e-4ec1-803f-796a6c5fd4ef" width="400" alt="Drone coordinate system diagram 2">
-</div>
+3. **Install dependencies**
+   ```bash
+   pip install -r requirements.txt
+   ```
 
-# Fixing drone issues
-Check the "Issues" tab for known issues. If the drone keeps flipping in one direction (i.e. tips at one motor), it is likely due to either the motor mount being too loose or the motor overheating. First check if the motor mount is loose by pulling the motor mount off. If there is almost no resistance and the motor mount slides, you should swap it with another one. There is a Crazyflie kit in the drone lab (ask the technician to find it) If the motor is hot to touch, replace the motors (should be extras labelled "New" in the CARES container) For motor replacement, refer to: https://www.bitcraze.io/documentation/tutorials/getting-started-with-crazyflie-2-x/
+4. **Install the package in development mode**
+   ```bash
+   pip install -e .
+   ```
 
-# Battery levels
-Battery life is around 5 minutes for the regular (250mAh) and 7 minutes for 350mAh batteries when they are fully charged. You can use a multimeter to measure the voltage level of the battery. 4.2V is when the battery is fully charged, and batteries need to be charged when the battery levels are lower than 3.8V. It is recommended to use a battery with more than 4.1V for flying. It takes around 30-40 minutes to charge a battery.
+## Project Structure
+
+```
+drone_gym/
+├── drone_gym/              # Main package directory
+│   ├── __init__.py        # Package initialization
+│   ├── drone.py            with PID control and Crazyflie integration
+│   ├── drone_environment.py  # Base DroneEnvironment class for RL tasks
+│   ├── move_to_position.py   # Example: Move to specific position
+│   ├── move_to_random_position.py  # Example: Move to random positions
+│   ├── functionality_tests.py      # Testing utilities
+│   ├── utils/             # Utility modules
+│   │   ├── vicon_connection_class.py  # Vicon motion capture interface
+│   │   └── test_grab_frame.py        # Frame capture testing
+│       ├── single_cf_grounded.py
+│       └── test_link.py
+├── requirements.txt       # Python dependencies
+├── setup.py              # Package installation configuration
+└── README.md             # This file
+```
+
+### Key Components
+
+- **`drone.py`**: Implements the low-level drone control with PID velocity/position controllers, Vicon integration, and safety boundary checking
+- **`drone_environment.py`**: Abstract base class for creating custom RL environments following the Gymnasium API
+- **`utils/vicon_connection_class.py`**: Handles UDP communication with Vicon motion capture system for precise position tracking
+
+## Hardware Setup
+
+For detailed hardware setup instructions, please refer to the documentation in the `docs/` folder:
+
+- **[Vicon System Setup](docs/VICON_SETUP.md)** - Connect and configure the motion capture system
+- **[Hardware Setup Guide](docs/HARDWARE_SETUP.md)** - Drone positioning, battery management, and troubleshooting
+
+## Quick Start
+
+```python
+from drone_gym.drone import Drone
+
+# Initialize the drone
+drone = Drone()
+
+# Take off
+drone.take_off()
+drone.is_flying_event.wait(timeout=15)
+
+# Set a target position (x, y, z in meters)
+drone.start_position_control()
+drone.set_target_position(0.5, 0.5, 1.0)
+
+# Wait for position to be reached
+time.sleep(10)
+
+# Land
+drone.stop_position_control()
+drone.land()
+drone.is_landed_event.wait(timeout=15)
+drone.stop()
+```
+
+## Contributing
+
+Contributions are welcome! Please feel free to submit a Pull Request.
+
+## License
+
+This project is licensed under the MIT License - see the LICENSE file for details.
+
+## Acknowledgments
+
+- University of Auckland CARES Lab
+- Bitcraze Crazyflie platform
+- Vicon Motion Capture Systems
