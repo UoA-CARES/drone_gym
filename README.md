@@ -19,6 +19,7 @@ Developed by the CARES Lab at the University of Auckland.
 - Crazyflie drone with flow deck attached
 - Access to Vicon motion capture system
 - [CARES Gymnasium Environments](https://github.com/UoA-CARES/gymnasium_envrionments) (for running RL tasks)
+- [CARES Reinforcement Learning](https://github.com/UoA-CARES/cares_reinforcement_learning) (RL algorithms)
 
 ### Setup Instructions
 
@@ -44,7 +45,15 @@ Developed by the CARES Lab at the University of Auckland.
    pip install -e .
    ```
 
-5. **Install the CARES Gymnasium Environments framework** (for running RL tasks)
+5. **Install the CARES Reinforcement Learning library** (RL algorithms)
+   ```bash
+   git clone https://github.com/UoA-CARES/cares_reinforcement_learning.git
+   cd cares_reinforcement_learning
+   pip install -e .
+   cd ..
+   ```
+
+6. **Install the CARES Gymnasium Environments framework** (for running RL tasks)
    ```bash
    git clone https://github.com/UoA-CARES/gymnasium_envrionments.git
    cd gymnasium_envrionments
@@ -161,4 +170,5 @@ See `move_to_position.py` and `move_to_random_position.py` for complete examples
 ## Related Projects
 
 - [CARES Gymnasium Environments](https://github.com/UoA-CARES/gymnasium_envrionments) - Framework for running RL tasks
+- [CARES Reinforcement Learning](https://github.com/UoA-CARES/cares_reinforcement_learning) - RL algorithms library
 - [Bitcraze Crazyflie](https://www.bitcraze.io/) - Open-source micro quadcopter platform
