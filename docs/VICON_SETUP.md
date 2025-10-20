@@ -2,6 +2,10 @@
 
 This guide covers how to connect and configure the Vicon motion capture system for use with the CARES Drone Gym.
 
+** Related Documentation:**
+- [← Back to Main README](../README.md)
+- [Hardware Setup Guide](HARDWARE_SETUP.md) - Drone positioning and troubleshooting
+
 ## Prerequisites
 
 ⚠️ **Important**: Before you start, make sure you are inducted in the Motion Capture Lab!
@@ -62,7 +66,7 @@ The Vicon system uses the following coordinate frame:
 - **Y-axis (green)**: Forward direction (towards the window)
 - **Z-axis**: Vertical (up)
 
-See the [Hardware Setup Guide](HARDWARE_SETUP.md#coordinate-system) for more details on drone positioning.
+See the [Hardware Setup Guide](HARDWARE_SETUP.md#drone-positioning-and-coordinate-system) for more details on drone positioning.
 
 ## Troubleshooting
 

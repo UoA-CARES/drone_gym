@@ -2,6 +2,10 @@
 
 This guide covers physical drone setup, positioning, battery management, and troubleshooting for the Crazyflie drone.
 
+** Related Documentation:**
+- [← Back to Main README](../README.md)
+- [Vicon System Setup](VICON_SETUP.md) - Configure motion capture system
+
 ## Drone Positioning and Coordinate System
 
 ### Initial Setup
@@ -29,6 +33,8 @@ The drone uses the following coordinate frame:
 - **Z-axis**: Vertical (up)
 
 ⚠️ **Important**: Ensure the drone's front is aligned with the positive x-direction before takeoff.
+
+> **Note**: This coordinate system matches the Vicon system configuration. See the [Vicon Setup Guide](VICON_SETUP.md#coordinate-system) for more information about the motion capture coordinate frame.
 
 ## Battery Management
 
@@ -95,9 +101,11 @@ Before first flight session:
 - [ ] All motors spin freely
 - [ ] No loose motor mounts
 - [ ] Marker board on the ground
-- [ ] Vicon system connected and tracking
+- [ ] Vicon system connected and tracking (see [Vicon Setup Guide](VICON_SETUP.md))
 - [ ] Drone positioned with front facing positive x-direction
 - [ ] Safety boundaries configured in code
+
+**First time setup?** Complete the [Vicon System Setup](VICON_SETUP.md) before your first flight.
 
 ## Hardware Resources
 

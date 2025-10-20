@@ -4,8 +4,13 @@
 
 [![Python 3.10](https://img.shields.io/badge/python-3.10-blue.svg)](https://www.python.org/downloads/release/python-3100/)
 
-This repository contains the code used to control and train the grippers currently being designed and used in the CARES lab at the The University of Auckland. 
+Gymnasium-compatible environment for reinforcement learning with Crazyflie drones in real-world settings using Vicon motion capture.
+
+Developed by the CARES Lab at the University of Auckland.
+
 </div>
+
+> **Note**: This environment is designed to work with the [CARES Gymnasium Environments](https://github.com/UoA-CARES/gymnasium_envrionments) framework for running RL training tasks.
 
 ## Installation
 
@@ -13,6 +18,7 @@ This repository contains the code used to control and train the grippers current
 - Python 3.8 or higher (tested with Python 3.10)
 - Crazyflie drone with flow deck attached
 - Access to Vicon motion capture system
+- [CARES Gymnasium Environments](https://github.com/UoA-CARES/gymnasium_envrionments) (for running RL tasks)
 
 ### Setup Instructions
 
@@ -35,6 +41,13 @@ This repository contains the code used to control and train the grippers current
 
 4. **Install the package in development mode**
    ```bash
+   pip install -e .
+   ```
+
+5. **Install the CARES Gymnasium Environments framework** (for running RL tasks)
+   ```bash
+   git clone https://github.com/UoA-CARES/gymnasium_envrionments.git
+   cd gymnasium_envrionments
    pip install -e .
    ```
 
@@ -72,10 +85,29 @@ For detailed hardware setup instructions, please refer to the documentation in t
 - **[Vicon System Setup](docs/VICON_SETUP.md)** - Connect and configure the motion capture system
 - **[Hardware Setup Guide](docs/HARDWARE_SETUP.md)** - Drone positioning, battery management, and troubleshooting
 
-## Quick Start
+## Usage
+
+### Running RL Tasks
+
+This environment is designed to be used with the [CARES Gymnasium Environments](https://github.com/UoA-CARES/gymnasium_envrionments) framework. To run RL training tasks:
+
+```bash
+# Navigate to the gymnasium_envrionments directory
+cd gymnasium_envrionments
+
+# Run a training task (example)
+python train.py run --env drone_gym --task move_to_position
+```
+
+Refer to the [gymnasium_envrionments documentation](https://github.com/UoA-CARES/gymnasium_envrionments) for detailed instructions on running tasks and configuring training parameters.
+
+### Direct Drone Control (Example)
+
+Position Based PID Control:
 
 ```python
 from drone_gym.drone import Drone
+import time
 
 # Initialize the drone
 drone = Drone()
@@ -98,16 +130,35 @@ drone.is_landed_event.wait(timeout=15)
 drone.stop()
 ```
 
-## Contributing
+### Creating Custom RL Tasks
 
-Contributions are welcome! Please feel free to submit a Pull Request.
+Extend the `DroneEnvironment` base class to create custom tasks:
 
-## License
+```python
+from drone_gym.drone_environment import DroneEnvironment
+import numpy as np
 
-This project is licensed under the MIT License - see the LICENSE file for details.
+class MyCustomTask(DroneEnvironment):
+    def _reset_task_state(self):
+        # Initialize task-specific state
+        self.target = np.array([1.0, 1.0, 1.0])
 
-## Acknowledgments
+    def _get_state(self):
+        # Return observation for the RL agent
+        pos = self.drone.get_position()
+        return np.array([*pos, *self.target])
 
-- University of Auckland CARES Lab
-- Bitcraze Crazyflie platform
-- Vicon Motion Capture Systems
+    def _calculate_reward(self, current_state):
+        # Define reward function
+        distance = np.linalg.norm(current_state['position'] - self.target)
+        return -distance
+
+    # Implement other abstract methods...
+```
+
+See `move_to_position.py` and `move_to_random_position.py` for complete examples.
+
+## Related Projects
+
+- [CARES Gymnasium Environments](https://github.com/UoA-CARES/gymnasium_envrionments) - Framework for running RL tasks
+- [Bitcraze Crazyflie](https://www.bitcraze.io/) - Open-source micro quadcopter platform
