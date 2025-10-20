@@ -6,7 +6,7 @@ This guide covers how to connect and configure the Vicon motion capture system f
 
 ⚠️ **Important**: Before you start, make sure you are inducted in the Motion Capture Lab!
 
-If the Vicon system is not connected properly, you will see an error message: `"Drone position is not being updated"`
+If the Vicon system is not connected properly, you will the following message in the console: `"Drone position is not being updated"`
 
 ## Setup Steps
 

@@ -49,15 +49,14 @@ The drone uses the following coordinate frame:
 
 ### Charging
 
-- **Charge time**: 30-40 minutes per battery
+- **Charge time**: ~20-30 minutes per battery
 - **Measurement**: Use a multimeter to check voltage levels
-- **Best practice**: Always have spare batteries ready for continuous operation
 
 ### Safety Guidelines
 
 ✅ **Use batteries with voltage > 4.1V** for safe and stable flight
+
 ❌ **Do not fly with batteries < 3.8V** - risk of voltage drop during flight
-⚠️ **Never over-discharge** - can permanently damage LiPo batteries
 
 ## Troubleshooting
 
@@ -67,12 +66,12 @@ Check the **Issues** tab in the repository for known problems and solutions.
 
 | Problem | Symptoms | Diagnosis | Solution |
 |---------|----------|-----------|----------|
-| **Loose Motor Mount** | • Drone tips toward one motor<br>• Motor wobbles or has play | Pull on motor mount - if it slides easily, it's too loose | Swap motor mount with a new one from the Crazyflie kit (ask lab technician) |
-| **Overheating Motor** | • Motor hot to touch<br>• Inconsistent thrust<br>• Drone drifts during flight | Check motor temperature after flight | 1. Let motor cool down<br>2. Replace motor (extras labelled "New" in CARES container) |
-| **Flow Deck Not Detected** | Error: "No flow deck is detected!" | Check connection and LED status | 1. Re-seat flow deck firmly<br>2. Check for bent pins<br>3. Verify deck LED is on |
+| **Loose Motor Mount** | Drone tips toward one motor<br>• Motor wobbles or has play | Pull on motor mount - if it slides easily, it's too loose | Swap motor mount with a new one from the Crazyflie kit (ask lab technician) |
+| **Overheating Motor** | Motor hot to touch<br>• Inconsistent thrust<br>• Drone drifts during flight | Check motor temperature after flight | 1. Let motor cool down<br>2. Replace motor (extras labelled "New" in CARES container) |
+| **Flow Deck Not Detected** | Error: "No flow deck is detected!" | Check connection and LED status | 1. Re-seat flow deck firmly<br> 2. Check for bent pins <br> 3. Verify deck LED is on |
 | **Vicon Position Not Updating** | Error: "Drone position is not being updated" | Check Vicon system status | See [Vicon Setup Guide](VICON_SETUP.md#troubleshooting) |
-| **Low Battery** | • Reduced flight time<br>• Unstable hovering<br>• Unexpected landing | Check voltage with multimeter | Replace battery if < 4.1V |
-| **Drone Uncontrollable** | Drone not responding to commands | Emergency situation | 1. Software auto-lands if out of bounds<br>2. Press power button (last resort)<br>3. Disconnect battery (immediate stop) |
+| **Low Battery** |Reduced flight time<br>• Unstable hovering<br>• Unexpected landing | Check voltage with multimeter | Replace battery if < 4.1V |
+| **Drone Uncontrollable** | Drone not responding to commands | Emergency situation | Software auto-lands if out of bounds<br> |
 
 ### Motor Replacement Procedure
 
@@ -90,7 +89,7 @@ For detailed instructions, see: 👉 [Bitcraze Crazyflie Motor Replacement Guide
 
 ### Pre-Flight Checklist
 
-Before each flight session:
+Before first flight session:
 - [ ] Battery voltage > 4.1V
 - [ ] Flow deck LED is on
 - [ ] All motors spin freely
