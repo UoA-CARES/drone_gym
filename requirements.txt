@@ -1,5 +1,21 @@
+# Python version: >=3.8, <3.12
+# This project is tested with Python 3.10
+
+# Core dependencies
 gymnasium>=0.26.0
 numpy>=1.21.0
 pybullet>=3.2.0
-matplotlib
-opencv-python
+
+# Visualization
+matplotlib>=3.5.0
+
+# Computer vision
+opencv-python>=4.5.0
+
+# Crazyflie drone control
+cflib>=0.1.19
+
+# Development dependencies (optional)
+# pytest>=7.0.0
+# black>=22.0.0
+# flake8>=4.0.0
