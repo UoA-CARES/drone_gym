@@ -167,6 +167,12 @@ class MyCustomTask(DroneEnvironment):
 
 See `move_to_position.py` and `move_to_random_position.py` for complete examples.
 
+### Example Task Demos
+
+**Move to Position Task**
+- Video demonstration of the model evaluation: [Watch on YouTube](https://www.youtube.com/watch?v=MFenj1JX5Cs)
+- Implementation example: [gymnasium_environments/drone_gym](https://github.com/UoA-CARES/gymnasium_envrionments/tree/drone_gym)
+
 ## Related Projects
 
 - [CARES Gymnasium Environments](https://github.com/UoA-CARES/gymnasium_envrionments) - Framework for running RL tasks
