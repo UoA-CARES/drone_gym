@@ -2,7 +2,7 @@ import time
 import numpy as np
 import matplotlib.pyplot as plt
 
-from drone_gym.drone_sim import DroneSim
+from drone_sim import DroneSim
 
 
 def test_delay_time():
