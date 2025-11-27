@@ -198,7 +198,7 @@ class DroneSim:
 
                 if not in_bounds:
                     self.in_boundaries = False
-                    print(f"[Drone] BOUNDARY VIOLATION: Position {current_pos} exceeds limits {self.boundaries}")
+                    # print(f"[Drone] BOUNDARY VIOLATION: Position {current_pos} exceeds limits {self.boundaries}")
                     self._execute_emergency_stop()
                     break
                 else:
@@ -451,7 +451,7 @@ class DroneSim:
                 if display:
                     if hasattr(self, "_last_position_print"):
                         if time.time() - self._last_position_print > 0.2:
-                            print(f"[Drone] Current position: {self.position}")
+                            # print(f"[Drone] Current position: {self.position}")
                             self._last_position_print = time.time()
                     else:
                         self._last_position_print = time.time()
@@ -519,7 +519,7 @@ class DroneSim:
             if "velocity" in command:
                 with self.velocity_lock:
                     self.velocity = command["velocity"]
-                print(f"[Drone] Velocity set to: {self.velocity}")
+                # print(f"[Drone] Velocity set to: {self.velocity}")
 
             elif "position" in command:
                 # This is a position command
@@ -573,13 +573,13 @@ class DroneSim:
                         with self.velocity_lock:
                             self.target_velocity = {"x": vx, "y": vy, "z": vz}
                         print(
-                            f"[Drone] Target velocity set for controller: vx={vx:.2f}, vy={vy:.2f}, vz={vz:.2f}"
+                            # f"[Drone] Target velocity set for controller: vx={vx:.2f}, vy={vy:.2f}, vz={vz:.2f}"
                         )
                     else:
                         # Send direct velocity command
                         self.mc.start_linear_motion(vx, vy, vz)
                         print(
-                            f"[Drone] Direct velocity vector set: vx={vx:.2f}, vy={vy:.2f}, vz={vz:.2f}"
+                            # f"[Drone] Direct velocity vector set: vx={vx:.2f}, vy={vy:.2f}, vz={vz:.2f}"
                         )
             else:
                 print(f"[Drone] Unknown command: {command}")
@@ -660,9 +660,9 @@ class DroneSim:
                 with self.position_lock:
                     target_pos = self.target_position.copy()
 
-                if first_instance == 0:
-                    print(f"target position = {self.target_position.copy()}")
-                    print(f"current position = {self.get_position_dict()}")
+                # if first_instance == 0:
+                    # print(f"target position = {self.target_position.copy()}")
+                    # print(f"current position = {self.get_position_dict()}")
 
                 # Calculate position error
                 error = {
@@ -673,7 +673,7 @@ class DroneSim:
 
                 if debugging:
                     print(
-                        f"[Controller]: Position({current_pos['x']}, {current_pos['y']}, {current_pos['z']})"
+                        # f"[Controller]: Position({current_pos['x']}, {current_pos['y']}, {current_pos['z']})"
                     )
 
                 # Calculate error magnitude to determine if position is reached
@@ -686,7 +686,7 @@ class DroneSim:
 
                 if error_magnitude < error_threshold:
                     print(
-                        f"[Controller] Position reached! Error: {error_magnitude:.2f}m"
+                        # f"[Controller] Position reached! Error: {error_magnitude:.2f}m"
                     )
                     self.at_reset_position.set()
                 # Calculate velocity command using PID control
@@ -699,11 +699,11 @@ class DroneSim:
                         velocity["x"], velocity["y"], velocity["z"]
                     )
 
-                    if debugging:
-                        print(
-                            f"[Controller] Pos error: ({error['x']:.2f}, {error['y']:.2f}, {error['z']:.2f}) → "
-                            + f"Vel: ({velocity['x']:.2f}, {velocity['y']:.2f}, {velocity['z']:.2f})"
-                        )
+                    # if debugging:
+                    #     print(
+                    #         f"[Controller] Pos error: ({error['x']:.2f}, {error['y']:.2f}, {error['z']:.2f}) → "
+                    #         + f"Vel: ({velocity['x']:.2f}, {velocity['y']:.2f}, {velocity['z']:.2f})"
+                    #     )
 
                 # Sleep to maintain control rate
                 time.sleep(control_rate)
@@ -736,10 +736,10 @@ class DroneSim:
                 # Apply gradual ramping to the velocity command
                 ramped_velocity = self._apply_velocity_ramping(desired_velocity, self.velocity_control_rate)
 
-                print(f"Target: ({target_vel['x']:.3f}, {target_vel['y']:.3f}), "
-                    f"Actual: ({actual_vel['x']:.3f}, {actual_vel['y']:.3f}), "
-                    f"Desired: ({desired_velocity['x']:.3f}, {desired_velocity['y']:.3f}), "
-                    f"Ramped: ({ramped_velocity['x']:.3f}, {ramped_velocity['y']:.3f})")
+                # print(f"Target: ({target_vel['x']:.3f}, {target_vel['y']:.3f}), "
+                #     f"Actual: ({actual_vel['x']:.3f}, {actual_vel['y']:.3f}), "
+                #     f"Desired: ({desired_velocity['x']:.3f}, {desired_velocity['y']:.3f}), "
+                #     f"Ramped: ({ramped_velocity['x']:.3f}, {ramped_velocity['y']:.3f})")
 
                 # Apply ramped velocity command if flying
                 if self.is_flying_event.is_set() and self.mc:
@@ -869,12 +869,12 @@ class DroneSim:
             # Set target velocity for velocity controller
             with self.velocity_lock:
                 self.target_velocity = {"x": vx, "y": vy, "z": vz}
-            print(f"[Drone] Target velocity set for controller: vx={vx}, vy={vy}, vz={vz}")
+            # print(f"[Drone] Target velocity set for controller: vx={vx}, vy={vy}, vz={vz}")
         else:
             # Direct velocity command to MotionCommander
             velocity_command = {"velocity_vector": {"x": vx, "y": vy, "z": vz}}
             self.send_command(velocity_command)
-            print(f"[Drone] Direct velocity command sent: vx={vx}, vy={vy}, vz={vz}")
+            # print(f"[Drone] Direct velocity command sent: vx={vx}, vy={vy}, vz={vz}")
 
     def set_velocity(self, velocity_vector) -> None:
         """Set velocity vector from a list or array [vx, vy, vz]"""
@@ -896,9 +896,9 @@ class DroneSim:
             and abs(y) <= self.boundaries["y"]
             and abs(z) <= self.boundaries["z"]
         ):
-            print(
-                f"[Drone] WARNING: Target position {x}, {y}, {z} is outside safe boundaries. Command rejected."
-            )
+            # print(
+            #     f"[Drone] WARNING: Target position {x}, {y}, {z} is outside safe boundaries. Command rejected."
+            # )
             return
 
         # Create and send a position command
@@ -906,7 +906,7 @@ class DroneSim:
 
         # Send the command to the queue
         self.send_command(position_command)
-        print(f"[Drone] Target position command sent: x={x}, y={y}, z={z}")
+        # print(f"[Drone] Target position command sent: x={x}, y={y}, z={z}")
 
     def get_position(self):
         """Get current position as list"""
