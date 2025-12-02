@@ -9,7 +9,9 @@ __pycache__/
 # Distribution / packaging
 .Python
 build/
+cache/
 develop-eggs/
+drone_gym_venv/
 dist/
 downloads/
 eggs/
