@@ -240,20 +240,40 @@ class MoveToPosition(DroneEnvironment):
 
     #     return reward
 
+    # def _calculate_reward(self, current_state: Dict[str, Any]) -> float:
+    #     position = current_state['position']
+    #     distance = self._distance_to_target(position)
+
+    #     # Base reward is negative distance (closer = higher reward)
+    #     # currently this reward will never be positive and is too low. assuming the max distance is (3,3,3) reward = -5.2.
+    #     # Changed from reward = -distance to reward = 50-10*distance
+    #     reward = 1 / (1 + distance)
+
+    #     # Bonus for reaching target
+    #     if distance < self.distance_threshold:
+    #         reward += self.success_reward
+
+        # return reward * self.reward_multiplier
+    
     def _calculate_reward(self, current_state: Dict[str, Any]) -> float:
         position = current_state['position']
         distance = self._distance_to_target(position)
-
-        # Base reward is negative distance (closer = higher reward)
-        # currently this reward will never be positive and is too low. assuming the max distance is (3,3,3) reward = -5.2.
-        # Changed from reward = -distance to reward = 50-10*distance
-        reward = 1 / (1 + distance)
-
-        # Bonus for reaching target
+        
+        # Progress-based reward
+        distance_improvement = self.previous_distance - distance
+        reward = distance_improvement * 100  # Strong signal for getting closer
+        
+        # Penalize being far away
+        reward -= distance * 5
+        
+        # Reaching target leads to high reward
         if distance < self.distance_threshold:
-            reward += self.success_reward
-
-        return reward * self.reward_multiplier
+            reward += 50
+            
+        # Update tracking
+        self.previous_distance = distance
+        
+        return reward
 
     def _check_if_done(self, current_state: Dict[str, Any]) -> bool:
         """Check if navigation task is complete"""
