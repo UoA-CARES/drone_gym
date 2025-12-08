@@ -158,6 +158,6 @@ if __name__ == '__main__':
         sys.exit(1)
     
     print("\n" + "=" * 60)
-    print("✓✓✓ OMG ALL TESTS PASSED! ✓✓✓")
+    print("✓✓✓ ALL TESTS PASSED! ✓✓✓")
     print("=" * 60)
     print("\nYour CrazySim setup is working correctly!")
