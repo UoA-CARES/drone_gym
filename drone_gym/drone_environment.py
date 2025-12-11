@@ -10,17 +10,17 @@ from typing import Dict, List, Any
 class DroneEnvironment(ABC):
     """Base drone environment that handles common drone operations"""
 
-    def __init__(self, max_velocity: float = 0.25, step_time: float = 0.5):
+    def __init__(self, max_velocity: float = 0.5, step_time: float = 0.5):
         self.drone = DroneSim()
         self.reset_position = [0, 0, 1]
         self.max_velocity = max_velocity
-        self.max_velocity_z = 0.1
+        self.max_velocity_z = 0.5
         self.step_time = step_time
         self.steps = 0
         self.seed = 0
 
         self.battery_threshold = 3.25
-        self.observation_space = 9
+        self.observation_space = 12
 
         # Movement Boundary - can be overridden by tasks
         self.xy_limit = 1.0
@@ -118,14 +118,14 @@ class DroneEnvironment(ABC):
         self.steps += 1
 
         print(f"action: {action}")
-        if len(action) != 2:  # changed from 3 to 2
+        if len(action) != 3:  # changed from 3 to 2
             raise ValueError("Action must be a 3-element array [vx, vy]")
 
         # Denormalize action from [-1, 1] to [-max_velocity, max_velocity]
         vx = action[0] * self.max_velocity
         vy = action[1] * self.max_velocity
-        # vz = action[2] * self.max_velocity_z # topples when moving up --> limit z velocity
-        vz = 0
+        vz = action[2] * self.max_velocity_z # topples when moving up --> limit z velocity
+        # vz = 0
 
         current_pos = self.drone.get_position()
         # Store previous state for reward calculation
@@ -172,8 +172,8 @@ class DroneEnvironment(ABC):
             "success_count": self.success_count,
             **self._get_additional_info(current_state),
         }
-
-        return self._get_state(), reward, done, truncated, info
+        gotten_state = self._get_state()
+        return gotten_state, reward, done, truncated, info
 
     def _generate_state_dict(self, position: List[float]) -> Dict[str, Any]:
         """Generate a state dictionary with common drone information"""
@@ -184,14 +184,14 @@ class DroneEnvironment(ABC):
             "distance_to_target": self._distance_to_target(position),
         }
 
-    def _generate_action_dict(self, action: List[float]) -> np.ndarray:
-        """Generate a compact action representation as numpy array"""
-        action = [
-            action[0],  # x velocity
-            action[1],  # y velocity
-            # action[2],  # z velocity
-        ]
-        return np.array(action, dtype=np.float32)
+    # def _generate_action_dict(self, action: List[float]) -> np.ndarray:
+    #     """Generate a compact action representation as numpy array"""
+    #     action = [
+    #         action[0],  # x velocity
+    #         action[1],  # y velocity
+    #         action[2],  # z velocity
+    #     ]
+    #     return np.array(action, dtype=np.float32)
 
     def _distance_to_target(self, position: List[float]) -> float:
         """Calculate distance to target - to be overridden by task"""
@@ -348,7 +348,7 @@ class DroneEnvironment(ABC):
     def action_num(self):
         # return 3
         # on x and y values
-        return 2
+        return 3
 
     # Abstract methods to be implemented by task-specific environments
 

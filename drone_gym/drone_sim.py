@@ -68,7 +68,7 @@ class DroneSim:
         self.velocity_gains = {
             "x": {"kp": 0.105, "kd": 0.05, "ki": 0.03},
             "y": {"kp": 0.105, "kd": 0.05, "ki": 0.03},
-            "z": {"kp": 0, "kd": 0, "ki": 0},
+            # "z": {"kp": 0.05, "kd": 0.01, "ki": 0.0},
         }
         self.velocity_last_error = {"x": 0.0, "y": 0.0, "z": 0.0}
         self.velocity_integral = {"x": 0.0, "y": 0.0, "z": 0.0}
@@ -93,7 +93,7 @@ class DroneSim:
         self.position_lock = threading.Lock()
 
         # Velocity calculation (from position differentiation)
-        self.calculated_velocity = {"x": 0.0, "y": 0.0}
+        self.calculated_velocity = {"x": 0.0, "y": 0.0, "z": 0.0}
         self.velocity_calculation_lock = threading.Lock()
         self.position_history = deque(maxlen=15)
         self.velocity_update_rate = 0.20
@@ -101,7 +101,7 @@ class DroneSim:
         self.last_velocity_calculation_time = 0.0
 
         # Drone Safety
-        self.boundaries = {"x": 2.5, "y": 2.5, "z": 2.25}
+        self.boundaries = {"x": 2.5, "y": 2.5, "z": 2.5}
         self.safety_thread = None
         self.in_boundaries = True
         self.emergency_event = Event()
@@ -746,7 +746,7 @@ class DroneSim:
                     self.mc.start_linear_motion(
                         ramped_velocity["x"],
                         ramped_velocity["y"],
-                        0
+                        ramped_velocity["z"],
                     )
 
                 # Sleep to maintain control rate
@@ -766,32 +766,32 @@ class DroneSim:
         max_delta = self.max_velocity_change_rate * dt
 
         with self.velocity_command_lock:
-            # Calculate the desired change vector (x and y only)
+            # Calculate the desired change vector (x, y and z)
             delta = {
                 "x": desired_velocity["x"] - self.current_commanded_velocity["x"],
-                "y": desired_velocity["y"] - self.current_commanded_velocity["y"]
+                "y": desired_velocity["y"] - self.current_commanded_velocity["y"],
+                "z": desired_velocity["z"] - self.current_commanded_velocity["z"],
             }
 
-            # Calculate the magnitude of the change vector (x and y only)
-            delta_magnitude = (delta["x"]**2 + delta["y"]**2)**0.5
+            # Calculate the magnitude of the change vector (x, y, and z)
+            delta_magnitude = (delta["x"]**2 + delta["y"]**2 + delta["z"]**2)**0.5
 
             # If the desired change is larger than allowed, scale it down while preserving direction
             if delta_magnitude > max_delta:
                 scale = max_delta / delta_magnitude
                 delta["x"] *= scale
                 delta["y"] *= scale
+                delta["z"] *= scale
 
-            # Apply the limited change for x and y
+            # Apply the limited change for x, y, and z
             ramped_velocity["x"] = self.current_commanded_velocity["x"] + delta["x"]
             ramped_velocity["y"] = self.current_commanded_velocity["y"] + delta["y"]
-            
-            # Z is always 0
-            ramped_velocity["z"] = 0.0
+            ramped_velocity["z"] = self.current_commanded_velocity["z"] + delta["z"]
 
             # Update the current commanded velocity for next iteration
             self.current_commanded_velocity["x"] = ramped_velocity["x"]
             self.current_commanded_velocity["y"] = ramped_velocity["y"]
-            self.current_commanded_velocity["z"] = 0.0
+            self.current_commanded_velocity["z"] = ramped_velocity["z"]
 
         return ramped_velocity
 
@@ -1106,7 +1106,7 @@ class DroneSim:
             self.target_position = {"x": 0.0, "y": 0.0, "z": 0.0}
         # Velocity calculation
         with self.velocity_calculation_lock:
-            self.calculated_velocity = {"x": 0.0, "y": 0.0}
+            self.calculated_velocity = {"x": 0.0, "y": 0.0, "z": 0.0}
         self.position_history.clear()
         # PID
         self.last_error = {"x": 0.0, "y": 0.0, "z": 0.0}
