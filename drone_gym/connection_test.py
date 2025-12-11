@@ -4,6 +4,7 @@
 import logging
 import time
 import sys
+import cflib
 import cflib.crtp
 from cflib.crazyflie import Crazyflie
 from cflib.crazyflie.syncCrazyflie import SyncCrazyflie
@@ -108,19 +109,6 @@ def check_environment():
     print("\n" + "=" * 60)
     print("ENVIRONMENT CHECK")
     print("=" * 60)
-    
-    # Check cflib installation
-    print("\n[1/3] Checking cflib installation...")
-    try:
-        import cflib
-        print(f"      cflib location: {cflib.__file__}")
-        if 'CrazySim' in cflib.__file__ or 'crazysim' in cflib.__file__:
-            print("Modified cflib detected (good!)")
-        else:
-            print("      Install with: cd ~/CrazySim/crazyflie-lib-python && pip install -e .")
-    except ImportError:
-        print("✗ cflib not installed!")
-        return False
     
     # Check URI
     print(f"\n[2/3] Checking URI...")

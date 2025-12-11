@@ -406,7 +406,6 @@ class DroneSim:
 
         except Exception as e:
             print(f"[Drone] Failed to initialize Crazyflie: {str(e)}")
-            self.hardware_ready_event.set()
             return False
 
     def _run(self, display=False):
