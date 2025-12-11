@@ -9,11 +9,13 @@ class MoveToRandomPosition(MoveToPosition):
     def __init__(self, max_velocity: float = 0.20, step_time: float = 0.5,
                  exploration_steps: int = 1000, episode_length: int = 40,
                  x_range: List[float] = [-1.0, 1.0],
-                 y_range: List[float] = [-1.0, 1.0]):
+                 y_range: List[float] = [-1.0, 1.0],
+                 z_range: List[float] = [1.0, 1.0]):
 
         # Store ranges
         self.x_range = x_range
         self.y_range = y_range
+        self.z_range = z_range
 
         # Initialize parent class (this sets initial goal_position)
         super().__init__(max_velocity, step_time, exploration_steps, episode_length)
@@ -25,7 +27,8 @@ class MoveToRandomPosition(MoveToPosition):
         """Randomize the goal position within specified ranges"""
         self.goal_position = [
             np.random.uniform(self.x_range[0], self.x_range[1]),
-            np.random.uniform(self.y_range[0], self.y_range[1])
+            np.random.uniform(self.y_range[0], self.y_range[1]),
+            np.random.uniform(self.z_range[0], self.z_range[1])
         ]
         print(f"New goal position: [{self.goal_position[0]:.3f}, {self.goal_position[1]:.3f}, {self.goal_position[2]:.3f}]")
 
