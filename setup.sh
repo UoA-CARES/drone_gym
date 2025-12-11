@@ -72,6 +72,7 @@ echo "Setup complete. Running a test training session..."
 cd $base_dir
 
 # Run the simulator in a new terminal
+rm -rf /tmp/crazyflie* # Clean up any existing temporary crazyflie files
 gnome-terminal -- bash -c "cd $base_dir/CrazySim/crazyflie-firmware; bash tools/crazyflie-simulation/simulator_files/gazebo/launch/sitl_singleagent.sh -m crazyflie -x 0 -y 0; exec bash"
 
 # Run training script
