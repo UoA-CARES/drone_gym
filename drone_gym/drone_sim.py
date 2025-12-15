@@ -68,7 +68,7 @@ class DroneSim:
         self.velocity_gains = {
             "x": {"kp": 0.105, "kd": 0.05, "ki": 0.03},
             "y": {"kp": 0.105, "kd": 0.05, "ki": 0.03},
-            # "z": {"kp": 0.05, "kd": 0.01, "ki": 0.0},
+            "z": {"kp": 0.05, "kd": 0.01, "ki": 0.0},
         }
         self.velocity_last_error = {"x": 0.0, "y": 0.0, "z": 0.0}
         self.velocity_integral = {"x": 0.0, "y": 0.0, "z": 0.0}
@@ -425,6 +425,7 @@ class DroneSim:
                         break
                     # Get command with timeout
                     command = self.command_queue.get(timeout=0.1)
+                    print(f"command outside if/else: {command}")
                     if command == "exit":
                         self.set_running(False)
                         print("[Drone] Shutting down.")
@@ -439,6 +440,7 @@ class DroneSim:
                         print("[Drone] EMERGENCY STOP initiated.")
                         break
                     else:
+                        print(f"command inside else: {command}")
                         self._handle_command(command)
 
                     self.command_queue.task_done()
@@ -508,6 +510,10 @@ class DroneSim:
 
     def _handle_command(self, command):
         """Handle different types of commands"""
+
+        print(f"what is coming to handle command: {command}")
+
+
         # Handle string commands first
         if not isinstance(command, dict):
             print(f"[Drone] String command received: {command}")
@@ -561,6 +567,8 @@ class DroneSim:
                     vy = vel_vector.get("y", 0.0)
                     vz = vel_vector.get("z", 0.0)
 
+                    print(f"what is coming to velocity_vector in command: vx={vx}, vy={vy}, vz={vz}")
+
                     # Apply velocity limits for safety
                     max_vel = self.max_velocity
                     vx = max(-max_vel, min(max_vel, vx))
@@ -575,6 +583,7 @@ class DroneSim:
                             # f"[Drone] Target velocity set for controller: vx={vx:.2f}, vy={vy:.2f}, vz={vz:.2f}"
                         )
                     else:
+                        print(f"start linear motion: vx={vx:.2f}, vy={vy:.2f}, vz={vz:.2f}")
                         # Send direct velocity command
                         self.mc.start_linear_motion(vx, vy, vz)
                         print(
@@ -840,7 +849,7 @@ class DroneSim:
     def _calculate_velocity_pid(self, target_velocity, actual_velocity, dt):
         corrected_velocity = {"x": 0.0, "y": 0.0, "z": 0.0}
         
-        for axis in ["x", "y"]:
+        for axis in ["x", "y", "z"]:
             error = target_velocity[axis] - actual_velocity[axis]
             
             # PID terms
@@ -864,12 +873,15 @@ class DroneSim:
         return corrected_velocity
 
     def set_velocity_vector(self, vx: float, vy: float, vz: float) -> None:
+        print(f"what is coming to set_velocity_vector: vx={vx}, vy={vy}, vz={vz}")
         if self.velocity_controller_active:
+            print("inside velocity controller active")
             # Set target velocity for velocity controller
             with self.velocity_lock:
                 self.target_velocity = {"x": vx, "y": vy, "z": vz}
             # print(f"[Drone] Target velocity set for controller: vx={vx}, vy={vy}, vz={vz}")
         else:
+            print("inside velocity controller NOT active")
             # Direct velocity command to MotionCommander
             velocity_command = {"velocity_vector": {"x": vx, "y": vy, "z": vz}}
             self.send_command(velocity_command)
@@ -924,6 +936,7 @@ class DroneSim:
 
     def send_command(self, command):
         """Send command to the command queue"""
+        print(f"what is coming to send_command: {command}")
         self.command_queue.put(command)
 
     def clear_command_queue(self):

@@ -15,7 +15,7 @@ class MoveToRandom3DPosition(DroneEnvironment):
                  exploration_steps: int = 1000, episode_length: int = 40,
                  x_range: List[float] = [-1.0, 1.0],
                  y_range: List[float] = [-1.0, 1.0],
-                 z_range: List[float] = [-1.0, 1.0]):
+                 z_range: List[float] = [0.5, 1.5]):
 
         super().__init__(max_velocity, step_time)
         
@@ -37,7 +37,7 @@ class MoveToRandom3DPosition(DroneEnvironment):
         self.goal_position = [0.2, 0.9, 0.7]  # Goal position
         self.distance_threshold = 0.05  # Distance threshold to consider target reached
         self.max_xy_range = 2.0  # Maximum range in x or y direction (for normalizing components)
-        self.max_distance = 2.83  # Maximum distance for normalization (diagonal of 2m x 2m space)
+        self.max_distance = 5.74  # Maximum distance for normalization (diagonal of 2m x 2m x 2m space)
         self.time_tolerance = 0.15 # tolerance time for calculating travel distance
 
         # hard coded z limit
@@ -148,8 +148,37 @@ class MoveToRandom3DPosition(DroneEnvironment):
 
         if new_position[2] <= self.boundary[2] or new_position[2] > self.boundary[3]:
             return super().step([0, 0, 0])
+    
+        # LOG EVERYTHING
+        if self.steps % 5 == 0:  # Every 5 steps
+            pos = self.drone.get_position()
+            goal = self.goal_position
+            distance = self._distance_to_target(pos)
+            
+            # Calculate direction agent SHOULD go
+            should_go = [goal[0] - pos[0], goal[1] - pos[1], goal[2] - pos[2]]
+            should_go_norm = np.linalg.norm(should_go)
+            
+            # Calculate direction agent IS going
+            vel = [self.drone.calculated_velocity["x"], 
+                self.drone.calculated_velocity["y"],
+                self.drone.calculated_velocity["z"]]
+            vel_norm = np.linalg.norm(vel)
+            
+            # Dot product: how aligned is velocity with goal direction?
+            if should_go_norm > 0 and vel_norm > 0:
+                alignment = np.dot(vel, should_go) / (vel_norm * should_go_norm)
+                print(f"Step {self.steps}: Distance={distance:.3f}m, "
+                    f"Alignment={alignment:.3f} "
+                    f"(1.0=perfect, -1.0=opposite, 0=perpendicular)")
+                print("goal we are heading to:", goal)
+                print(f"  Position: [{pos[0]:.2f}, {pos[1]:.2f}, {pos[2]:.2f}]")
+                print(f"  Goal:     [{goal[0]:.2f}, {goal[1]:.2f}, {goal[2]:.2f}]")
+                print(f"  Velocity: [{vel[0]:.2f}, {vel[1]:.2f}, {vel[2]:.2f}]")
+                print(f"  Should move toward: [{should_go[0]:.2f}, {should_go[1]:.2f}, {should_go[2]:.2f}]")
+                print()
 
-        # Call parent step method with processed action
+            # Call parent step method with processed action
         return super().step(processed_action)
 
 
@@ -182,11 +211,13 @@ class MoveToRandom3DPosition(DroneEnvironment):
         # How well velocity aligns with goal direction (1 = perfect, -1 = opposite)
         velocity_alignment = (vel_x * direction_x + vel_y * direction_y + vel_z * direction_z) / (velocity_magnitude + 1e-6) if velocity_magnitude > 0 else 0
 
+        max_z_range = self.z_range[1] - self.z_range[0]
+
         state = [
             # Relative position to goal (2) - better than absolute positions
             relative_x / self.max_xy_range,
             relative_y / self.max_xy_range,
-            relative_z / self.max_xy_range,
+            relative_z / max_z_range,
 
             # Distance to goal (1)
             distance / self.max_distance,
@@ -450,7 +481,7 @@ class MoveToRandom3DPosition(DroneEnvironment):
 
 if __name__ == "__main__":
     # quick sanity test
-    env = MoveToPosition()
+    env = MoveToRandom3DPosition()
     env.reset()
     env.drone.set_velocity_vector(2, 0, 0)
     time.sleep(2)

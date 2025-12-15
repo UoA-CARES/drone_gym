@@ -127,6 +127,8 @@ class DroneEnvironment(ABC):
         vz = action[2] * self.max_velocity_z # topples when moving up --> limit z velocity
         # vz = 0
 
+        print("new action is:", [vx, vy, vz])
+
         current_pos = self.drone.get_position()
         # Store previous state for reward calculation
         self.prior_state = self._generate_state_dict(current_pos)
