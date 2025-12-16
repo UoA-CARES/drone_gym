@@ -57,8 +57,7 @@ class MoveToRandom3DPosition(DroneEnvironment):
         # Distance tracking for reward calculation
         self.previous_distance = self.max_distance
 
-        # Evaluation mode tracking
-        self.successful_episodes_count = 0
+        self.step_success_count = 0
 
         # Randomize the initial goal position
         # self._randomize_goal_position()
@@ -79,9 +78,7 @@ class MoveToRandom3DPosition(DroneEnvironment):
         # # Randomize goal position before calling parent reset
         # self._randomize_goal_position()
 
-        # Reset successful episodes count when starting evaluation
-        if not training and not self._is_evaluating:
-            self.successful_episodes_count = 0
+        self.step_success_count = 0
 
         # Handle boundary penalty from previous episode
         if self.exited_testing_boundary:
@@ -286,15 +283,14 @@ class MoveToRandom3DPosition(DroneEnvironment):
 
         # Success condition
         if distance < self.distance_threshold:
-            self.done = True
+            # self.done = True
             # Increment success counter only during evaluation
             if self.need_to_change_battery():
                 self.change_battery()
 
-            if self._is_evaluating:
-                self.successful_episodes_count += 1
+            self.step_success_count += 1
+            print(f"--- Step {self.steps}: Target reached! Total successes: {self.step_success_count} ---")
             return True
-
         return False
 
     def is_in_testing_zone(self):
@@ -329,9 +325,7 @@ class MoveToRandom3DPosition(DroneEnvironment):
             'description': "Gym environment for reinforcement learning control of drones"
         }
 
-        # Add success count during evaluation
-        if self._is_evaluating:
-            info['success_count'] = self.successful_episodes_count
+        info['success_count'] = self.step_success_count
 
         return info
 
