@@ -163,7 +163,6 @@ class DroneSim:
 
         # Additional startup delay to let system stabilize
         time.sleep(2)
-        print("[Drone] Boundary checking now active")
 
         while self.is_running():
             try:
@@ -198,7 +197,7 @@ class DroneSim:
 
                 if not in_bounds:
                     self.in_boundaries = False
-                    # print(f"[Drone] BOUNDARY VIOLATION: Position {current_pos} exceeds limits {self.boundaries}")
+                    print(f"[Drone] BOUNDARY VIOLATION: Position {current_pos} exceeds limits {self.boundaries}")
                     self._execute_emergency_stop()
                     break
                 else:
@@ -452,7 +451,7 @@ class DroneSim:
                 if display:
                     if hasattr(self, "_last_position_print"):
                         if time.time() - self._last_position_print > 0.2:
-                            # print(f"[Drone] Current position: {self.position}")
+                            print(f"[Drone] Current position: {self.position}")
                             self._last_position_print = time.time()
                     else:
                         self._last_position_print = time.time()
@@ -567,8 +566,6 @@ class DroneSim:
                     vy = vel_vector.get("y", 0.0)
                     vz = vel_vector.get("z", 0.0)
 
-                    print(f"what is coming to velocity_vector in command: vx={vx}, vy={vy}, vz={vz}")
-
                     # Apply velocity limits for safety
                     max_vel = self.max_velocity
                     vx = max(-max_vel, min(max_vel, vx))
@@ -583,7 +580,7 @@ class DroneSim:
                             # f"[Drone] Target velocity set for controller: vx={vx:.2f}, vy={vy:.2f}, vz={vz:.2f}"
                         )
                     else:
-                        print(f"start linear motion: vx={vx:.2f}, vy={vy:.2f}, vz={vz:.2f}")
+                        # print(f"start linear motion: vx={vx:.2f}, vy={vy:.2f}, vz={vz:.2f}")
                         # Send direct velocity command
                         self.mc.start_linear_motion(vx, vy, vz)
                         print(
@@ -875,17 +872,14 @@ class DroneSim:
     def set_velocity_vector(self, vx: float, vy: float, vz: float) -> None:
         print(f"what is coming to set_velocity_vector: vx={vx}, vy={vy}, vz={vz}")
         if self.velocity_controller_active:
-            print("inside velocity controller active")
             # Set target velocity for velocity controller
             with self.velocity_lock:
                 self.target_velocity = {"x": vx, "y": vy, "z": vz}
-            # print(f"[Drone] Target velocity set for controller: vx={vx}, vy={vy}, vz={vz}")
         else:
             print("inside velocity controller NOT active")
             # Direct velocity command to MotionCommander
             velocity_command = {"velocity_vector": {"x": vx, "y": vy, "z": vz}}
             self.send_command(velocity_command)
-            # print(f"[Drone] Direct velocity command sent: vx={vx}, vy={vy}, vz={vz}")
 
     def set_velocity(self, velocity_vector) -> None:
         """Set velocity vector from a list or array [vx, vy, vz]"""
@@ -907,9 +901,6 @@ class DroneSim:
             and abs(y) <= self.boundaries["y"]
             and abs(z) <= self.boundaries["z"]
         ):
-            # print(
-            #     f"[Drone] WARNING: Target position {x}, {y}, {z} is outside safe boundaries. Command rejected."
-            # )
             return
 
         # Create and send a position command
@@ -917,7 +908,6 @@ class DroneSim:
 
         # Send the command to the queue
         self.send_command(position_command)
-        # print(f"[Drone] Target position command sent: x={x}, y={y}, z={z}")
 
     def get_position(self):
         """Get current position as list"""
@@ -936,7 +926,6 @@ class DroneSim:
 
     def send_command(self, command):
         """Send command to the command queue"""
-        print(f"what is coming to send_command: {command}")
         self.command_queue.put(command)
 
     def clear_command_queue(self):
@@ -1163,7 +1152,6 @@ class DroneSim:
 
 if __name__ == "__main__":
     drone = DroneSim()
-    print("Drone class initiated")
     drone.take_off()
     drone.is_flying_event.wait(timeout=15)
 

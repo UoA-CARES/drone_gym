@@ -158,10 +158,6 @@ class DroneEnvironment(ABC):
         done = self._check_if_done(current_state)
         truncated = self._check_if_truncated(current_state)
 
-        # Increment success count if episode is done successfully (not truncated) and not in evaluation mode
-        if done and not truncated and not self._is_evaluating:
-            self.success_count += 1
-
         # Generate info dict
         info = {
             "current_position": new_pos,
