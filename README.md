@@ -173,6 +173,12 @@ See `move_to_position.py` and `move_to_random_position.py` for complete examples
 - Video demonstration of the model evaluation: [Watch on YouTube](https://www.youtube.com/watch?v=MFenj1JX5Cs)
 - Implementation example: [gymnasium_environments/drone_gym](https://github.com/UoA-CARES/gymnasium_envrionments/tree/drone_gym)
 
+### Running using Docker
+
+Simply run `docker run -it --gpus all oculux314/cares:drone` for a prebuilt Docker image to run the drone environment on. This image contains the `cares_reinforcement_learning`, `gymnasium_envrionments`, and `drone_gym` repositories in the `/app` folder. Logs are saved to `/app/cares_rl_logs`.
+
+If you need to modify the image, you can edit `Dockerfile` and rebuild with `docker build -t oculux314/cares:drone .`. The base Dockerfile `oculux314/cares:base` and instructions to run can be found at https://github.com/UoA-CARES/gymnasium_envrionments.
+
 ## Related Projects
 
 - [CARES Gymnasium Environments](https://github.com/UoA-CARES/gymnasium_envrionments) - Framework for running RL tasks
