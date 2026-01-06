@@ -76,5 +76,15 @@ RUN pip install --force-reinstall pandas==2.3.3 && \
 # Runtime
 # -------------------------------------------------------------------
 
+# Disable GUI
+ENV GZ_SIM_DISABLE_GUI=1
+RUN sed -i \
+    -e 's/^gz sim -g$/wait/' \
+    /app/CrazySim/crazyflie-firmware/tools/crazyflie-simulation/simulator_files/gazebo/launch/sitl_singleagent.sh
+# Simple alias to start simulator
+RUN echo 'alias sim="cd /app/CrazySim/crazyflie-firmware && \
+    bash tools/crazyflie-simulation/simulator_files/gazebo/launch/sitl_singleagent.sh -m crazyflie -x 0 -y 0"' \
+    >> /etc/bash.bashrc
+
 WORKDIR /app/gymnasium_envrionments/scripts
-CMD ["bash"]
+CMD ["bash", "-c", "echo '======================================================================\nRun `sim` to start the simulator then `python run.py train cli drone --task move_to_position SAC` to start a training run.\n======================================================================' && bash"]
