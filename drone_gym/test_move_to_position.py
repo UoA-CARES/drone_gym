@@ -1,6 +1,6 @@
 import numpy as np
 import time
-from drone_gym.move_to_position import MoveToPosition
+from drone_gym.move_to_2d_position import MoveToPosition
 
 env = MoveToPosition()
 
