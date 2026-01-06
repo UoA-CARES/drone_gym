@@ -68,8 +68,8 @@ drone_gym/
 │   ├── __init__.py        # Package initialization
 │   ├── drone.py            with PID control and Crazyflie integration
 │   ├── drone_environment.py  # Base DroneEnvironment class for RL tasks
-│   ├── move_to_position.py   # Example: Move to specific position
-│   ├── move_to_random_position.py  # Example: Move to random positions
+│   ├── move_to_2d_position.py   # Example: Move to specific position
+│   ├── move_to_random_2d_position.py  # Example: Move to random positions
 │   ├── functionality_tests.py      # Testing utilities
 │   ├── utils/             # Utility modules
 │   │   ├── vicon_connection_class.py  # Vicon motion capture interface
@@ -105,7 +105,7 @@ This environment is designed to be used with the [CARES Gymnasium Environments](
 cd gymnasium_envrionments
 
 # Run a training task (example)
-python train.py run --env drone_gym --task move_to_position
+python train.py run --env drone_gym --task move_to_2d_position
 ```
 
 Refer to the [gymnasium_envrionments documentation](https://github.com/UoA-CARES/gymnasium_envrionments) for detailed instructions on running tasks and configuring training parameters.
@@ -165,7 +165,7 @@ class MyCustomTask(DroneEnvironment):
     # Implement other abstract methods...
 ```
 
-See `move_to_position.py` and `move_to_random_position.py` for complete examples.
+See `move_to_2d_position.py` and `move_to_random_2d_position.py` for complete examples.
 
 ### Example Task Demos
 

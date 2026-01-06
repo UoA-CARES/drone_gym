@@ -68,7 +68,7 @@ class DroneSim:
         self.velocity_gains = {
             "x": {"kp": 0.105, "kd": 0.05, "ki": 0.03},
             "y": {"kp": 0.105, "kd": 0.05, "ki": 0.03},
-            "z": {"kp": 0, "kd": 0, "ki": 0},
+            "z": {"kp": 0.05, "kd": 0.01, "ki": 0.0},
         }
         self.velocity_last_error = {"x": 0.0, "y": 0.0, "z": 0.0}
         self.velocity_integral = {"x": 0.0, "y": 0.0, "z": 0.0}
@@ -93,7 +93,7 @@ class DroneSim:
         self.position_lock = threading.Lock()
 
         # Velocity calculation (from position differentiation)
-        self.calculated_velocity = {"x": 0.0, "y": 0.0}
+        self.calculated_velocity = {"x": 0.0, "y": 0.0, "z": 0.0}
         self.velocity_calculation_lock = threading.Lock()
         self.position_history = deque(maxlen=15)
         self.velocity_update_rate = 0.20
@@ -101,7 +101,7 @@ class DroneSim:
         self.last_velocity_calculation_time = 0.0
 
         # Drone Safety
-        self.boundaries = {"x": 2.5, "y": 2.5, "z": 2.25}
+        self.boundaries = {"x": 2.5, "y": 2.5, "z": 2.5}
         self.safety_thread = None
         self.in_boundaries = True
         self.emergency_event = Event()
@@ -163,7 +163,6 @@ class DroneSim:
 
         # Additional startup delay to let system stabilize
         time.sleep(2)
-        print("[Drone] Boundary checking now active")
 
         while self.is_running():
             try:
@@ -198,7 +197,7 @@ class DroneSim:
 
                 if not in_bounds:
                     self.in_boundaries = False
-                    # print(f"[Drone] BOUNDARY VIOLATION: Position {current_pos} exceeds limits {self.boundaries}")
+                    print(f"[Drone] BOUNDARY VIOLATION: Position {current_pos} exceeds limits {self.boundaries}")
                     self._execute_emergency_stop()
                     break
                 else:
@@ -425,6 +424,7 @@ class DroneSim:
                         break
                     # Get command with timeout
                     command = self.command_queue.get(timeout=0.1)
+                    print(f"command outside if/else: {command}")
                     if command == "exit":
                         self.set_running(False)
                         print("[Drone] Shutting down.")
@@ -439,6 +439,7 @@ class DroneSim:
                         print("[Drone] EMERGENCY STOP initiated.")
                         break
                     else:
+                        print(f"command inside else: {command}")
                         self._handle_command(command)
 
                     self.command_queue.task_done()
@@ -450,7 +451,7 @@ class DroneSim:
                 if display:
                     if hasattr(self, "_last_position_print"):
                         if time.time() - self._last_position_print > 0.2:
-                            # print(f"[Drone] Current position: {self.position}")
+                            print(f"[Drone] Current position: {self.position}")
                             self._last_position_print = time.time()
                     else:
                         self._last_position_print = time.time()
@@ -508,6 +509,7 @@ class DroneSim:
 
     def _handle_command(self, command):
         """Handle different types of commands"""
+
         # Handle string commands first
         if not isinstance(command, dict):
             print(f"[Drone] String command received: {command}")
@@ -575,6 +577,7 @@ class DroneSim:
                             # f"[Drone] Target velocity set for controller: vx={vx:.2f}, vy={vy:.2f}, vz={vz:.2f}"
                         )
                     else:
+                        # print(f"start linear motion: vx={vx:.2f}, vy={vy:.2f}, vz={vz:.2f}")
                         # Send direct velocity command
                         self.mc.start_linear_motion(vx, vy, vz)
                         print(
@@ -730,10 +733,10 @@ class DroneSim:
                 actual_vel = self.get_calculated_velocity()
 
                 # Calculate corrected velocity command using PID
-                desired_velocity = self._calculate_velocity_pid(target_vel, actual_vel, self.velocity_control_rate)
+                #desired_velocity = self._calculate_velocity_pid(target_vel, actual_vel, self.velocity_control_rate)
 
                 # Apply gradual ramping to the velocity command
-                ramped_velocity = self._apply_velocity_ramping(desired_velocity, self.velocity_control_rate)
+                ramped_velocity = self.target_velocity.copy()
 
                 # print(f"Target: ({target_vel['x']:.3f}, {target_vel['y']:.3f}), "
                 #     f"Actual: ({actual_vel['x']:.3f}, {actual_vel['y']:.3f}), "
@@ -746,7 +749,7 @@ class DroneSim:
                     self.mc.start_linear_motion(
                         ramped_velocity["x"],
                         ramped_velocity["y"],
-                        0
+                        ramped_velocity["z"],
                     )
 
                 # Sleep to maintain control rate
@@ -766,32 +769,32 @@ class DroneSim:
         max_delta = self.max_velocity_change_rate * dt
 
         with self.velocity_command_lock:
-            # Calculate the desired change vector (x and y only)
+            # Calculate the desired change vector (x, y and z)
             delta = {
                 "x": desired_velocity["x"] - self.current_commanded_velocity["x"],
-                "y": desired_velocity["y"] - self.current_commanded_velocity["y"]
+                "y": desired_velocity["y"] - self.current_commanded_velocity["y"],
+                "z": desired_velocity["z"] - self.current_commanded_velocity["z"],
             }
 
-            # Calculate the magnitude of the change vector (x and y only)
-            delta_magnitude = (delta["x"]**2 + delta["y"]**2)**0.5
+            # Calculate the magnitude of the change vector (x, y, and z)
+            delta_magnitude = (delta["x"]**2 + delta["y"]**2 + delta["z"]**2)**0.5
 
             # If the desired change is larger than allowed, scale it down while preserving direction
             if delta_magnitude > max_delta:
                 scale = max_delta / delta_magnitude
                 delta["x"] *= scale
                 delta["y"] *= scale
+                delta["z"] *= scale
 
-            # Apply the limited change for x and y
+            # Apply the limited change for x, y, and z
             ramped_velocity["x"] = self.current_commanded_velocity["x"] + delta["x"]
             ramped_velocity["y"] = self.current_commanded_velocity["y"] + delta["y"]
-            
-            # Z is always 0
-            ramped_velocity["z"] = 0.0
+            ramped_velocity["z"] = self.current_commanded_velocity["z"] + delta["z"]
 
             # Update the current commanded velocity for next iteration
             self.current_commanded_velocity["x"] = ramped_velocity["x"]
             self.current_commanded_velocity["y"] = ramped_velocity["y"]
-            self.current_commanded_velocity["z"] = 0.0
+            self.current_commanded_velocity["z"] = ramped_velocity["z"]
 
         return ramped_velocity
 
@@ -840,7 +843,7 @@ class DroneSim:
     def _calculate_velocity_pid(self, target_velocity, actual_velocity, dt):
         corrected_velocity = {"x": 0.0, "y": 0.0, "z": 0.0}
         
-        for axis in ["x", "y"]:
+        for axis in ["x", "y", "z"]:
             error = target_velocity[axis] - actual_velocity[axis]
             
             # PID terms
@@ -868,12 +871,11 @@ class DroneSim:
             # Set target velocity for velocity controller
             with self.velocity_lock:
                 self.target_velocity = {"x": vx, "y": vy, "z": vz}
-            # print(f"[Drone] Target velocity set for controller: vx={vx}, vy={vy}, vz={vz}")
         else:
+            print("inside velocity controller NOT active")
             # Direct velocity command to MotionCommander
             velocity_command = {"velocity_vector": {"x": vx, "y": vy, "z": vz}}
             self.send_command(velocity_command)
-            # print(f"[Drone] Direct velocity command sent: vx={vx}, vy={vy}, vz={vz}")
 
     def set_velocity(self, velocity_vector) -> None:
         """Set velocity vector from a list or array [vx, vy, vz]"""
@@ -895,9 +897,6 @@ class DroneSim:
             and abs(y) <= self.boundaries["y"]
             and abs(z) <= self.boundaries["z"]
         ):
-            # print(
-            #     f"[Drone] WARNING: Target position {x}, {y}, {z} is outside safe boundaries. Command rejected."
-            # )
             return
 
         # Create and send a position command
@@ -905,7 +904,6 @@ class DroneSim:
 
         # Send the command to the queue
         self.send_command(position_command)
-        # print(f"[Drone] Target position command sent: x={x}, y={y}, z={z}")
 
     def get_position(self):
         """Get current position as list"""
@@ -1106,7 +1104,7 @@ class DroneSim:
             self.target_position = {"x": 0.0, "y": 0.0, "z": 0.0}
         # Velocity calculation
         with self.velocity_calculation_lock:
-            self.calculated_velocity = {"x": 0.0, "y": 0.0}
+            self.calculated_velocity = {"x": 0.0, "y": 0.0, "z": 0.0}
         self.position_history.clear()
         # PID
         self.last_error = {"x": 0.0, "y": 0.0, "z": 0.0}
@@ -1150,7 +1148,6 @@ class DroneSim:
 
 if __name__ == "__main__":
     drone = DroneSim()
-    print("Drone class initiated")
     drone.take_off()
     drone.is_flying_event.wait(timeout=15)
 
