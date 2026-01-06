@@ -117,7 +117,6 @@ class DroneEnvironment(ABC):
 
         self.steps += 1
 
-        print(f"action: {action}")
         if len(action) != 3:  # changed from 3 to 2
             raise ValueError("Action must be a 3-element array [vx, vy]")
 
@@ -127,7 +126,7 @@ class DroneEnvironment(ABC):
         vz = action[2] * self.max_velocity_z # topples when moving up --> limit z velocity
         # vz = 0
 
-        print("new action is:", [vx, vy, vz])
+        print("Normalised action aka velocity is:", [vx, vy, vz])
 
         current_pos = self.drone.get_position()
         # Store previous state for reward calculation

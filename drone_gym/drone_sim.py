@@ -510,9 +510,6 @@ class DroneSim:
     def _handle_command(self, command):
         """Handle different types of commands"""
 
-        print(f"what is coming to handle command: {command}")
-
-
         # Handle string commands first
         if not isinstance(command, dict):
             print(f"[Drone] String command received: {command}")
@@ -736,10 +733,10 @@ class DroneSim:
                 actual_vel = self.get_calculated_velocity()
 
                 # Calculate corrected velocity command using PID
-                desired_velocity = self._calculate_velocity_pid(target_vel, actual_vel, self.velocity_control_rate)
+                #desired_velocity = self._calculate_velocity_pid(target_vel, actual_vel, self.velocity_control_rate)
 
                 # Apply gradual ramping to the velocity command
-                ramped_velocity = self._apply_velocity_ramping(desired_velocity, self.velocity_control_rate)
+                ramped_velocity = self.target_velocity.copy()
 
                 # print(f"Target: ({target_vel['x']:.3f}, {target_vel['y']:.3f}), "
                 #     f"Actual: ({actual_vel['x']:.3f}, {actual_vel['y']:.3f}), "
@@ -870,7 +867,6 @@ class DroneSim:
         return corrected_velocity
 
     def set_velocity_vector(self, vx: float, vy: float, vz: float) -> None:
-        print(f"what is coming to set_velocity_vector: vx={vx}, vy={vy}, vz={vz}")
         if self.velocity_controller_active:
             # Set target velocity for velocity controller
             with self.velocity_lock:
