@@ -87,4 +87,4 @@ RUN echo 'alias sim="cd /app/CrazySim/crazyflie-firmware && \
     >> /etc/bash.bashrc
 
 WORKDIR /app/gymnasium_envrionments/scripts
-CMD ["bash", "-c", "echo '======================================================================\nRun `sim` to start the simulator then `python run.py train cli drone --task move_to_position SAC` to start a training run.\n======================================================================' && bash"]
+CMD ["bash", "-c", "echo '======================================================================\nRun `sim &` to start the simulator in background mode (close with `kill %<pid>`) then `python run.py train cli drone --task move_to_position SAC` to start a training run.\n======================================================================' && bash"]
