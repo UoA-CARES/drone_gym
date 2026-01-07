@@ -10,9 +10,8 @@ from drone_gym.drone_setup import DroneSetup
 
 class DroneSim(DroneSetup):
     def __init__(self, uri="udp://0.0.0.0:19850", simulation=True):
-        super().__init__()
+        super().__init__(uri=uri)
         # Drone Properties
-        self.URI = uri
         self.simulation = simulation
 
     def _update_position(self):

@@ -11,9 +11,9 @@ from cflib.utils import uri_helper
 
 
 class DroneSetup:
-    def __init__(self):
+    def __init__(self, uri=None):
         # Drone Properties
-        self.URI = uri_helper.uri_from_env(
+        self.URI = uri if uri is not None else uri_helper.uri_from_env(
             default="radio://0/100/2M/E7E7E7E7E7"
         )  # changed radio channel in 22/9
         self.default_height = 0.5
@@ -312,7 +312,6 @@ class DroneSetup:
                         break
                     # Get command with timeout
                     command = self.command_queue.get(timeout=0.1)
-                    print(f"command outside if/else: {command}")
                     if command == "exit":
                         self.set_running(False)
                         print("[Drone] Shutting down.")

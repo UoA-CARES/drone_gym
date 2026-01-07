@@ -1,5 +1,6 @@
 from abc import ABC, abstractmethod
 from drone_gym.drone_sim import DroneSim
+from drone_gym.drone import Drone
 import time
 import numpy as np
 from typing import Dict, List, Any
@@ -11,7 +12,8 @@ class DroneEnvironment(ABC):
     """Base drone environment that handles common drone operations"""
 
     def __init__(self, max_velocity: float = 0.5, step_time: float = 0.5):
-        self.drone = DroneSim()
+        # Drone instance will be set externally before use
+        self.drone = None
         self.reset_position = [0, 0, 1]
         self.max_velocity = max_velocity
         self.max_velocity_z = 0.5
