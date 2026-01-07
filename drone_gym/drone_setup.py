@@ -298,7 +298,6 @@ class DroneSetup:
         """
         pass
 
-
     def _run(self, display=False):
         """Main drone control loop"""
         if not self.initialise_crazyflie():
@@ -352,7 +351,6 @@ class DroneSetup:
 
         finally:
             self._shutdown_crazyflie()
-
 
     # minorly modified from cearlier drone
     def _shutdown_crazyflie(self):
@@ -483,12 +481,10 @@ class DroneSetup:
         except Exception as e:
             print(f"[Drone] Error handling command: {str(e)}")
 
-
     def take_off(self):
         """Public method to take off"""
         self.send_command({"take_off": True})
         print("Take off command sent")
-
 
     def land(self):
         """Public method to land"""
@@ -509,7 +505,6 @@ class DroneSetup:
         else:
             print("[Drone] Position controller already active")
 
-
     def stop_position_control(self):
         """Stop the position controller thread"""
         if self.controller_active:
@@ -519,7 +514,6 @@ class DroneSetup:
             print("[Drone] Position controller stopped")
         else:
             print("[Drone] Position controller already stopped")
-
 
     def start_velocity_control(self):
         """Start the velocity controller thread for automatic velocity tracking"""
@@ -932,7 +926,6 @@ class DroneSetup:
         """
         pass
     
-
     def _signal_stop_to_all_threads(self):
         """Set all shutdown flags so every thread leaves its loop ASAP."""
         self.set_running(False)
@@ -966,7 +959,6 @@ class DroneSetup:
                 if thr.is_alive():
                     print(f"[Drone] WARNING: {name} thread did not join in time.")
 
-
     def _reset_shared_state(self):
         """Reset all state variables to their initial values."""
         # Position and target
@@ -998,9 +990,6 @@ class DroneSetup:
             self.battery_level = 5.0
         self.in_boundaries = True
 
-
-
-    
     def _final_cleanup(self):
         """Delete big objects so garbage collection can reclaim them."""
         # These will be re-created if the user ever calls start() again
@@ -1018,31 +1007,3 @@ class DroneSetup:
         self.mc = None
         self.clear_command_queue()
         self._reset_shared_state()
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
