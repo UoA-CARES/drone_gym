@@ -1,15 +1,10 @@
-import threading
 import queue
 import time
-from threading import Event
-from collections import deque
 
 import cflib.crtp
 from cflib.crazyflie import Crazyflie
 from cflib.crazyflie.log import LogConfig
 from cflib.crazyflie.syncCrazyflie import SyncCrazyflie
-from cflib.positioning.motion_commander import MotionCommander
-from cflib.utils import uri_helper
 from drone_gym.drone_setup import DroneSetup
 
 
