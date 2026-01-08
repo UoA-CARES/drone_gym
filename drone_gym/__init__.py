@@ -10,8 +10,8 @@ from drone_gym import (
 
 __all__ = ['DroneEnvironment', 'MoveToPosition', 'MoveToRandomPosition']
 task_map = {
-    "move_to_2d_position": move_to_2d_position.MoveToPosition,
-    "move_to_random_2d_position": move_to_random_2d_position.MoveToRandomPosition,
-    "move_to_3d_position": move_to_3d_position.MoveTo3DPosition,
-    "move_to_random_3d_position": move_to_random_3d_position.MoveToRandom3DPosition,
+    "move_2d": move_to_2d_position.MoveToPosition,
+    "move_2d_random": move_to_random_2d_position.MoveToRandomPosition,
+    "move_3d": move_to_3d_position.MoveTo3DPosition,
+    "move_3d_random": move_to_random_3d_position.MoveToRandom3DPosition,
 }
