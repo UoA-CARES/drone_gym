@@ -11,8 +11,7 @@ from typing import Dict, List, Any, Literal
 class DroneEnvironment(ABC):
     """Base drone environment that handles common drone operations"""
 
-    def __init__(self, max_velocity: float = 0.5, step_time: float = 0.5, use_simulator: Literal[0,1]=1):
-        
+    def __init__(self, use_simulator: Literal[0,1], max_velocity: float = 0.5, step_time: float = 0.5):
         # Set the appropriate drone instance based on use_simulator flag
         if use_simulator:
             self.drone = DroneSim()
