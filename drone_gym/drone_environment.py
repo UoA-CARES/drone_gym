@@ -1,8 +1,9 @@
 from abc import ABC, abstractmethod
 from drone_gym.drone_sim import DroneSim
+from drone_gym.drone import Drone
 import time
 import numpy as np
-from typing import Dict, List, Any
+from typing import Dict, List, Any, Literal
 
 # TODO - make naming more consistent
 
@@ -10,8 +11,13 @@ from typing import Dict, List, Any
 class DroneEnvironment(ABC):
     """Base drone environment that handles common drone operations"""
 
-    def __init__(self, max_velocity: float = 0.5, step_time: float = 0.5):
-        self.drone = DroneSim()
+    def __init__(self, use_simulator: Literal[0,1], max_velocity: float = 0.5, step_time: float = 0.5):
+        # Set the appropriate drone instance based on use_simulator flag
+        if use_simulator:
+            self.drone = DroneSim()
+        else:
+            self.drone = Drone()
+            
         self.reset_position = [0, 0, 1]
         self.max_velocity = max_velocity
         self.max_velocity_z = 0.5
