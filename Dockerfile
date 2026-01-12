@@ -35,34 +35,30 @@ WORKDIR /app
 RUN git clone https://github.com/UoA-CARES/drone_gym.git
 
 # -------------------------------------------------------------------
-# Install Python packages for each component
+# Set up dependencies
 # -------------------------------------------------------------------
-
-# drone_gym
-WORKDIR /app/drone_gym
-RUN git checkout drone-sim && \
-    git pull && \
-    pip install -r requirements.txt && \
-    pip install -e .
 
 # CrazySim python libs
 WORKDIR /app/CrazySim/crazyflie-lib-python
 RUN pip install -e .
 
-WORKDIR /app/CrazySim/crazyflie-clients-python
-RUN git checkout sitl-release && \
-    pip install -e .
-
-# -------------------------------------------------------------------
-# Build CrazySim Firmware (SIM)
-# -------------------------------------------------------------------
-
+# Build CrazySim Firmware (Simulator)
 WORKDIR /app/CrazySim/crazyflie-firmware
 RUN pip install Jinja2 && \
     mkdir -p sitl_make/build && \
     cd sitl_make/build && \
     cmake .. && \
     make all
+
+# -------------------------------------------------------------------
+# Setup drone_gym
+# -------------------------------------------------------------------
+
+WORKDIR /app/drone_gym
+RUN git checkout main && \
+    git pull && \
+    pip install -r requirements.txt && \
+    pip install -e .
 
 # -------------------------------------------------------------------
 # Force reinstall specific versions to avoid conflicts
@@ -86,5 +82,11 @@ RUN echo 'alias sim="cd /app/CrazySim/crazyflie-firmware && \
     bash tools/crazyflie-simulation/simulator_files/gazebo/launch/sitl_singleagent.sh -m crazyflie -x 0 -y 0"' \
     >> /etc/bash.bashrc
 
+# Temporary
+WORKDIR /app/drone_gym
+RUN git checkout main && git pull
 WORKDIR /app/gymnasium_envrionments/scripts
-CMD ["bash", "-c", "echo '======================================================================\nRun `sim &` to start the simulator in background mode (close with `kill %<pid>`) then `python run.py train cli drone --task move_to_position SAC` to start a training run.\n======================================================================' && bash"]
+RUN git fetch && git checkout DroneSimulatorFlag && git pull
+
+WORKDIR /app/gymnasium_envrionments/scripts
+CMD ["bash", "-c", "echo '======================================================================\nRun `sim &` to start the simulator in background mode (close with `kill %<pid>`) then `python run.py train cli drone --task move_2d SAC` to start a training run.\n======================================================================' && bash"]
