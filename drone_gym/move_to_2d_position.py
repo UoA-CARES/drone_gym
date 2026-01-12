@@ -253,25 +253,19 @@ class MoveToPosition(DroneEnvironment):
     #         reward += self.success_reward
 
         # return reward * self.reward_multiplier
-    
+
     def _calculate_reward(self, current_state: Dict[str, Any]) -> float:
         position = current_state['position']
         distance = self._distance_to_target(position)
-        
-        # Progress-based reward
-        distance_improvement = self.previous_distance - distance
-        reward = distance_improvement * 100  # Strong signal for getting closer
-        
-        # Penalize being far away
-        reward -= distance * 5
-        
-        # Reaching target leads to high reward
+        reward = 0.0
+
         if distance < self.distance_threshold:
+            # Reaching target leads to high reward
             reward += 50
-            
-        # Update tracking
-        self.previous_distance = distance
-        
+        else:
+            # Encourage completing task quickly
+            reward -= 1
+
         return reward
 
     def _check_if_done(self, current_state: Dict[str, Any]) -> bool:
