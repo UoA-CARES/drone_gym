@@ -89,14 +89,14 @@ class MoveToPosition(DroneEnvironment):
         # Modify action normalization based on phase
         if self.learning:
             # Learning phase: action is already in [-1, 1]
-            processed_action = action
             assert len(action)==2,'action should be length 2'
+            processed_action = [action[0], action[1], 0] # Add vz=0 to fit 3D action shape of drone_environment
 
         else:
             # Exploration phase: convert from [0, 1] to [-1, 1]
             # processed_action = [action[0] * 2 - 1, action[1] * 2 - 1, action[2] * 2 - 1,]
             # # deleted the z-value
-            processed_action = [action[0] * 2 - 1, action[1] * 2 - 1]
+            processed_action = [action[0] * 2 - 1, action[1] * 2 - 1, 0] # Add vz=0 to fit 3D action shape of drone_environment
 
         # determine whether not the action we pass will exceed the boundary
         position = self.drone.get_position()
@@ -116,14 +116,13 @@ class MoveToPosition(DroneEnvironment):
         # X boundary check
         # step is [0, 0] isn't of [0, 0, 0]
         if new_position[0] < -self.boundary[0] or new_position[0] > self.boundary[0]:
-            return super().step([0, 0])
+            return super().step([0, 0, 0])
 
         # Y boundary check
         if new_position[1] < -self.boundary[1] or new_position[1] > self.boundary[1]:
-            return super().step([0, 0])
-
+            return super().step([0, 0, 0])
         if new_position[2] <= self.boundary[2] or new_position[2] > self.boundary[3]:
-            return super().step([0, 0])
+            return super().step([0, 0, 0])
 
         # Call parent step method with processed action
         return super().step(processed_action)
