@@ -12,7 +12,7 @@ class MoveCircle2D(DroneEnvironment):
     """Reinforcement learning task for drone navigation to a target position"""
 
     def __init__(self, use_simulator: Literal[0,1], max_velocity: float = 0.25, step_time: float = 0.5,
-                 exploration_steps: int = 1000, episode_length: int = 40):
+                 exploration_steps: int = 1000, episode_length: int = 60):
         super().__init__(use_simulator, max_velocity, step_time)
 
         # RL Training parameters
@@ -317,17 +317,16 @@ class MoveCircle2D(DroneEnvironment):
         """Check if navigation task is complete"""
         distance = current_state['distance_to_target']
 
-        # Success condition
+        # Track success but don't terminate episode
         if distance < self.distance_threshold:
-            self.done = True
-            # Increment success counter only during evaluation
-            if self.need_to_change_battery():
-                self.change_battery()
-
+            # Increment success counter every step the drone stays on target
             if self._is_evaluating:
                 self.successful_episodes_count += 1
-            return True
-
+            self.done = True
+        else:
+            self.done = False
+        
+        # Episode only ends when max steps reached (handled in _check_if_truncated)
         return False
 
     def is_in_testing_zone(self):
