@@ -16,10 +16,17 @@ Developed by the CARES Lab at the University of Auckland.
 
 ### Prerequisites
 - Python 3.8 or higher (tested with Python 3.10)
-- Crazyflie drone with flow deck attached
-- Access to Vicon motion capture system
 - [CARES Gymnasium Environments](https://github.com/UoA-CARES/gymnasium_envrionments) (for running RL tasks)
 - [CARES Reinforcement Learning](https://github.com/UoA-CARES/cares_reinforcement_learning) (RL algorithms)
+
+**If running real crazyflie**
+- Crazyflie drone with flow deck attached
+- Access to Vicon motion capture system
+
+**If running in Simulation**
+- [CrazySim] (https://github.com/gtfactslab/CrazySim)
+
+
 
 ### Setup Instructions
 
@@ -60,6 +67,9 @@ Developed by the CARES Lab at the University of Auckland.
    pip install -e .
    ```
 
+7. **Install CrazySim simulator** (for running RL tasks in simulation)
+   Follow instructions [here] (https://github.com/gtfactslab/CrazySim)
+
 ## Project Structure
 
 ```
@@ -73,7 +83,7 @@ drone_gym/
 │   ├── functionality_tests.py      # Testing utilities
 │   ├── utils/             # Utility modules
 │   │   ├── vicon_connection_class.py  # Vicon motion capture interface
-│   │   └── test_grab_frame.py        # Frame capture testing
+│   │   ├── test_grab_frame.py        # Frame capture testing
 │       ├── single_cf_grounded.py
 │       └── test_link.py
 ├── requirements.txt       # Python dependencies
