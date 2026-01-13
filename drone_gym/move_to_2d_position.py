@@ -91,7 +91,7 @@ class MoveToPosition(DroneEnvironment):
             # Learning phase: action is already in [-1, 1]
             print(f" action received is: {action}")
             assert len(action)==3,'action should be length 3'
-            processed_action = [action[0], action[1], 0] # Add vz=0 to fit 3D action shape of drone_environment
+            processed_action = action
 
         else:
             # Exploration phase: convert from [0, 1] to [-1, 1]
