@@ -203,7 +203,7 @@ class MoveTo3DPosition(DroneEnvironment):
             # Distance to goal (1)
             distance / self.max_distance,
 
-            # Direction to goal - unit vector (2) - helps with directional awareness
+            # Direction to goal - unit vector (3) - helps with directional awareness
             direction_x,
             direction_y,
             direction_z,

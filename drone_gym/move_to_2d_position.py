@@ -89,8 +89,9 @@ class MoveToPosition(DroneEnvironment):
         # Modify action normalization based on phase
         if self.learning:
             # Learning phase: action is already in [-1, 1]
-            assert len(action)==2,'action should be length 2'
-            processed_action = [action[0], action[1], 0] # Add vz=0 to fit 3D action shape of drone_environment
+            print(f" action received is: {action}")
+            assert len(action)==3,'action should be length 3'
+            processed_action = action
 
         else:
             # Exploration phase: convert from [0, 1] to [-1, 1]
@@ -139,35 +140,43 @@ class MoveToPosition(DroneEnvironment):
         # Use relative position instead of absolute positions
         relative_x = self.goal_position[0] - position[0]
         relative_y = self.goal_position[1] - position[1]
-        distance = np.sqrt(relative_x**2 + relative_y**2)
+        relative_z = self.goal_position[2] - position[2]
+
+        distance = np.sqrt(relative_x**2 + relative_y**2 + relative_z**2)
 
         # Direction to goal (normalized) - helps agent understand "which way"
         direction_x = relative_x / (distance + 1e-6)
         direction_y = relative_y / (distance + 1e-6)
+        direction_z = relative_z / (distance + 1e-6)
 
         # Velocity information
         vel_x = self.drone.calculated_velocity["x"]
         vel_y = self.drone.calculated_velocity["y"]
-        velocity_magnitude = np.sqrt(vel_x**2 + vel_y**2)
+        vel_z = self.drone.calculated_velocity["z"]
+        velocity_magnitude = np.sqrt(vel_x**2 + vel_y**2 + vel_z**2)
 
         # How well velocity aligns with goal direction (1 = perfect, -1 = opposite)
-        velocity_alignment = (vel_x * direction_x + vel_y * direction_y) / (velocity_magnitude + 1e-6) if velocity_magnitude > 0 else 0
+        velocity_alignment = (vel_x * direction_x + vel_y * direction_y + vel_z * direction_z) / (velocity_magnitude + 1e-6) if velocity_magnitude > 0 else 0
+
 
         state = [
             # Relative position to goal (2) - better than absolute positions
             relative_x / self.max_xy_range,
             relative_y / self.max_xy_range,
+            1,
 
             # Distance to goal (1)
             distance / self.max_distance,
 
-            # Direction to goal - unit vector (2) - helps with directional awareness
+            # Direction to goal - unit vector (3) - helps with directional awareness
             direction_x,
             direction_y,
+            direction_z,
 
-            # Current velocity (2)
+            # Current velocity (3)
             vel_x / self.max_velocity,
             vel_y / self.max_velocity,
+            vel_z / self.max_velocity,
 
             # Velocity magnitude (1) - overall speed
             velocity_magnitude / self.max_velocity,
@@ -331,7 +340,9 @@ class MoveToPosition(DroneEnvironment):
 
     def sample_action(self):
         """Sample an action for exploration phase - returns action in [0, 1] range"""
-        return np.random.uniform(0, 1, size=(2,))
+        action = np.random.uniform(0, 1, size=(3,))
+        action[2] = 0  # Set z-action to 0 for 2D movement
+        return action
 
     def _render_task_specific_info(self):
         """Render navigation task specific information"""
