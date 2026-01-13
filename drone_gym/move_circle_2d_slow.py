@@ -1,4 +1,3 @@
-from matplotlib.markers import MarkerStyle
 import numpy as np
 import math
 import time
@@ -9,7 +8,7 @@ import io
 import cv2
 
 
-class MoveCircle2D(DroneEnvironment):
+class MoveCircle2DSlow(DroneEnvironment):
     """Reinforcement learning task for drone navigation to a target position"""
 
     def __init__(self, use_simulator: Literal[0,1], max_velocity: float = 0.25, step_time: float = 0.5,
@@ -34,7 +33,7 @@ class MoveCircle2D(DroneEnvironment):
         # Circular trajectory parameters
         self.circle_center = [0, 0]  # Center of the circular path (x, y)
         self.circle_radius = 0.5  # Radius of the circular path in meters
-        self.angular_velocity = 0.1  # Radians per step (adjust for faster/slower movement)
+        self.angular_velocity = 0.02  # SLOW
         self.current_angle = 0  # Current angle on the circle
         self.circle_z = 1.0  # Fixed z-height for the goal
 
@@ -458,7 +457,7 @@ class MoveCircle2D(DroneEnvironment):
         ax2.scatter(x[-1], y[-1], color='blue', s=80, label='Current',
                     edgecolors='black', linewidth=0.5, zorder=3)
         ax2.scatter(self.goal_position[0], self.goal_position[1],
-                    color='red', marker=MarkerStyle('*'), s=120, label='Goal',
+                    color='red', marker='*', s=120, label='Goal',
                     edgecolors='black', linewidth=1, zorder=3)
 
         ax2.set_xlim(-1.5, 1.5)
@@ -516,7 +515,7 @@ class MoveCircle2D(DroneEnvironment):
 
 if __name__ == "__main__":
     # quick sanity test
-    env = MoveCircle2D()
+    env = MoveCircle2DSlow()
     env.reset()
     env.drone.set_velocity_vector(2, 0, 0)
     time.sleep(2)

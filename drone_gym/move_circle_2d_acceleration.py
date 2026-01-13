@@ -1,4 +1,3 @@
-from matplotlib.markers import MarkerStyle
 import numpy as np
 import math
 import time
@@ -9,7 +8,7 @@ import io
 import cv2
 
 
-class MoveCircle2D(DroneEnvironment):
+class MoveCircle2DAcceleration(DroneEnvironment):
     """Reinforcement learning task for drone navigation to a target position"""
 
     def __init__(self, use_simulator: Literal[0,1], max_velocity: float = 0.25, step_time: float = 0.5,
@@ -57,6 +56,14 @@ class MoveCircle2D(DroneEnvironment):
 
         # Evaluation mode tracking
         self.successful_episodes_count = 0
+        
+        # Target velocity tracking
+        self.previous_goal_position = [0, 0.5, 1]
+        self.target_velocity = [0, 0, 0]
+        
+        # target_acceleration tracking
+        self.target_acceleration = [0, 0, 0]
+        
 
 
     def reset(self, training: bool = True):
@@ -82,7 +89,11 @@ class MoveCircle2D(DroneEnvironment):
         self._update_goal_position()
 
         # Initialize previous_distance for reward calculation
-        self.previous_distance = self._distance_to_target(self.drone.get_position())
+        self.previous_distance = self._distance_to_target(self.drone.get_position())       
+        # Reset target velocity tracking
+        self.previous_goal_position = self.goal_position.copy()
+        self.target_velocity = [0, 0, 0]
+        self.target_acceleration = [0, 0, 0]
 
         return state
 
@@ -146,6 +157,10 @@ class MoveCircle2D(DroneEnvironment):
     
     def _update_goal_position(self):
         """Update the goal position to follow a circular trajectory"""
+        # Store previous position before updating
+        self.previous_goal_position = self.goal_position.copy()
+        self.previous_target_velocity = self.target_velocity.copy()
+        
         # Calculate position on circle
         goal_x = self.circle_center[0] + self.circle_radius * np.cos(self.current_angle)
         goal_y = self.circle_center[1] + self.circle_radius * np.sin(self.current_angle)
@@ -154,6 +169,20 @@ class MoveCircle2D(DroneEnvironment):
         # Update goal position
         self.goal_position = [goal_x, goal_y, goal_z]
         
+        # Calculate target velocity (change in position per step)
+        self.target_velocity = [
+            (self.goal_position[0] - self.previous_goal_position[0]) / self.step_time,
+            (self.goal_position[1] - self.previous_goal_position[1]) / self.step_time,
+            (self.goal_position[2] - self.previous_goal_position[2]) / self.step_time
+        ]
+        
+        # Target acceleration (3)
+        self.target_acceleration = [
+            (self.target_velocity[0] - self.previous_target_velocity[0]) / (self.step_time),
+            (self.target_velocity[1] - self.previous_target_velocity[1]) / (self.step_time),
+            (self.target_velocity[2] - self.previous_target_velocity[2]) / (self.step_time),
+        ]
+                   
         # Increment angle for next step
         self.current_angle += self.angular_velocity
         
@@ -208,12 +237,22 @@ class MoveCircle2D(DroneEnvironment):
             vel_x / self.max_velocity,
             vel_y / self.max_velocity,
             vel_z / self.max_velocity,
-            
+                        
             # Velocity magnitude (1) - overall speed
             velocity_magnitude / self.max_velocity,
 
             # Velocity alignment with goal (1) - are we heading the right way?
-            velocity_alignment
+            velocity_alignment,
+            
+            # Target velocity (3) - normalized by max_velocity
+            self.target_velocity[0] / self.max_velocity,
+            self.target_velocity[1] / self.max_velocity,
+            self.target_velocity[2] / self.max_velocity,
+            
+            # Target acceleration (3)
+            self.target_acceleration[0],
+            self.target_acceleration[1],
+            self.target_acceleration[2]
         ]
 
         return np.array(state, dtype=np.float32)
@@ -225,7 +264,7 @@ class MoveCircle2D(DroneEnvironment):
             'position': position,
             'goal_position': self.goal_position,
             'distance_to_target': self._distance_to_target(position),
-            'done': self.done
+            'done': self.done,            
         }
 
     def _distance_to_target(self, position: List[float]) -> float:
@@ -458,7 +497,7 @@ class MoveCircle2D(DroneEnvironment):
         ax2.scatter(x[-1], y[-1], color='blue', s=80, label='Current',
                     edgecolors='black', linewidth=0.5, zorder=3)
         ax2.scatter(self.goal_position[0], self.goal_position[1],
-                    color='red', marker=MarkerStyle('*'), s=120, label='Goal',
+                    color='red', marker='*', s=120, label='Goal',
                     edgecolors='black', linewidth=1, zorder=3)
 
         ax2.set_xlim(-1.5, 1.5)
@@ -516,7 +555,7 @@ class MoveCircle2D(DroneEnvironment):
 
 if __name__ == "__main__":
     # quick sanity test
-    env = MoveCircle2D()
+    env = MoveCircle2DAcceleration()
     env.reset()
     env.drone.set_velocity_vector(2, 0, 0)
     time.sleep(2)
