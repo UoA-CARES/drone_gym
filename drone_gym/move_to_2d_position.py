@@ -89,7 +89,6 @@ class MoveToPosition(DroneEnvironment):
         # Modify action normalization based on phase
         if self.learning:
             # Learning phase: action is already in [-1, 1]
-            print(f" action received is: {action}")
             assert len(action)==3,'action should be length 3'
             processed_action = [action[0], action[1], 0] # Add vz=0 to fit 3D action shape of drone_environment
 
