@@ -23,7 +23,12 @@ def make(task_name: str, use_simulator: Literal[0,1], **kwargs):
         env = MoveToRandom3DPosition(use_simulator, **kwargs)
     elif task_name == "move_circle":
         env = MoveCircle2D(use_simulator, **kwargs)
-    
+    elif task_name == "move_circle_velocity":
+        env = MoveCircle2DVelocity(use_simulator, **kwargs)
+    elif task_name == "move_circle_acceleration":
+        env = MoveCircle2DAcceleration(use_simulator, **kwargs)
+    elif task_name == "move_circle_slow":
+        env = MoveCircle2DSlow(use_simulator, **kwargs)
     else:
         raise ValueError(f"Unknown task name: {task_name}")
     return env
