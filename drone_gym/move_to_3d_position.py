@@ -1,3 +1,4 @@
+from matplotlib.markers import MarkerStyle
 import numpy as np
 import math
 import time
@@ -203,7 +204,7 @@ class MoveTo3DPosition(DroneEnvironment):
             # Distance to goal (1)
             distance / self.max_distance,
 
-            # Direction to goal - unit vector (2) - helps with directional awareness
+            # Direction to goal - unit vector (3) - helps with directional awareness
             direction_x,
             direction_y,
             direction_z,
@@ -402,7 +403,7 @@ class MoveTo3DPosition(DroneEnvironment):
         ax2.scatter(x[-1], y[-1], color='blue', s=80, label='Current',
                     edgecolors='black', linewidth=0.5, zorder=3)
         ax2.scatter(self.goal_position[0], self.goal_position[1],
-                    color='red', marker='*', s=120, label='Goal',
+                    color='red', marker=MarkerStyle('*'), s=120, label='Goal',
                     edgecolors='black', linewidth=1, zorder=3)
 
         ax2.set_xlim(-1.5, 1.5)
@@ -460,7 +461,7 @@ class MoveTo3DPosition(DroneEnvironment):
 
 if __name__ == "__main__":
     # quick sanity test
-    env = MoveToRandom3DPosition()
+    env = MoveTo3DPosition(use_simulator=1)
     env.reset()
     env.drone.set_velocity_vector(2, 0, 0)
     time.sleep(2)

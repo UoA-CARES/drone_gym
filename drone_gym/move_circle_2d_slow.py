@@ -1,4 +1,4 @@
-from drone_gym.move_circle_2d_velocity import MarkerStyle
+from matplotlib.markers import MarkerStyle
 import numpy as np
 import math
 import time
@@ -9,11 +9,11 @@ import io
 import cv2
 
 
-class MoveToPosition(DroneEnvironment):
+class MoveCircle2DSlow(DroneEnvironment):
     """Reinforcement learning task for drone navigation to a target position"""
 
     def __init__(self, use_simulator: Literal[0,1], max_velocity: float = 0.25, step_time: float = 0.5,
-                 exploration_steps: int = 1000, episode_length: int = 40):
+                 exploration_steps: int = 1000, episode_length: int = 60):
         super().__init__(use_simulator, max_velocity, step_time)
 
         # RL Training parameters
@@ -25,11 +25,18 @@ class MoveToPosition(DroneEnvironment):
         self.learning = True
 
         # Task-specific parameters
-        self.goal_position = [0, 0.5, 1]  # Goal position
+        self.goal_position = [0, 0.5, 1]  # Goal position (will be updated dynamically)
         self.distance_threshold = 0.05  # Distance threshold to consider target reached
         self.max_xy_range = 2.0  # Maximum range in x or y direction (for normalizing components)
         self.max_distance = 2.83  # Maximum distance for normalization (diagonal of 2m x 2m space)
         self.time_tolerance = 0.15 # tolerance time for calculating travel distance
+        
+        # Circular trajectory parameters
+        self.circle_center = [0, 0]  # Center of the circular path (x, y)
+        self.circle_radius = 0.5  # Radius of the circular path in meters
+        self.angular_velocity = 0.02  # SLOW
+        self.current_angle = 0  # Current angle on the circle
+        self.circle_z = 1.0  # Fixed z-height for the goal
 
         # hard coded z limit
         self.boundary = [self.xy_limit, self.xy_limit, self.z_limit, self.z_limit + 1]
@@ -69,6 +76,10 @@ class MoveToPosition(DroneEnvironment):
 
         # Call parent reset
         state = super().reset(training)
+        
+        # Reset the circular trajectory angle
+        self.current_angle = 0
+        self._update_goal_position()
 
         # Initialize previous_distance for reward calculation
         self.previous_distance = self._distance_to_target(self.drone.get_position())
@@ -91,7 +102,7 @@ class MoveToPosition(DroneEnvironment):
         if self.learning:
             # Learning phase: action is already in [-1, 1]
             assert len(action)==3,'action should be length 3'
-            processed_action = action
+            processed_action = [action[0], action[1], 0] # Add vz=0 to fit 3D action shape of drone_environment
 
         else:
             # Exploration phase: convert from [0, 1] to [-1, 1]
@@ -126,7 +137,29 @@ class MoveToPosition(DroneEnvironment):
             return super().step([0, 0, 0])
 
         # Call parent step method with processed action
-        return super().step(processed_action)
+        result = super().step(processed_action)
+        
+        # Update the goal position to move in a circle
+        self._update_goal_position()
+        
+        return result
+    
+    def _update_goal_position(self):
+        """Update the goal position to follow a circular trajectory"""
+        # Calculate position on circle
+        goal_x = self.circle_center[0] + self.circle_radius * np.cos(self.current_angle)
+        goal_y = self.circle_center[1] + self.circle_radius * np.sin(self.current_angle)
+        goal_z = 1.0  # Fixed z-height
+        
+        # Update goal position
+        self.goal_position = [goal_x, goal_y, goal_z]
+        
+        # Increment angle for next step
+        self.current_angle += self.angular_velocity
+        
+        # Keep angle in [0, 2*pi] range
+        if self.current_angle >= 2 * np.pi:
+            self.current_angle -= 2 * np.pi
 
 
     def _reset_task_state(self):
@@ -157,8 +190,6 @@ class MoveToPosition(DroneEnvironment):
 
         # How well velocity aligns with goal direction (1 = perfect, -1 = opposite)
         velocity_alignment = (vel_x * direction_x + vel_y * direction_y + vel_z * direction_z) / (velocity_magnitude + 1e-6) if velocity_magnitude > 0 else 0
-
-
         state = [
             # Relative position to goal (2) - better than absolute positions
             relative_x / self.max_xy_range,
@@ -177,7 +208,7 @@ class MoveToPosition(DroneEnvironment):
             vel_x / self.max_velocity,
             vel_y / self.max_velocity,
             vel_z / self.max_velocity,
-
+            
             # Velocity magnitude (1) - overall speed
             velocity_magnitude / self.max_velocity,
 
@@ -287,17 +318,16 @@ class MoveToPosition(DroneEnvironment):
         """Check if navigation task is complete"""
         distance = current_state['distance_to_target']
 
-        # Success condition
+        # Track success but don't terminate episode
         if distance < self.distance_threshold:
-            self.done = True
-            # Increment success counter only during evaluation
-            if self.need_to_change_battery():
-                self.change_battery()
-
+            # Increment success counter every step the drone stays on target
             if self._is_evaluating:
                 self.successful_episodes_count += 1
-            return True
-
+            self.done = True
+        else:
+            self.done = False
+        
+        # Episode only ends when max steps reached (handled in _check_if_truncated)
         return False
 
     def is_in_testing_zone(self):
@@ -486,7 +516,7 @@ class MoveToPosition(DroneEnvironment):
 
 if __name__ == "__main__":
     # quick sanity test
-    env = MoveToPosition(use_simulator=1)
+    env = MoveCircle2DSlow(use_simulator=1)
     env.reset()
     env.drone.set_velocity_vector(2, 0, 0)
     time.sleep(2)
@@ -494,10 +524,5 @@ if __name__ == "__main__":
     env.drone.set_velocity_vector(0, 2, 0)
     time.sleep(2)
     env.reset()
-    # for _ in range(3):
-    #     a = env.sample_action()
-    #     s, r, d, t, i = env.step(a)
-    #     assert s.shape == (8,)  # Updated observation space size
-    #     assert -50 <= r <= 150  # Updated reward range
     env.close()
     print("Sanity-check passed")
