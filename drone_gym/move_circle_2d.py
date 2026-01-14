@@ -233,67 +233,9 @@ class MoveCircle2D(DroneEnvironment):
         return math.sqrt(
             (position[0] - self.goal_position[0])**2 +
             (position[1] - self.goal_position[1])**2
-        )
+        ) 
 
-    # def _calculate_reward(self, current_state: Dict[str, Any]) -> float:
-    #     """Calculate reward for navigation task"""
-    #     current_distance = current_state['distance_to_target']
 
-    #     distance_improvement = self.previous_distance - current_distance
-
-    #     print("***")
-    #     print(f"Previous distance {self.previous_distance}. Current Distance {current_distance}")
-    #     print(f"Distance improve is {distance_improvement}")
-    #     print("***")
-
-    #     reward = self.distance_improvement_multiplier * distance_improvement
-
-    #     if current_distance < self.distance_threshold:
-    #         reward += self.success_reward
-
-    #     if self.boundary_penalise:
-    #         reward += self.out_of_bounds_penalty
-    #         self.boundary_penalise = False
-
-    #     # Update for the next step
-    #     self.previous_distance = current_distance
-
-    #     return reward
-
-    # def _calculate_reward(self, current_state: Dict[str, Any]) -> float:
-    #     position = current_state['position']
-    #     distance = self._distance_to_target(position)
-
-    #     # Base reward is negative distance (closer = higher reward)
-    #     # currently this reward will never be positive and is too low. assuming the max distance is (3,3,3) reward = -5.2.
-    #     # Changed from reward = -distance to reward = 50-10*distance
-    #     reward = 20 - 20*distance
-
-    #     # Bonus for reaching target
-    #     if distance < self.distance_threshold:
-    #         reward += self.success_reward
-
-    #     if self.boundary_penalise:
-    #         reward += self.out_of_bounds_penalty
-    #         self.boundary_penalise = False
-
-    #     return reward
-
-    # def _calculate_reward(self, current_state: Dict[str, Any]) -> float:
-    #     position = current_state['position']
-    #     distance = self._distance_to_target(position)
-
-    #     # Base reward is negative distance (closer = higher reward)
-    #     # currently this reward will never be positive and is too low. assuming the max distance is (3,3,3) reward = -5.2.
-    #     # Changed from reward = -distance to reward = 50-10*distance
-    #     reward = 1 / (1 + distance)
-
-    #     # Bonus for reaching target
-    #     if distance < self.distance_threshold:
-    #         reward += self.success_reward
-
-        # return reward * self.reward_multiplier
-    
     def _calculate_reward(self, current_state: Dict[str, Any]) -> float:
         position = current_state['position']
         distance = self._distance_to_target(position)

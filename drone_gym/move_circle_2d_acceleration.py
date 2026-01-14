@@ -64,6 +64,9 @@ class MoveCircle2DAcceleration(DroneEnvironment):
         # target_acceleration tracking
         self.target_acceleration = [0, 0, 0]
         
+        # Override observation space for this task (12 base + 3 target velocity + 3 target acceleration)
+        self.observation_space = 18
+        
 
 
     def reset(self, training: bool = True):
