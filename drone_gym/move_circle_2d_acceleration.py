@@ -34,7 +34,7 @@ class MoveCircle2DAcceleration(DroneEnvironment):
         # Circular trajectory parameters
         self.circle_center = [0, 0]  # Center of the circular path (x, y)
         self.circle_radius = 0.5  # Radius of the circular path in meters
-        self.angular_velocity = 0.1  # Radians per step (adjust for faster/slower movement)
+        self.angular_velocity = 0.08  # Radians per step (adjust for faster/slower movement)
         self.current_angle = 0  # Current angle on the circle
         self.circle_z = 1.0  # Fixed z-height for the goal
 
