@@ -84,7 +84,7 @@ RUN echo 'alias sim="cd /app/CrazySim/crazyflie-firmware && \
 
 # Temporary
 WORKDIR /app/drone_gym
-RUN git fetch && git checkout main && git pull
+RUN git fetch && git checkout rebuild && git pull
 WORKDIR /app/gymnasium_envrionments/scripts
 RUN git fetch && git checkout main && git pull
 
