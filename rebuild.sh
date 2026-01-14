@@ -1,6 +1,11 @@
 # This script rebuilds the CrazySim simulator because builds are flakey and often fail silently, needing to be rebuilt.
 # Usage: bash rebuild.sh <base_directory>
 base_dir="$1"
+if [ -z "$base_dir" ]; then
+  echo "Usage: bash $0 <base_directory>"
+  exit 1
+fi
+
 current_dir=$(pwd)
 
 cd $base_dir/CrazySim/crazyflie-firmware # Simulator (Gazebo)

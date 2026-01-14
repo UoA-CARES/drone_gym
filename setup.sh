@@ -1,6 +1,12 @@
-base_dir=$HOME/Documents/nwil508
-venv_dir=$base_dir/.venv/drone
+# Sets up cares_reinforcement_learning, gymnasium_envrionments, drone_gym, and CrazySim with a unified .venv in a specified base directory.
+# Usage: bash setup.sh <base_directory>
+base_dir=$1
+if [ -z "$base_dir" ]; then
+  echo "Usage: bash $0 <base_directory>"
+  exit 1
+fi
 
+venv_dir=$base_dir/.venv/drone
 echo "Setting up the drone environment..."
 
 # # Install Gazebo and dependencies (COMMENT OUT if already installed)
