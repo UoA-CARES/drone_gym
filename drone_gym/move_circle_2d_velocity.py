@@ -483,7 +483,7 @@ class MoveCircle2DVelocity(DroneEnvironment):
 
 if __name__ == "__main__":
     # quick sanity test
-    env = MoveCircle2DVelocity()
+    env = MoveCircle2DVelocity(use_simulator=1)
     env.reset()
     env.drone.set_velocity_vector(2, 0, 0)
     time.sleep(2)
