@@ -26,6 +26,9 @@ RUN apt-get update && \
 
 # CrazySim (recursive)
 RUN git clone https://github.com/gtfactslab/CrazySim.git --recursive
+RUN cd CrazySim && git checkout 3246b07269c20413530269955ca054dab4426c15
+RUN cd CrazySim/crazyflie-lib-python && git checkout 9f50dce2dbba7d3836a86f6965095dbb43242a07
+RUN cd CrazySim/crazyflie-firmware && git checkout 6a4d2d006ba3c394949582c1c2eedd4b84fce17e
 
 # Drone Gym
 WORKDIR /app
