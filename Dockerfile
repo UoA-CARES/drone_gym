@@ -26,9 +26,6 @@ RUN apt-get update && \
 
 # CrazySim (recursive)
 RUN git clone https://github.com/gtfactslab/CrazySim.git --recursive
-# CFClient (for manual control)
-WORKDIR /app/CrazySim
-RUN git clone https://github.com/llanesc/crazyflie-clients-python.git
 
 # Drone Gym
 WORKDIR /app
