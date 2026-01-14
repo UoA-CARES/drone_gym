@@ -1,14 +1,14 @@
 
 
 from typing import Literal
-from drone_gym.move_to_2d_position import MoveToPosition
-from drone_gym.move_to_random_2d_position import MoveToRandomPosition
-from drone_gym.move_to_3d_position import MoveTo3DPosition
-from drone_gym.move_to_random_3d_position import MoveToRandom3DPosition
-from drone_gym.move_circle_2d import MoveCircle2D
-from drone_gym.move_circle_2d_velocity import MoveCircle2DVelocity
-from drone_gym.move_circle_2d_acceleration import MoveCircle2DAcceleration
-from drone_gym.move_circle_2d_slow import MoveCircle2DSlow
+from drone_gym.tasks.move_to_2d_position import MoveToPosition
+from drone_gym.tasks.move_to_random_2d_position import MoveToRandomPosition
+from drone_gym.tasks.move_to_3d_position import MoveTo3DPosition
+from drone_gym.tasks.move_to_random_3d_position import MoveToRandom3DPosition
+from drone_gym.tasks.move_circle.move_circle_2d import MoveCircle2D
+from drone_gym.tasks.move_circle.move_circle_2d_velocity import MoveCircle2DVelocity
+from drone_gym.tasks.move_circle.move_circle_2d_acceleration import MoveCircle2DAcceleration
+from drone_gym.tasks.move_circle.move_circle_2d_slow import MoveCircle2DSlow
 
 
 def make(task_name: str, use_simulator: Literal[0,1], **kwargs):

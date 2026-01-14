@@ -76,4 +76,4 @@ rm -rf /tmp/crazyflie* # Clean up any existing temporary crazyflie files
 gnome-terminal -- bash -c "cd $base_dir/CrazySim/crazyflie-firmware; bash tools/crazyflie-simulation/simulator_files/gazebo/launch/sitl_singleagent.sh -m crazyflie -x 0 -y 0; exec bash"
 
 # Run training script
-python $base_dir/gymnasium_envrionments/scripts/run.py train cli drone --task move_to_random_position SAC
+python $base_dir/gymnasium_envrionments/scripts/run.py train cli drone --task move_random_2d SAC
