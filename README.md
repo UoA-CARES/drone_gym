@@ -12,97 +12,62 @@ Developed by the CARES Lab at the University of Auckland.
 
 > **Note**: This environment is designed to work with the [CARES Gymnasium Environments](https://github.com/UoA-CARES/gymnasium_envrionments) framework for running RL training tasks.
 
-## Installation
+## Setup Instructions
+For all installation, run the **[setup.sh](setup.sh)** script.
 
-### Prerequisites
-- Python 3.8 or higher (tested with Python 3.10)
+### Hardware Setup
+If using real Crazyflie, for detailed hardware setup instructions, please refer to the documentation in the `docs/` folder:
+- **[Vicon System Setup](docs/VICON_SETUP.md)** - Connect and configure the motion capture system
+- **[Hardware Setup Guide](docs/HARDWARE_SETUP.md)** - Drone positioning, battery management, and troubleshooting
+
+
+### Useful links for reference
 - [CARES Gymnasium Environments](https://github.com/UoA-CARES/gymnasium_envrionments) (for running RL tasks)
 - [CARES Reinforcement Learning](https://github.com/UoA-CARES/cares_reinforcement_learning) (RL algorithms)
-
-**If running real crazyflie**
-- Crazyflie drone with flow deck attached
-- Access to Vicon motion capture system
-
-**If running in Simulation**
-- [CrazySim] (https://github.com/gtfactslab/CrazySim)
+- [CrazySim](https://github.com/gtfactslab/CrazySim)
 
 
-
-### Setup Instructions
-
-1. **Clone the repository**
-   ```bash
-   git clone https://github.com/UoA-CARES/drone_gym.git
-   cd drone_gym
-   ```
-
-2. **Create a virtual environment (recommended)**
-   ```bash
-   python3 -m venv venv
-   source venv/bin/activate  # On Windows: venv\Scripts\activate
-   ```
-
-3. **Install dependencies**
-   ```bash
-   pip install -r requirements.txt
-   ```
-
-4. **Install the package in development mode**
-   ```bash
-   pip install -e .
-   ```
-
-5. **Install the CARES Reinforcement Learning library** (RL algorithms)
-   ```bash
-   git clone https://github.com/UoA-CARES/cares_reinforcement_learning.git
-   cd cares_reinforcement_learning
-   pip install -e .
-   cd ..
-   ```
-
-6. **Install the CARES Gymnasium Environments framework** (for running RL tasks)
-   ```bash
-   git clone https://github.com/UoA-CARES/gymnasium_envrionments.git
-   cd gymnasium_envrionments
-   pip install -e .
-   ```
-
-7. **Install CrazySim simulator** (for running RL tasks in simulation)
-   Follow instructions [here] (https://github.com/gtfactslab/CrazySim)
 
 ## Project Structure
 
-```
+```text
 drone_gym/
-├── drone_gym/              # Main package directory
-│   ├── __init__.py        # Package initialization
-│   ├── drone.py            with PID control and Crazyflie integration
+├── drone_gym/                # Main package directory
+│   ├── __init__.py           # Package initialization
+│   ├── drone_setup.py        # Base DroneSetup class for drone setup and control
+│   ├── drone.py              # Additional functions with PID control and Crazyflie integration
+│   ├── drone_sim.py          # Additional functions needed for running in simulation
 │   ├── drone_environment.py  # Base DroneEnvironment class for RL tasks
-│   ├── move_to_2d_position.py   # Example: Move to specific position
-│   ├── move_to_random_2d_position.py  # Example: Move to random positions
-│   ├── functionality_tests.py      # Testing utilities
-│   ├── utils/             # Utility modules
-│   │   ├── vicon_connection_class.py  # Vicon motion capture interface
-│   │   ├── test_grab_frame.py        # Frame capture testing
-│       ├── single_cf_grounded.py
-│       └── test_link.py
-├── requirements.txt       # Python dependencies
-├── setup.py              # Package installation configuration
-└── README.md             # This file
+│   ├── task_factory.py       # Selects appropriate task
+│   ├── tasks/                # Task examples
+│   │   ├── move_to_2d_position.py           # Example: Move to specific 2D position
+│   │   ├── move_to_3d_position.py           # Example: Move to specific 3D position
+│   │   ├── move_to_random_2d_position.py    # Example: Move to random 2D positions
+│   │   ├── move_to_random_3d_position.py    # Example: Move to random 3D positions
+│   │   └── move_circle                      # Example: Move to a target moving in a circle
+│   ├── tests/                # Testing for various things 
+│   │   ├── connection_test.py               # Testing connection with CrazySim
+│   │   ├── functionality_tests.py           # Testing utilities
+│   │   ├── sim_functionality_tests.py       # Testing utilities in simulation
+│   │   └── move_to_position.py              # Testing movement of drone to position 
+│   ├── utils/                # Utility modules
+│       ├── vicon_connection_class.py        # Vicon motion capture interface
+│       └── test_grab_frame.py               # Frame capture testing
+├── Dockerfile                # Setting up Docker
+├── requirements.txt          # Python dependencies
+├── setup.py                  # Package installation configuration
+├── setup.sh                  # Manage installation
+└── README.md                 # This file
 ```
 
 ### Key Components
 
-- **`drone.py`**: Implements the low-level drone control with PID velocity/position controllers, Vicon integration, and safety boundary checking
+- **`drone_setup.py`**: Base class for implementing the low-level drone setup and control.
+- **`drone.py`**: Child class of `drone_setup.py` with PID velocity/position controllers, Vicon integration, and safety boundary checking
+- **`drone_sim.py`**: Child class of `drone_setup.py` with functions for running the drone in simulation
 - **`drone_environment.py`**: Abstract base class for creating custom RL environments following the Gymnasium API
 - **`utils/vicon_connection_class.py`**: Handles UDP communication with Vicon motion capture system for precise position tracking
 
-## Hardware Setup
-
-For detailed hardware setup instructions, please refer to the documentation in the `docs/` folder:
-
-- **[Vicon System Setup](docs/VICON_SETUP.md)** - Connect and configure the motion capture system
-- **[Hardware Setup Guide](docs/HARDWARE_SETUP.md)** - Drone positioning, battery management, and troubleshooting
 
 ## Usage
 
@@ -112,10 +77,10 @@ This environment is designed to be used with the [CARES Gymnasium Environments](
 
 ```bash
 # Navigate to the gymnasium_envrionments directory
-cd gymnasium_envrionments
+cd gymnasium_envrionments/scripts
 
 # Run a training task (example)
-python train.py run --env drone_gym --task move_to_2d_position
+python train.py run --env drone_gym --task move_2d
 ```
 
 Refer to the [gymnasium_envrionments documentation](https://github.com/UoA-CARES/gymnasium_envrionments) for detailed instructions on running tasks and configuring training parameters.
@@ -151,7 +116,7 @@ drone.stop()
 
 ### Creating Custom RL Tasks
 
-Extend the `DroneEnvironment` base class to create custom tasks:
+Extend the `DroneEnvironment` base class to create custom tasks in the `tasks` folder:
 
 ```python
 from drone_gym.drone_environment import DroneEnvironment
