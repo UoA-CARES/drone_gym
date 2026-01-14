@@ -1,6 +1,6 @@
 import numpy as np
 from typing import List, Literal
-from drone_gym.move_to_2d_position import MoveToPosition
+from drone_gym.tasks.move_to_2d_position import MoveToPosition
 
 
 class MoveToRandomPosition(MoveToPosition):

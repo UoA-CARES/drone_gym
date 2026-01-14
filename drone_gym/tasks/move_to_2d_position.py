@@ -1,4 +1,4 @@
-from drone_gym.move_circle_2d_velocity import MarkerStyle
+from matplotlib.markers import MarkerStyle
 import numpy as np
 import math
 import time
