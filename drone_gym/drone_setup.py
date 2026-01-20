@@ -13,6 +13,8 @@ from cflib.utils import uri_helper
 class DroneSetup:
     def __init__(self, uri=None):
         # Drone Properties
+        
+        print("Made base drone")
         self.URI = uri if uri is not None else uri_helper.uri_from_env(
             default="radio://0/100/2M/E7E7E7E7E7"
         )  # changed radio channel in 22/9

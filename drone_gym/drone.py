@@ -13,6 +13,7 @@ from cflib.utils.power_switch import PowerSwitch
 class Drone(DroneSetup):
     def __init__(self):
         super().__init__()
+        print("Made vicon drone 1")
         # Drone Properties
         self.URI = uri_helper.uri_from_env(
             default="radio://0/100/2M/E7E7E7E7E7"
@@ -24,11 +25,16 @@ class Drone(DroneSetup):
 
         # Vicon Integration
         self.drone_name = "Crzayme"
+        
+        print("Made vicon drone 2")
         self.vicon = vi()
+        print("Made vicon drone 3")
 
     def _update_position(self):
         vicon_thread = None
         try:
+            while (not hasattr(self, "vicon")):
+                pass
             # It takes some time for the vicon to get values
             vicon_thread = threading.Thread(target=self.vicon.main_loop)
             vicon_thread.start()
@@ -43,6 +49,10 @@ class Drone(DroneSetup):
             while self.is_running() and not self.emergency_event.is_set():
                 try:
                     position_array = self.vicon.getPos(self.drone_name)
+                    
+                    while(position_array is None):
+                        print("Waiting for position")
+                    
                     if position_array is not None:
                         current_time = time.time()
 
@@ -86,7 +96,7 @@ class Drone(DroneSetup):
                     )
 
         except Exception as e:
-            print(f"[Drone] Critical error in position thread: {str(e)}")
+            print("[Drone] Critical error in position thread:", e)
         finally:
             # Signal the vicon thread to join
             self.vicon.run_interface = False

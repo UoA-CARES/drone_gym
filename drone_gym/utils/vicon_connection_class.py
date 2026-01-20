@@ -28,9 +28,13 @@ class ViconInterface():
         self.udp_port = udp_port
         self.udp_ip = udp_ip
 
+        print("Connecting to ", udp_ip, udp_port)
+
         # Bind the listener
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.sock.bind((udp_ip, udp_port))
+        
+        print("Connected!!")
 
         # Used to time packet frequency to ensure FPS
         self.time_last_packet = 0

@@ -13,9 +13,12 @@ class DroneEnvironment(ABC):
 
     def __init__(self, use_simulator: Literal[0,1], max_velocity: float = 0.5, step_time: float = 0.5):
         # Set the appropriate drone instance based on use_simulator flag
+        print("use_simulator", use_simulator)
         if use_simulator:
+            print("Made DroneSim")
             self.drone = DroneSim()
         else:
+            print("Made Drone")
             self.drone = Drone()
             
         self.reset_position = [0, 0, 1]
