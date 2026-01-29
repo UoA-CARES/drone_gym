@@ -1,24 +1,13 @@
 import socket
 import time
-import builtins
 from struct import unpack
-from enum import Enum
 from datetime import datetime
 import math
-from random import randint
-import queue
-from threading import Thread
 
 us_start = int(time.time() * 1000 * 1000)
 
 def micros():
     us_now = int(time.time() * 1000 * 1000)
-    return int(us_now - us_start)
-
-
-def micros():
-    us_now = int(time.time() * 1000 * 1000)
-
     return int(us_now - us_start)
 
 class ViconInterface():
@@ -33,7 +22,7 @@ class ViconInterface():
         # Bind the listener
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.sock.bind((udp_ip, udp_port))
-        
+
         print("Connected!!")
 
         # Used to time packet frequency to ensure FPS
@@ -119,7 +108,7 @@ class ViconInterface():
 
                         #print("p{:.3f},{:.3f},{:.3f},{:.3f},{:.3f},{:.3f}".format(ned_x, ned_y, ned_z, ned_roll, ned_pitch, ned_yaw))
         except Exception as e:
-            pass
+            print("Vicon Interface Exception: ", e)
         finally:
             self.sock.close()
 
@@ -137,5 +126,4 @@ class ViconInterface():
 
 
 if __name__ == "__main__":
-
     print(1)
