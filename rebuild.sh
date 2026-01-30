@@ -1,4 +1,4 @@
-# This script rebuilds the CrazySim simulator because builds are flakey and often fail silently, needing to be rebuilt.
+# This script rebuilds the CrazySim simulator because builds are flaky and often fail silently, needing to be rebuilt.
 # Usage: bash rebuild.sh <base_directory>
 base_dir="$1"
 if [ -z "$base_dir" ]; then
