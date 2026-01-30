@@ -6,7 +6,7 @@ if [ -z "$base_dir" ]; then
   exit 1
 fi
 
-venv_dir=$base_dir/.venv/drone
+venv_dir="$base_dir/.venv/drone"
 echo "Setting up the drone environment..."
 
 # # Install Gazebo and dependencies (COMMENT OUT if already installed)
