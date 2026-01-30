@@ -13,5 +13,5 @@ echo "//" >> tools/crazyflie-simulation/simulator_files/gazebo/plugins/CrazySim/
 mkdir -p sitl_make/build && cd $_
 cmake ..
 make all
-cd $current_dir
+cd "$current_dir"
 echo "Rebuilt CrazySim."
