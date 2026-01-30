@@ -3,6 +3,7 @@ import time
 from struct import unpack
 from datetime import datetime
 import math
+from threading import Thread
 
 us_start = int(time.time() * 1000 * 1000)
 
@@ -46,6 +47,7 @@ class ViconInterface():
         try:
             while self.run_interface:
                 # Block until there is a packet
+                # print("Waiting for Vicon Packet...")
                 b, addr = self.sock.recvfrom(256)
 
                 # First 5 bytes are the frame # and # of items in frame
@@ -53,7 +55,7 @@ class ViconInterface():
                 ItemsInBlock = b[4]
 
                 byte_offset = 5
-
+                
                 # Loop for each item
                 for i in range(0, ItemsInBlock):
                     # Read item id
@@ -125,5 +127,22 @@ class ViconInterface():
             return None
 
 
+# --- Testing ---
+
 if __name__ == "__main__":
-    print(1)
+    print("Starting Vicon Interface Test")
+    vicon = ViconInterface()
+    main_loop_thread = Thread(target = vicon.main_loop)
+    main_loop_thread.start()
+    
+    while True:
+        time.sleep(1)
+        if not vicon.have_recv_packet:
+            print("No packet received yet")
+            continue
+        
+        pos = vicon.getPos("Crzayme")
+        vel = vicon.getVel("Crzayme")
+        print("Position: ", pos)
+        print("Velocity: ", vel)
+    

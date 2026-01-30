@@ -14,7 +14,7 @@ If the Vicon system is not connected properly, you will the following message in
 
 ## Setup Steps
 
-### 1. Turn on the Vicon Cameras
+### 1. Set Up Hardware
 
 Click on the two buttons shown in the picture below. **Both top and bottom should be on**.
 
@@ -22,10 +22,12 @@ Click on the two buttons shown in the picture below. **Both top and bottom shoul
   <img src="https://github.com/user-attachments/assets/721651c8-8104-4b07-b570-9dceae6f8fc1" width="400" alt="Vicon cameras on/off buttons">
 </p>
 
+If using a separate device to control the drones, connect the device to the local network. The easiest way is to use an ethernet cable to connect directly to the router (ask the technician for a cable).
 
-![20260130_153850](https://github.com/user-attachments/assets/cde34acd-26e2-4846-a7b4-b5de495cb2fd)
-![20260130_153900](https://github.com/user-attachments/assets/fa3b6788-31bc-41c0-92be-9cab619794c9)
-
+<p align="center">
+  <img src="https://github.com/user-attachments/assets/cde34acd-26e2-4846-a7b4-b5de495cb2fd" width="400" alt="Connecting ethernet cable to router">
+  <img src="https://github.com/user-attachments/assets/fa3b6788-31bc-41c0-92be-9cab619794c9" width="400" alt="Connecting ethernet cable to device">
+</p>
 
 ### 2. Open Vicon Tracker Application
 
@@ -42,7 +44,8 @@ Click on the two buttons shown in the picture below. **Both top and bottom shoul
 
 1. Scroll down to the **"UDP OBJECT STREAM"** section
 2. Enable the UDP stream
-3. Change the IP address to: **`10.104.144.214`**
+3. Change the IP address to: **`192.168.10.3`** (used to be `10.104.144.214`)
+4. Change the port to: **`51001`**
 
 <div align="center">
   <img src="https://github.com/user-attachments/assets/edff9550-3619-4c04-8682-79550698886c" width="400" alt="UDP OBJECT STREAM configuration">
