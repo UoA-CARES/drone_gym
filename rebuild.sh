@@ -8,7 +8,7 @@ fi
 
 current_dir=$(pwd)
 
-cd $base_dir/CrazySim/crazyflie-firmware # Simulator (Gazebo)
+cd "$base_dir/CrazySim/crazyflie-firmware" # Simulator (Gazebo)
 echo "//" >> tools/crazyflie-simulation/simulator_files/gazebo/plugins/CrazySim/crazysim_plugin.cpp # Bypass caching
 mkdir -p sitl_make/build && cd $_
 cmake ..
