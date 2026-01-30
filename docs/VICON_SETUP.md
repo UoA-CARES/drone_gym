@@ -22,6 +22,11 @@ Click on the two buttons shown in the picture below. **Both top and bottom shoul
   <img src="https://github.com/user-attachments/assets/721651c8-8104-4b07-b570-9dceae6f8fc1" width="400" alt="Vicon cameras on/off buttons">
 </p>
 
+
+![20260130_153850](https://github.com/user-attachments/assets/cde34acd-26e2-4846-a7b4-b5de495cb2fd)
+![20260130_153900](https://github.com/user-attachments/assets/fa3b6788-31bc-41c0-92be-9cab619794c9)
+
+
 ### 2. Open Vicon Tracker Application
 
 1. Launch the **Vicon Tracker app** (the green one)
