@@ -25,7 +25,7 @@ class Drone(DroneSetup):
 
         # Vicon Integration
         self.drone_name = "Crzayme"
-        
+
         print("Made vicon drone 2")
         self.vicon = vi()
         print("Made vicon drone 3")
@@ -34,7 +34,7 @@ class Drone(DroneSetup):
         vicon_thread = None
         try:
             while (not hasattr(self, "vicon")):
-                pass
+                print("Waiting for vicon initialization...")
             # It takes some time for the vicon to get values
             vicon_thread = threading.Thread(target=self.vicon.main_loop)
             vicon_thread.start()
@@ -49,10 +49,10 @@ class Drone(DroneSetup):
             while self.is_running() and not self.emergency_event.is_set():
                 try:
                     position_array = self.vicon.getPos(self.drone_name)
-                    
+
                     while(position_array is None):
-                        print("Waiting for position")
-                    
+                        print("Waiting for vicon position...")
+
                     if position_array is not None:
                         current_time = time.time()
 
