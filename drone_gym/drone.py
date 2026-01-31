@@ -13,7 +13,6 @@ from cflib.utils.power_switch import PowerSwitch
 class Drone(DroneSetup):
     def __init__(self):
         super().__init__()
-        print("Made vicon drone 1")
         # Drone Properties
         self.URI = uri_helper.uri_from_env(
             default="radio://0/100/2M/E7E7E7E7E7"
@@ -25,10 +24,7 @@ class Drone(DroneSetup):
 
         # Vicon Integration
         self.drone_name = "Crzayme"
-
-        print("Made vicon drone 2")
         self.vicon = vi()
-        print("Made vicon drone 3")
 
     def _update_position(self):
         vicon_thread = None
