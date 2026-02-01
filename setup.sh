@@ -15,6 +15,10 @@ cd $base_dir
 python3 -m venv $venv_dir  # Create virtual environment
 source $venv_dir/bin/activate # Or change to your virtual environment path
 
+# Dependencies
+sudo apt update
+sudo apt install git
+
 # # Clone repositories (COMMENT OUT if already cloned)
 cd $base_dir
 git clone https://github.com/UoA-CARES/cares_reinforcement_learning.git
