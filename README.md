@@ -24,6 +24,8 @@ Developed by the CARES Lab at the University of Auckland.
 
 Setup is now automated - run `bash setup.sh`. If you run into any issues refer to the original instructions at the repositories below.
 
+Note that if you simply want to run a training, you may not need to install locally - instead refer to the docker instructions in 'Running the Simulator' or 'Running the Simulator Standalone' depending on your use case.
+
 ### Source Repositories
 
 - [CARES Gymnasium Environments](https://github.com/UoA-CARES/gymnasium_envrionments) - Framework for running RL tasks
