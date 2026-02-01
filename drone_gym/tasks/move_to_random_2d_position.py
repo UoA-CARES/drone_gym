@@ -1,16 +1,16 @@
 import numpy as np
 from typing import List, Literal
-from drone_gym.move_to_3d_position import MoveTo3DPosition
+from drone_gym.tasks.move_to_2d_position import MoveToPosition
 
 
-class MoveToRandom3DPosition(MoveTo3DPosition):
+class MoveToRandomPosition(MoveToPosition):
     """Reinforcement learning task for drone navigation to randomized target positions"""
 
     def __init__(self, use_simulator: Literal[0,1], max_velocity: float = 0.20, step_time: float = 0.5,
                  exploration_steps: int = 1000, episode_length: int = 40,
                  x_range: List[float] = [-1.0, 1.0],
                  y_range: List[float] = [-1.0, 1.0],
-                 z_range: List[float] = [0.5, 2.5]):
+                 z_range: List[float] = [1.0, 1.0]):
 
         # Store ranges
         self.x_range = x_range
@@ -18,8 +18,7 @@ class MoveToRandom3DPosition(MoveTo3DPosition):
         self.z_range = z_range
 
         # Initialize parent class (this sets initial goal_position)
-        super().__init__(use_simulator, max_velocity, step_time, exploration_steps, episode_length,
-                         x_range=x_range, y_range=y_range, z_range=z_range)
+        super().__init__(use_simulator, max_velocity, step_time, exploration_steps, episode_length)
 
         # Randomize the initial goal position
         self._randomize_goal_position()
@@ -32,7 +31,6 @@ class MoveToRandom3DPosition(MoveTo3DPosition):
             np.random.uniform(self.z_range[0], self.z_range[1])
         ]
         print(f"New goal position: [{self.goal_position[0]:.3f}, {self.goal_position[1]:.3f}, {self.goal_position[2]:.3f}]")
-        
 
     def reset(self, training: bool = True):
         """Reset the drone and randomize the target position"""

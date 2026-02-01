@@ -1,3 +1,4 @@
+from matplotlib.markers import MarkerStyle
 import numpy as np
 import math
 import time
@@ -8,11 +9,11 @@ import io
 import cv2
 
 
-class MoveToPosition(DroneEnvironment):
+class MoveCircle2DVelocity(DroneEnvironment):
     """Reinforcement learning task for drone navigation to a target position"""
 
     def __init__(self, use_simulator: Literal[0,1], max_velocity: float = 0.25, step_time: float = 0.5,
-                 exploration_steps: int = 1000, episode_length: int = 40):
+                 exploration_steps: int = 1000, episode_length: int = 60):
         super().__init__(use_simulator, max_velocity, step_time)
 
         # RL Training parameters
@@ -24,11 +25,18 @@ class MoveToPosition(DroneEnvironment):
         self.learning = True
 
         # Task-specific parameters
-        self.goal_position = [0, 0.5, 1]  # Goal position
+        self.goal_position = [0, 0.5, 1]  # Goal position (will be updated dynamically)
         self.distance_threshold = 0.05  # Distance threshold to consider target reached
         self.max_xy_range = 2.0  # Maximum range in x or y direction (for normalizing components)
         self.max_distance = 2.83  # Maximum distance for normalization (diagonal of 2m x 2m space)
         self.time_tolerance = 0.15 # tolerance time for calculating travel distance
+        
+        # Circular trajectory parameters
+        self.circle_center = [0, 0]  # Center of the circular path (x, y)
+        self.circle_radius = 0.5  # Radius of the circular path in meters
+        self.angular_velocity = 0.08  # Radians per step (adjust for faster/slower movement)
+        self.current_angle = 0  # Current angle on the circle
+        self.circle_z = 1.0  # Fixed z-height for the goal
 
         # hard coded z limit
         self.boundary = [self.xy_limit, self.xy_limit, self.z_limit, self.z_limit + 1]
@@ -49,6 +57,13 @@ class MoveToPosition(DroneEnvironment):
 
         # Evaluation mode tracking
         self.successful_episodes_count = 0
+        
+        # Target velocity tracking
+        self.previous_goal_position = [0, 0.5, 1]
+        self.target_velocity = [0, 0, 0]
+        
+        # Override observation space for this task (12 base + 3 target velocity)
+        self.observation_space = 15
 
 
     def reset(self, training: bool = True):
@@ -68,9 +83,16 @@ class MoveToPosition(DroneEnvironment):
 
         # Call parent reset
         state = super().reset(training)
+        
+        # Reset the circular trajectory angle
+        self.current_angle = 0
+        self._update_goal_position()
 
         # Initialize previous_distance for reward calculation
-        self.previous_distance = self._distance_to_target(self.drone.get_position())
+        self.previous_distance = self._distance_to_target(self.drone.get_position())       
+        # Reset target velocity tracking
+        self.previous_goal_position = self.goal_position.copy()
+        self.target_velocity = [0, 0, 0]
 
         return state
 
@@ -89,7 +111,7 @@ class MoveToPosition(DroneEnvironment):
         # Modify action normalization based on phase
         if self.learning:
             # Learning phase: action is already in [-1, 1]
-            assert len(action)==2,'action should be length 2'
+            assert len(action)==3,'action should be length 3'
             processed_action = [action[0], action[1], 0] # Add vz=0 to fit 3D action shape of drone_environment
 
         else:
@@ -125,7 +147,39 @@ class MoveToPosition(DroneEnvironment):
             return super().step([0, 0, 0])
 
         # Call parent step method with processed action
-        return super().step(processed_action)
+        result = super().step(processed_action)
+        
+        # Update the goal position to move in a circle
+        self._update_goal_position()
+        
+        return result
+    
+    def _update_goal_position(self):
+        """Update the goal position to follow a circular trajectory"""
+        # Store previous position before updating
+        self.previous_goal_position = self.goal_position.copy()
+        
+        # Calculate position on circle
+        goal_x = self.circle_center[0] + self.circle_radius * np.cos(self.current_angle)
+        goal_y = self.circle_center[1] + self.circle_radius * np.sin(self.current_angle)
+        goal_z = 1.0  # Fixed z-height
+        
+        # Update goal position
+        self.goal_position = [goal_x, goal_y, goal_z]
+        
+        # Calculate target velocity (change in position per step)
+        self.target_velocity = [
+            (self.goal_position[0] - self.previous_goal_position[0]) / self.step_time,
+            (self.goal_position[1] - self.previous_goal_position[1]) / self.step_time,
+            (self.goal_position[2] - self.previous_goal_position[2]) / self.step_time
+        ]
+                
+        # Increment angle for next step
+        self.current_angle += self.angular_velocity
+        
+        # Keep angle in [0, 2*pi] range
+        if self.current_angle >= 2 * np.pi:
+            self.current_angle -= 2 * np.pi
 
 
     def _reset_task_state(self):
@@ -139,41 +193,52 @@ class MoveToPosition(DroneEnvironment):
         # Use relative position instead of absolute positions
         relative_x = self.goal_position[0] - position[0]
         relative_y = self.goal_position[1] - position[1]
-        distance = np.sqrt(relative_x**2 + relative_y**2)
+        relative_z = self.goal_position[2] - position[2]
+
+        distance = np.sqrt(relative_x**2 + relative_y**2 + relative_z**2)
 
         # Direction to goal (normalized) - helps agent understand "which way"
         direction_x = relative_x / (distance + 1e-6)
         direction_y = relative_y / (distance + 1e-6)
+        direction_z = relative_z / (distance + 1e-6)
 
         # Velocity information
         vel_x = self.drone.calculated_velocity["x"]
         vel_y = self.drone.calculated_velocity["y"]
-        velocity_magnitude = np.sqrt(vel_x**2 + vel_y**2)
+        vel_z = self.drone.calculated_velocity["z"]
+        velocity_magnitude = np.sqrt(vel_x**2 + vel_y**2 + vel_z**2)
 
         # How well velocity aligns with goal direction (1 = perfect, -1 = opposite)
-        velocity_alignment = (vel_x * direction_x + vel_y * direction_y) / (velocity_magnitude + 1e-6) if velocity_magnitude > 0 else 0
-
+        velocity_alignment = (vel_x * direction_x + vel_y * direction_y + vel_z * direction_z) / (velocity_magnitude + 1e-6) if velocity_magnitude > 0 else 0
         state = [
             # Relative position to goal (2) - better than absolute positions
             relative_x / self.max_xy_range,
             relative_y / self.max_xy_range,
+            1,
 
             # Distance to goal (1)
             distance / self.max_distance,
 
-            # Direction to goal - unit vector (2) - helps with directional awareness
+            # Direction to goal - unit vector (3) - helps with directional awareness
             direction_x,
             direction_y,
+            direction_z,
 
-            # Current velocity (2)
+            # Current velocity (3)
             vel_x / self.max_velocity,
             vel_y / self.max_velocity,
-
+            vel_z / self.max_velocity,
+                        
             # Velocity magnitude (1) - overall speed
             velocity_magnitude / self.max_velocity,
 
             # Velocity alignment with goal (1) - are we heading the right way?
-            velocity_alignment
+            velocity_alignment,
+            
+            # Target velocity (3) - normalized by max_velocity
+            self.target_velocity[0] / self.max_velocity,
+            self.target_velocity[1] / self.max_velocity,
+            self.target_velocity[2] / self.max_velocity,
         ]
 
         return np.array(state, dtype=np.float32)
@@ -194,66 +259,8 @@ class MoveToPosition(DroneEnvironment):
             (position[0] - self.goal_position[0])**2 +
             (position[1] - self.goal_position[1])**2
         )
-
-    # def _calculate_reward(self, current_state: Dict[str, Any]) -> float:
-    #     """Calculate reward for navigation task"""
-    #     current_distance = current_state['distance_to_target']
-
-    #     distance_improvement = self.previous_distance - current_distance
-
-    #     print("***")
-    #     print(f"Previous distance {self.previous_distance}. Current Distance {current_distance}")
-    #     print(f"Distance improve is {distance_improvement}")
-    #     print("***")
-
-    #     reward = self.distance_improvement_multiplier * distance_improvement
-
-    #     if current_distance < self.distance_threshold:
-    #         reward += self.success_reward
-
-    #     if self.boundary_penalise:
-    #         reward += self.out_of_bounds_penalty
-    #         self.boundary_penalise = False
-
-    #     # Update for the next step
-    #     self.previous_distance = current_distance
-
-    #     return reward
-
-    # def _calculate_reward(self, current_state: Dict[str, Any]) -> float:
-    #     position = current_state['position']
-    #     distance = self._distance_to_target(position)
-
-    #     # Base reward is negative distance (closer = higher reward)
-    #     # currently this reward will never be positive and is too low. assuming the max distance is (3,3,3) reward = -5.2.
-    #     # Changed from reward = -distance to reward = 50-10*distance
-    #     reward = 20 - 20*distance
-
-    #     # Bonus for reaching target
-    #     if distance < self.distance_threshold:
-    #         reward += self.success_reward
-
-    #     if self.boundary_penalise:
-    #         reward += self.out_of_bounds_penalty
-    #         self.boundary_penalise = False
-
-    #     return reward
-
-    # def _calculate_reward(self, current_state: Dict[str, Any]) -> float:
-    #     position = current_state['position']
-    #     distance = self._distance_to_target(position)
-
-    #     # Base reward is negative distance (closer = higher reward)
-    #     # currently this reward will never be positive and is too low. assuming the max distance is (3,3,3) reward = -5.2.
-    #     # Changed from reward = -distance to reward = 50-10*distance
-    #     reward = 1 / (1 + distance)
-
-    #     # Bonus for reaching target
-    #     if distance < self.distance_threshold:
-    #         reward += self.success_reward
-
-        # return reward * self.reward_multiplier
-    
+        
+        
     def _calculate_reward(self, current_state: Dict[str, Any]) -> float:
         position = current_state['position']
         distance = self._distance_to_target(position)
@@ -278,17 +285,16 @@ class MoveToPosition(DroneEnvironment):
         """Check if navigation task is complete"""
         distance = current_state['distance_to_target']
 
-        # Success condition
+        # Track success but don't terminate episode
         if distance < self.distance_threshold:
-            self.done = True
-            # Increment success counter only during evaluation
-            if self.need_to_change_battery():
-                self.change_battery()
-
+            # Increment success counter every step the drone stays on target
             if self._is_evaluating:
                 self.successful_episodes_count += 1
-            return True
-
+            self.done = True
+        else:
+            self.done = False
+        
+        # Episode only ends when max steps reached (handled in _check_if_truncated)
         return False
 
     def is_in_testing_zone(self):
@@ -331,7 +337,9 @@ class MoveToPosition(DroneEnvironment):
 
     def sample_action(self):
         """Sample an action for exploration phase - returns action in [0, 1] range"""
-        return np.random.uniform(0, 1, size=(2,))
+        action = np.random.uniform(0, 1, size=(3,))
+        action[2] = 0  # Set z-action to 0 for 2D movement
+        return action
 
     def _render_task_specific_info(self):
         """Render navigation task specific information"""
@@ -417,7 +425,7 @@ class MoveToPosition(DroneEnvironment):
         ax2.scatter(x[-1], y[-1], color='blue', s=80, label='Current',
                     edgecolors='black', linewidth=0.5, zorder=3)
         ax2.scatter(self.goal_position[0], self.goal_position[1],
-                    color='red', marker='*', s=120, label='Goal',
+                    color='red', marker=MarkerStyle('*'), s=120, label='Goal',
                     edgecolors='black', linewidth=1, zorder=3)
 
         ax2.set_xlim(-1.5, 1.5)
@@ -475,7 +483,7 @@ class MoveToPosition(DroneEnvironment):
 
 if __name__ == "__main__":
     # quick sanity test
-    env = MoveToPosition()
+    env = MoveCircle2DVelocity(use_simulator=1)
     env.reset()
     env.drone.set_velocity_vector(2, 0, 0)
     time.sleep(2)
@@ -483,10 +491,5 @@ if __name__ == "__main__":
     env.drone.set_velocity_vector(0, 2, 0)
     time.sleep(2)
     env.reset()
-    # for _ in range(3):
-    #     a = env.sample_action()
-    #     s, r, d, t, i = env.step(a)
-    #     assert s.shape == (8,)  # Updated observation space size
-    #     assert -50 <= r <= 150  # Updated reward range
     env.close()
     print("Sanity-check passed")
