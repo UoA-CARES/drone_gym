@@ -1,0 +1,25 @@
+services:
+  crazysim:
+    # This image contains Gazebo Garden and CrazySim and should never change
+    image: oculux314/cares:CrazySim
+    ports:
+      - 19850:19850/udp
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+  cares:
+    # This is the python image created in Dockerfile
+    build: .
+    stdin_open: true
+    tty: true
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
