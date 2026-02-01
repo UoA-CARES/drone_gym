@@ -2,8 +2,13 @@ services:
   crazysim:
     # This image contains Gazebo Garden and CrazySim and should never change
     image: oculux314/cares:CrazySim
+    environment:
+      - DISPLAY=$DISPLAY
     ports:
       - 19850:19850/udp
+    volumes:
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw
+      - /usr/lib/x86_64-linux-gnu:/usr/lib/x86_64-linux-gnu:ro
     deploy:
       resources:
         reservations:
