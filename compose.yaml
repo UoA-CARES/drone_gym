@@ -21,6 +21,8 @@ services:
     build: .
     stdin_open: true
     tty: true
+    # Port forwarding: our code expects CrazySim to be broadcasting at 0.0.0.0:19850. However, in docker compose this is actually crazysim:19850
+    command: ["socat", "-v", "UDP-LISTEN:19850,fork,reuseaddr", "UDP:crazysim:19850"]
     deploy:
       resources:
         reservations:

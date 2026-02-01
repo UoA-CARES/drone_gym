@@ -91,13 +91,14 @@ Refer to the instructions under Hardware Setup. When running RL tasks, include t
 
 To run the simulator, in the `drone_gym` directory, use
 ```bash
+xhost +local: # one-time, just to enable host to display Gazebo GUI
 docker compose up
 ```
 In a separate terminal (still in the `drone_gym` directory), run
 ```bash
 docker compose exec cares bash
 ```
-Refer to Running RL Tasks for how to execute training runs in a second terminal. The simulator will need to be shutdown and restarted after each training run.
+Refer to Running RL Tasks for how to execute training runs. The simulator will need to be shutdown and restarted after each training run.
 
 Note that you can run `docker compose up` with the `-d` flag to reuse the same terminal. In that case, use `docker compose down` to shutdown the simulator.
 
@@ -105,7 +106,7 @@ Note that you can run `docker compose up` with the `-d` flag to reuse the same t
 
 If you'd prefer not to use docker compose (e.g. when actively modifying drone_gym files), you can run the simulator and CARES RL training environment separately.
 
-**To run the simulator:**
+**To run the simulator:** (remember to run `xhost +local:` first to enable GUI)
 ```bash
 docker run --rm -p 19850:19850/udp --gpus all --name crazysim -e DISPLAY=$DISPLAY -v /tmp/.X11-unix:/tmp/.X11-unix -v /usr/lib/x86_64-linux-gnu:/usr/lib/x86_64-linux-gnu:ro oculux314/cares:CrazySim
 ```

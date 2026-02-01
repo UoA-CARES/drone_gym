@@ -20,7 +20,6 @@ RUN pip install -e .
 WORKDIR /app
 RUN git clone https://github.com/UoA-CARES/drone_gym.git
 
-
 # Install dependencies
 WORKDIR /app/drone_gym
 RUN pip install -r requirements.txt && \
@@ -35,7 +34,7 @@ RUN pip install --force-reinstall pandas==2.3.3 && \
 # Port Forwarding
 # -------------------------------------------------------------------
 
-# Port forwarding: our code expects CrazySim to be broadcasting at 0.0.0.0:19850. However, in the docker network this is actually crazysim:19850
+# Port forwarding: our code expects CrazySim to be broadcasting at 0.0.0.0:19850. However, in docker compose this is actually crazysim:19850
 RUN apt-get update && apt-get install -y socat && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # -------------------------------------------------------------------
@@ -44,6 +43,5 @@ RUN apt-get update && apt-get install -y socat && apt-get clean && rm -rf /var/l
 
 WORKDIR /app/gymnasium_envrionments/scripts
 CMD ["bash", "-c", "\
-    socat -v UDP-LISTEN:19850,fork,reuseaddr UDP:crazysim:19850 & \
     echo -e '======================================================================\nRun `python run.py train cli drone --task move_2d SAC` to start a training run.\n======================================================================' && \
     bash"]

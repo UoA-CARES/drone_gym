@@ -1,4 +1,4 @@
-# docker build -t oculux314/cares:CrazySim-headless .
+# docker build -f Dockerfile.headless-sim -t oculux314/cares:CrazySim-headless .
 # docker run --rm -p 19850:19850/udp --gpus all --name crazysim oculux314/cares:CrazySim-headless
 FROM oculux314/cares:CrazySim
 WORKDIR /app

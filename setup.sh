@@ -11,16 +11,16 @@ venv_dir="$base_dir/.venv/drone"
 echo "Setting up the drone environment..."
 
 # .venv SETUP
-cd $base_dir
-python3 -m venv $venv_dir  # Create virtual environment
-source $venv_dir/bin/activate # Or change to your virtual environment path
+cd "$base_dir"
+python3 -m venv "$venv_dir"  # Create virtual environment
+source "$venv_dir/bin/activate" # Or change to your virtual environment path
 
 # Dependencies
 sudo apt update
-sudo apt install git
+sudo apt install -y git
 
 # # Clone repositories (COMMENT OUT if already cloned)
-cd $base_dir
+cd "$base_dir"
 git clone https://github.com/UoA-CARES/cares_reinforcement_learning.git
 git clone https://github.com/UoA-CARES/gymnasium_envrionments.git
 git clone https://github.com/UoA-CARES/drone_gym.git
@@ -29,27 +29,27 @@ cd CrazySim
 git clone https://github.com/llanesc/crazyflie-clients-python.git
 
 # cares_reinforcement_learning SETUP
-cd $base_dir/cares_reinforcement_learning
+cd "$base_dir/cares_reinforcement_learning"
 git checkout main
 git pull
 pip install -r requirements.txt
 pip install -e .
 
 # gymnasium_envrionments SETUP
-cd $base_dir/gymnasium_envrionments
+cd "$base_dir/gymnasium_envrionments"
 git checkout main
 git pull
 pip install -r requirements.txt
 
 # drone_gym SETUP
-cd $base_dir/drone_gym
+cd "$base_dir/drone_gym"
 git checkout drone-sim
 git pull
 pip install -r requirements.txt
 pip install -e .
 
-# CrazySim SETUP
-cd $base_dir/CrazySim
+# cflib/cfclient SETUP
+cd "$base_dir/CrazySim"
 
 cd crazyflie-lib-python # CFLib
 pip install -e .
@@ -64,7 +64,7 @@ pip install --force-reinstall opencv-python==4.7.0.72
 pip install --force-reinstall numpy==1.24.4
 
 # Startup
-cd $base_dir/drone_gym
+cd "$base_dir/drone_gym"
 docker compose up -d
+echo "Setup complete. Now run `python run.py train cli drone --task move_2d SAC`"
 docker compose exec cares bash
-# Now run `python run.py train cli drone --task move_2d SAC`
