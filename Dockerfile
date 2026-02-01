@@ -1,5 +1,5 @@
 # docker build -t oculux314/cares:drone . (use --no-cache to rebuild from start)
-# docker run -it --gpus all oculux314/cares:drone
+# docker run -it --gpus all --net host oculux314/cares:drone
 FROM oculux314/cares:base
 WORKDIR /app
 
@@ -20,8 +20,6 @@ RUN pip install -e .
 WORKDIR /app
 RUN git clone https://github.com/UoA-CARES/drone_gym.git
 
-# TEMP !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-RUN git fetch && git checkout rebuild && git pull
 
 # Install dependencies
 WORKDIR /app/drone_gym
