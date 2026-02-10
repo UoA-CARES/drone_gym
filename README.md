@@ -12,20 +12,32 @@ Developed by the CARES Lab at the University of Auckland.
 
 > **Note**: This environment is designed to work with the [CARES Gymnasium Environments](https://github.com/UoA-CARES/gymnasium_envrionments) framework for running RL training tasks.
 
+
 ## Setup Instructions
 For all installation, run the **[setup.sh](setup.sh)** script.
+
+### Prerequisites
+- Python 3.10 (incompatible with Python 3.12)
+- `setup.sh` downloaded (can be found in the same repository as this README)
+- Docker
+- For physical drone testing:
+  - Crazyflie drone with flow deck attached
+  - Access to Vicon motion capture system
+
+Setup is now automated - run `bash setup.sh`. If you run into any issues refer to the original instructions at the repositories below.
+
+Note that if you simply want to run a training, you may not need to install locally - instead refer to the docker instructions in 'Running the Simulator' or 'Running the Simulator Standalone' depending on your use case.
+
+### Source Repositories
+
+- [CARES Gymnasium Environments](https://github.com/UoA-CARES/gymnasium_envrionments) - Framework for running RL tasks
+- [CARES Reinforcement Learning](https://github.com/UoA-CARES/cares_reinforcement_learning) - RL algorithms library
+- [Bitcraze Crazyflie](https://www.bitcraze.io/) - Open-source micro quadcopter platform
 
 ### Hardware Setup
 If using real Crazyflie, for detailed hardware setup instructions, please refer to the documentation in the `docs/` folder:
 - **[Vicon System Setup](docs/VICON_SETUP.md)** - Connect and configure the motion capture system
 - **[Hardware Setup Guide](docs/HARDWARE_SETUP.md)** - Drone positioning, battery management, and troubleshooting
-
-
-### Useful links for reference
-- [CARES Gymnasium Environments](https://github.com/UoA-CARES/gymnasium_envrionments) (for running RL tasks)
-- [CARES Reinforcement Learning](https://github.com/UoA-CARES/cares_reinforcement_learning) (RL algorithms)
-- [CrazySim](https://github.com/gtfactslab/CrazySim)
-
 
 
 ## Project Structure
@@ -70,6 +82,45 @@ drone_gym/
 
 
 ## Usage
+
+### Running using a Live Crazyflie
+
+Refer to the instructions under Hardware Setup. When running RL tasks, include the `--use_simulator 0` flag.
+
+### Running the Simulator
+
+To run the simulator, in the `drone_gym` directory, use
+```bash
+xhost +local: # one-time, just to enable host to display Gazebo GUI
+docker compose up
+```
+In a separate terminal (still in the `drone_gym` directory), run
+```bash
+docker compose exec cares bash
+```
+Refer to Running RL Tasks for how to execute training runs. The simulator will need to be shutdown and restarted after each training run.
+
+Note that you can run `docker compose up` with the `-d` flag to reuse the same terminal. In that case, use `docker compose down` to shutdown the simulator.
+
+### Running the Simulator Standalone
+
+If you'd prefer not to use docker compose (e.g. when actively modifying drone_gym files), you can run the simulator and CARES RL training environment separately.
+
+**To run the simulator:** (remember to run `xhost +local:` first to enable GUI)
+```bash
+docker run --rm -p 19850:19850/udp --gpus all --name crazysim -e DISPLAY=$DISPLAY -v /tmp/.X11-unix:/tmp/.X11-unix -v /usr/lib/x86_64-linux-gnu:/usr/lib/x86_64-linux-gnu:ro oculux314/cares:CrazySim
+```
+If you're in an environment that doesn't support graphics (e.g. when ssh'd into a remote desktop), you can run the simulator in headless mode:
+```bash
+docker run --rm -p 19850:19850/udp --gpus all --name crazysim oculux314/cares:CrazySim-headless
+```
+You can run multiple simulator/training instances in parallel by changing the host port referred to by the `-p` flag.
+
+**To run the CARES RL training gym:**
+```bash
+docker run -it --gpus all --net host oculux314/cares:drone
+```
+This image contains the `cares_reinforcement_learning`, `gymnasium_envrionments`, and `drone_gym` repositories in the `/app` folder. Logs are saved to `/app/cares_rl_logs`. If you need to modify the image, you can edit `Dockerfile` and rebuild with `docker build -t oculux314/cares:drone .`. The base Dockerfile `oculux314/cares:base` and instructions to run can be found at https://github.com/UoA-CARES/gymnasium_envrionments.
 
 ### Running RL Tasks
 
@@ -147,15 +198,3 @@ See `move_to_2d_position.py` and `move_to_random_2d_position.py` for complete ex
 **Move to Position Task**
 - Video demonstration of the model evaluation: [Watch on YouTube](https://www.youtube.com/watch?v=MFenj1JX5Cs)
 - Implementation example: [gymnasium_environments/drone_gym](https://github.com/UoA-CARES/gymnasium_envrionments/tree/drone_gym)
-
-### Running using Docker
-
-Simply run `docker run -it --gpus all oculux314/cares:drone` for a prebuilt Docker image to run the drone environment on. This image contains the `cares_reinforcement_learning`, `gymnasium_envrionments`, and `drone_gym` repositories in the `/app` folder. Logs are saved to `/app/cares_rl_logs`.
-
-If you need to modify the image, you can edit `Dockerfile` and rebuild with `docker build -t oculux314/cares:drone .`. The base Dockerfile `oculux314/cares:base` and instructions to run can be found at https://github.com/UoA-CARES/gymnasium_envrionments.
-
-## Related Projects
-
-- [CARES Gymnasium Environments](https://github.com/UoA-CARES/gymnasium_envrionments) - Framework for running RL tasks
-- [CARES Reinforcement Learning](https://github.com/UoA-CARES/cares_reinforcement_learning) - RL algorithms library
-- [Bitcraze Crazyflie](https://www.bitcraze.io/) - Open-source micro quadcopter platform

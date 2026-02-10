@@ -1,0 +1,32 @@
+services:
+  crazysim:
+    # This image contains Gazebo Garden and CrazySim and should never change
+    image: oculux314/cares:CrazySim
+    environment:
+      - DISPLAY=$DISPLAY
+    ports:
+      - 19850:19850/udp
+    volumes:
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw
+      - /usr/lib/x86_64-linux-gnu:/usr/lib/x86_64-linux-gnu:ro
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+  cares:
+    # This is the python image created in Dockerfile
+    build: .
+    stdin_open: true
+    tty: true
+    # Port forwarding: our code expects CrazySim to be broadcasting at 0.0.0.0:19850. However, in docker compose this is actually crazysim:19850
+    command: ["socat", "-v", "UDP-LISTEN:19850,fork,reuseaddr", "UDP:crazysim:19850"]
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
