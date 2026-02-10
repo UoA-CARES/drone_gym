@@ -1,24 +1,14 @@
 import socket
 import time
-import builtins
 from struct import unpack
-from enum import Enum
 from datetime import datetime
 import math
-from random import randint
-import queue
 from threading import Thread
 
 us_start = int(time.time() * 1000 * 1000)
 
 def micros():
     us_now = int(time.time() * 1000 * 1000)
-    return int(us_now - us_start)
-
-
-def micros():
-    us_now = int(time.time() * 1000 * 1000)
-
     return int(us_now - us_start)
 
 class ViconInterface():
@@ -28,9 +18,13 @@ class ViconInterface():
         self.udp_port = udp_port
         self.udp_ip = udp_ip
 
+        print("Connecting to ", udp_ip, udp_port)
+
         # Bind the listener
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.sock.bind((udp_ip, udp_port))
+
+        print("Connected!!")
 
         # Used to time packet frequency to ensure FPS
         self.time_last_packet = 0
@@ -53,6 +47,7 @@ class ViconInterface():
         try:
             while self.run_interface:
                 # Block until there is a packet
+                # print("Waiting for Vicon Packet...")
                 b, addr = self.sock.recvfrom(256)
 
                 # First 5 bytes are the frame # and # of items in frame
@@ -60,7 +55,7 @@ class ViconInterface():
                 ItemsInBlock = b[4]
 
                 byte_offset = 5
-
+                
                 # Loop for each item
                 for i in range(0, ItemsInBlock):
                     # Read item id
@@ -115,7 +110,7 @@ class ViconInterface():
 
                         #print("p{:.3f},{:.3f},{:.3f},{:.3f},{:.3f},{:.3f}".format(ned_x, ned_y, ned_z, ned_roll, ned_pitch, ned_yaw))
         except Exception as e:
-            pass
+            print("Vicon Interface Exception: ", e)
         finally:
             self.sock.close()
 
@@ -132,6 +127,22 @@ class ViconInterface():
             return None
 
 
-if __name__ == "__main__":
+# --- Testing ---
 
-    print(1)
+if __name__ == "__main__":
+    print("Starting Vicon Interface Test")
+    vicon = ViconInterface()
+    main_loop_thread = Thread(target = vicon.main_loop)
+    main_loop_thread.start()
+    
+    while True:
+        time.sleep(1)
+        if not vicon.have_recv_packet:
+            print("No packet received yet")
+            continue
+        
+        pos = vicon.getPos("Crzayme")
+        vel = vicon.getVel("Crzayme")
+        print("Position: ", pos)
+        print("Velocity: ", vel)
+    

@@ -11,7 +11,7 @@ from cflib.crazyflie.syncCrazyflie import SyncCrazyflie
 from cflib.positioning.motion_commander import MotionCommander
 from cflib.utils import uri_helper
 
-URI = uri_helper.uri_from_env(default='udp://0.0.0.0:19850')
+URI = uri_helper.uri_from_env(default='radio://0/100/2M')
 
 # Set up logging to see what's happening
 logging.basicConfig(level=logging.INFO)

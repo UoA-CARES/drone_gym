@@ -3,7 +3,6 @@ import queue
 import time
 from threading import Event
 from collections import deque
-from drone_gym.utils.vicon_connection_class import ViconInterface as vi
 
 from cflib.crazyflie.log import LogConfig
 from cflib.positioning.motion_commander import MotionCommander
@@ -13,6 +12,7 @@ from cflib.utils import uri_helper
 class DroneSetup:
     def __init__(self, uri=None):
         # Drone Properties
+
         self.URI = uri if uri is not None else uri_helper.uri_from_env(
             default="radio://0/100/2M/E7E7E7E7E7"
         )  # changed radio channel in 22/9
@@ -274,7 +274,7 @@ class DroneSetup:
             for axis in ["x", "y"]:
                 if len(velocities[axis]) > 0:
                     raw_velocity = sum(velocities[axis]) / len(velocities[axis])
-                    
+
                     # Apply exponential low-pass filter for smoothing
                     self.calculated_velocity[axis] = (
                         self.velocity_filter_alpha * raw_velocity +
@@ -285,7 +285,7 @@ class DroneSetup:
         """Get the calculated velocity from position differentiation (x and y only)"""
         with self.velocity_calculation_lock:
             return self.calculated_velocity.copy()
-    
+
     # TODO - check for unsuccessful arming attempts
 
     def initialise_crazyflie(self):
@@ -352,7 +352,7 @@ class DroneSetup:
         """Properly shutdown Crazyflie connection"""
         try:
             print("[Drone] Shutting down Crazyflie...")
-            
+
             if self.is_flying_event.is_set() and self.mc:
                 print("[Drone] Landing before shutdown...")
                 self.mc.land()
@@ -438,7 +438,7 @@ class DroneSetup:
                     print("[Drone] Landing successful")
                 else:
                     print("[Drone] Cannot land - not currently flying")
-            
+
             elif "move" in command:
                 if self.is_flying_event.is_set() and self.mc:
                     self.mc.start_linear_motion(0, 0, 0)
@@ -728,28 +728,28 @@ class DroneSetup:
 
     def _calculate_velocity_pid(self, target_velocity, actual_velocity, dt):
         corrected_velocity = {"x": 0.0, "y": 0.0, "z": 0.0}
-        
+
         for axis in ["x", "y", "z"]:
             error = target_velocity[axis] - actual_velocity[axis]
-            
+
             # PID terms
             p_term = self.velocity_gains[axis]["kp"] * error
             d_term = self.velocity_gains[axis]["kd"] * (error - self.velocity_last_error[axis]) / dt
-            
+
             self.velocity_integral[axis] += error * dt
             max_integral = 0.2
             self.velocity_integral[axis] = max(-max_integral, min(max_integral, self.velocity_integral[axis]))
             i_term = self.velocity_gains[axis]["ki"] * self.velocity_integral[axis]
-            
+
             # Feed-forward term (NEW)
             ff_term = target_velocity[axis]  # Direct pass-through of target
-            
+
             # Combine all terms
             raw_velocity = ff_term + p_term + d_term + i_term
             corrected_velocity[axis] = max(-self.max_velocity, min(self.max_velocity, raw_velocity))
-            
+
             self.velocity_last_error[axis] = error
-        
+
         return corrected_velocity
 
     def set_velocity_vector(self, vx: float, vy: float, vz: float) -> None:
@@ -914,13 +914,13 @@ class DroneSetup:
     def get_battery(self):
         with self.battery_lock:
             return self.battery_level
-        
+
     def stop(self):
         """
         This method is meant to be overridden by any child classes.
         """
         pass
-    
+
     def _signal_stop_to_all_threads(self):
         """Set all shutdown flags so every thread leaves its loop ASAP."""
         self.set_running(False)

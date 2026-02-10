@@ -29,6 +29,8 @@ class Drone(DroneSetup):
     def _update_position(self):
         vicon_thread = None
         try:
+            while (not hasattr(self, "vicon")):
+                print("Waiting for vicon initialization...")
             # It takes some time for the vicon to get values
             vicon_thread = threading.Thread(target=self.vicon.main_loop)
             vicon_thread.start()
@@ -43,6 +45,10 @@ class Drone(DroneSetup):
             while self.is_running() and not self.emergency_event.is_set():
                 try:
                     position_array = self.vicon.getPos(self.drone_name)
+
+                    while(position_array is None):
+                        print("Waiting for vicon position...")
+
                     if position_array is not None:
                         current_time = time.time()
 
@@ -86,7 +92,7 @@ class Drone(DroneSetup):
                     )
 
         except Exception as e:
-            print(f"[Drone] Critical error in position thread: {str(e)}")
+            print("[Drone] Critical error in position thread:", e)
         finally:
             # Signal the vicon thread to join
             self.vicon.run_interface = False
