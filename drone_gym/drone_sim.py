@@ -6,6 +6,9 @@ from cflib.crazyflie import Crazyflie
 from cflib.crazyflie.log import LogConfig
 from cflib.crazyflie.syncCrazyflie import SyncCrazyflie
 from drone_gym.drone_setup import DroneSetup
+import warnings
+
+warnings.filterwarnings('ignore', message='Using legacy TYPE_HOVER_LEGACY')
 
 
 class DroneSim(DroneSetup):
