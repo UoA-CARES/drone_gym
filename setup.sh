@@ -13,14 +13,14 @@ sudo apt-get install gz-garden
 sudo apt install cmake build-essential # This is for the `make all` command
 sudo apt install python3.10 python3.10-venv # Python 3.10 and venv module
 
-# # Clone repositories (COMMENT OUT if already cloned)
+# Clone repositories (skip if already exist)
 cd $base_dir
-git clone https://github.com/UoA-CARES/cares_reinforcement_learning.git
-git clone https://github.com/UoA-CARES/gymnasium_envrionments.git
-git clone https://github.com/UoA-CARES/drone_gym.git
-git clone https://github.com/gtfactslab/CrazySim.git --recursive
+[ -d "cares_reinforcement_learning" ] || git clone https://github.com/UoA-CARES/cares_reinforcement_learning.git
+[ -d "gymnasium_envrionments" ] || git clone https://github.com/UoA-CARES/gymnasium_envrionments.git
+[ -d "drone_gym" ] || git clone https://github.com/UoA-CARES/drone_gym.git
+[ -d "CrazySim" ] || git clone https://github.com/gtfactslab/CrazySim.git --recursive
 cd CrazySim
-git clone https://github.com/llanesc/crazyflie-clients-python.git
+[ -d "crazyflie-clients-python" ] || git clone https://github.com/llanesc/crazyflie-clients-python.git
 
 # .venv SETUP
 cd $base_dir
