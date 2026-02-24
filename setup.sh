@@ -11,6 +11,7 @@ echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/pkgs-
 sudo apt-get update
 sudo apt-get install gz-garden
 sudo apt install cmake build-essential # This is for the `make all` command
+sudo apt install python3.10 python3.10-venv # Python 3.10 and venv module
 
 # # Clone repositories (COMMENT OUT if already cloned)
 cd $base_dir
@@ -23,7 +24,7 @@ git clone https://github.com/llanesc/crazyflie-clients-python.git
 
 # .venv SETUP
 cd $base_dir
-python3 -m venv $venv_dir  # Create virtual environment
+python3.10 -m venv $venv_dir  # Create virtual environment
 source $venv_dir/bin/activate # Or change to your virtual environment path
 
 # cares_reinforcement_learning SETUP
