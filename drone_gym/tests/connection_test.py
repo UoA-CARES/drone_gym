@@ -11,7 +11,9 @@ from cflib.crazyflie.syncCrazyflie import SyncCrazyflie
 from cflib.positioning.motion_commander import MotionCommander
 from cflib.utils import uri_helper
 
-URI = uri_helper.uri_from_env(default='radio://0/100/2M')
+URI = uri_helper.uri_from_env(default='udp://0.0.0.0:19850')
+# Note: To test with real drone, do: 
+# URI = uri_helper.uri_from_env(default='radio://0/100/2M')
 
 # Set up logging to see what's happening
 logging.basicConfig(level=logging.INFO)
@@ -68,18 +70,23 @@ def test_motion_commander():
     print("=" * 60)
     
     try:
-        print(f"\n[1/3] Connecting to {URI}...")
+        print(f"\n[1/4] Connecting to {URI}...")
         cflib.crtp.init_drivers()
         
         with SyncCrazyflie(URI, cf=Crazyflie(rw_cache='./cache')) as scf:
             print("Connected")
             
-            print(f"\n[2/3] Taking off...")
+            print(f"\n[2/4] Arming drone...")
+            scf.cf.platform.send_arming_request(True)
+            time.sleep(1)
+            print("Armed")
+            
+            print(f"\n[3/4] Taking off...")
             with MotionCommander(scf, default_height=0.5) as mc:
                 print("Took off! Hovering at 0.5m")
                 time.sleep(3)
                 
-                print(f"\n[3/3] Testing movement...")
+                print(f"\n[4/4] Testing movement...")
                 print("      Moving forward 0.3m...")
                 mc.forward(0.3, velocity=0.2)
                 time.sleep(1)
@@ -92,6 +99,8 @@ def test_motion_commander():
                 print("\n      Landing...")
             
             print("Landed")
+            scf.cf.platform.send_arming_request(False)
+            print("Disarmed")
         
         print("\n" + "=" * 60)
         print("✓ TEST 2 PASSED - Flight test successful!")
