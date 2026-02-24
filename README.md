@@ -14,17 +14,14 @@ Developed by the CARES Lab at the University of Auckland.
 
 
 ## Setup Instructions
-For all installation, run the **[setup.sh](setup.sh)** script.
+For all installation, run the **[setup.sh](setup.sh)** script - `bash setup.sh .`.
 
 ### Prerequisites
-- Python 3.10 (incompatible with Python 3.12)
 - `setup.sh` downloaded (can be found in the same repository as this README)
-- Docker
+- Docker (If running multiple training at once)
 - For physical drone testing:
   - Crazyflie drone with flow deck attached
   - Access to Vicon motion capture system
-
-Setup is now automated - run `bash setup.sh`. If you run into any issues refer to the original instructions at the repositories below.
 
 Note that if you simply want to run a training, you may not need to install locally - instead refer to the docker instructions in 'Running the Simulator' or 'Running the Simulator Standalone' depending on your use case.
 
@@ -88,6 +85,17 @@ drone_gym/
 Refer to the instructions under Hardware Setup. When running RL tasks, include the `--use_simulator 0` flag.
 
 ### Running the Simulator
+To run the simulation, go to `CrazySim/crazyflie-firmware`.
+Then run:
+```bash
+bash tools/crazyflie-simulation/simulator_files/gazebo/launch/sitl_singleagent.sh -m crazyflie -x 0 -y 0; exec bash
+```
+
+Refer to Running RL Tasks for how to execute training runs. The simulator will need to be shutdown and restarted after each training run.
+
+
+### Running the Simulator using Docker
+Alternatively, you can use docker to run the simulation:
 
 To run the simulator, in the `drone_gym` directory, use
 ```bash
@@ -98,11 +106,10 @@ In a separate terminal (still in the `drone_gym` directory), run
 ```bash
 docker compose exec cares bash
 ```
-Refer to Running RL Tasks for how to execute training runs. The simulator will need to be shutdown and restarted after each training run.
 
 Note that you can run `docker compose up` with the `-d` flag to reuse the same terminal. In that case, use `docker compose down` to shutdown the simulator.
 
-### Running the Simulator Standalone
+#### Running the Simulator Standalone
 
 If you'd prefer not to use docker compose (e.g. when actively modifying drone_gym files), you can run the simulator and CARES RL training environment separately.
 
@@ -131,7 +138,7 @@ This environment is designed to be used with the [CARES Gymnasium Environments](
 cd gymnasium_envrionments/scripts
 
 # Run a training task (example)
-python train.py run --env drone_gym --task move_2d
+run.py train cli drone --task move_random_2d SAC
 ```
 
 Refer to the [gymnasium_envrionments documentation](https://github.com/UoA-CARES/gymnasium_envrionments) for detailed instructions on running tasks and configuring training parameters.
@@ -198,3 +205,10 @@ See `move_to_2d_position.py` and `move_to_random_2d_position.py` for complete ex
 **Move to Position Task**
 - Video demonstration of the model evaluation: [Watch on YouTube](https://www.youtube.com/watch?v=MFenj1JX5Cs)
 - Implementation example: [gymnasium_environments/drone_gym](https://github.com/UoA-CARES/gymnasium_envrionments/tree/drone_gym)
+
+
+## Related Projects
+
+- [CARES Gymnasium Environments](https://github.com/UoA-CARES/gymnasium_envrionments) - Framework for running RL tasks
+- [CARES Reinforcement Learning](https://github.com/UoA-CARES/cares_reinforcement_learning) - RL algorithms library
+- [Bitcraze Crazyflie](https://www.bitcraze.io/) - Open-source micro quadcopter platform

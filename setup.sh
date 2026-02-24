@@ -83,13 +83,6 @@ sudo pkill -9 -f crazyflie 2>/dev/null || true
 sudo pkill -9 -f gz 2>/dev/null || true
 rm -rf /tmp/crazyflie*
 
-# Run the simulator in a new terminal
-# Wait for "[Msg] Received firmware handshake message..." before connecting
-gnome-terminal -- bash -c "cd $base_dir/CrazySim/crazyflie-firmware; bash tools/crazyflie-simulation/simulator_files/gazebo/launch/sitl_singleagent.sh -m crazyflie -x 0 -y 0; exec bash"
-
-# Wait for simulator to initialize
-echo "Waiting for simulator to start..."
-sleep 10
-
-# Run training script
-echo "run.py train cli drone --task move_random_2d SAC"
+# Run training
+echo 'To run simulation:"cd CrazySim/crazyflie-firmware; bash tools/crazyflie-simulation/simulator_files/gazebo/launch/sitl_singleagent.sh -m crazyflie -x 0 -y 0; exec bash"'
+echo "Training example: run.py train cli drone --task move_random_2d SAC"
