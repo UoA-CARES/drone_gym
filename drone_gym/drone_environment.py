@@ -252,9 +252,9 @@ class DroneEnvironment(ABC):
             self._render_task_specific_info()
             print("-" * 50)
 
-    def set_seed(self):
-        """Generate the random seed for the environment"""
-        self.seed = np.random.randint(0, 2**32 - 1)
+    def set_seed(self, seed: int):
+        self.seed = seed
+        np.random.seed(seed)
 
     def grab_frame(self, height: int = 240, width: int = 300) -> np.ndarray:
         """Generate a frame for video recording - to be overridden by tasks"""

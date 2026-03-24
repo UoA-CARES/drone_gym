@@ -27,8 +27,7 @@ Note that if you simply want to run a training, you may not need to install loca
 
 ### Source Repositories
 
-- [CARES Gymnasium Environments](https://github.com/UoA-CARES/gymnasium_envrionments) - Framework for running RL tasks
-- [CARES Reinforcement Learning](https://github.com/UoA-CARES/cares_reinforcement_learning) - RL algorithms library
+- [CARES Reinforcement Learning](https://github.com/UoA-CARES/cares_reinforcement_learning) - RL algorithms library and Framework for running RL tasks
 - [Bitcraze Crazyflie](https://www.bitcraze.io/) - Open-source micro quadcopter platform
 
 ### Hardware Setup
@@ -131,17 +130,14 @@ This image contains the `cares_reinforcement_learning`, `gymnasium_envrionments`
 
 ### Running RL Tasks
 
-This environment is designed to be used with the [CARES Gymnasium Environments](https://github.com/UoA-CARES/gymnasium_envrionments) framework. To run RL training tasks:
+This environment is designed to be used with the [CARES Reinforcement Learning](https://github.com/UoA-CARES/cares_reinforcement_learning) framework. To run RL training tasks:
 
 ```bash
-# Navigate to the gymnasium_envrionments directory
-cd gymnasium_envrionments/scripts
-
 # Run a training task (example)
 run.py train cli drone --task move_random_2d SAC
 ```
 
-Refer to the [gymnasium_envrionments documentation](https://github.com/UoA-CARES/gymnasium_envrionments) for detailed instructions on running tasks and configuring training parameters.
+Refer to the [CARES Reinforcement Learning](https://github.com/UoA-CARES/cares_reinforcement_learning) for detailed instructions on running tasks and configuring training parameters.
 
 ### Direct Drone Control (Example)
 
@@ -204,11 +200,9 @@ See `move_to_2d_position.py` and `move_to_random_2d_position.py` for complete ex
 
 **Move to Position Task**
 - Video demonstration of the model evaluation: [Watch on YouTube](https://www.youtube.com/watch?v=MFenj1JX5Cs)
-- Implementation example: [gymnasium_environments/drone_gym](https://github.com/UoA-CARES/gymnasium_envrionments/tree/drone_gym)
 
 
 ## Related Projects
 
-- [CARES Gymnasium Environments](https://github.com/UoA-CARES/gymnasium_envrionments) - Framework for running RL tasks
 - [CARES Reinforcement Learning](https://github.com/UoA-CARES/cares_reinforcement_learning) - RL algorithms library
 - [Bitcraze Crazyflie](https://www.bitcraze.io/) - Open-source micro quadcopter platform
