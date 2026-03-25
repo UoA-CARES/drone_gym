@@ -65,10 +65,6 @@ class InterceptTargetLine2D(DroneEnvironment):
         if not training and not self._is_evaluating:
             self.successful_episodes_count = 0
 
-        # Reset successful episodes count when starting evaluation
-        if not training and not self._is_evaluating:
-            self.successful_episodes_count = 0
-
         # Call parent reset
         state = super().reset(training)
 
