@@ -15,12 +15,12 @@ sudo apt install python3.10 python3.10-venv # Python 3.10 and venv module
 
 # Clone repositories (skip if already exist)
 cd $base_dir
-[ -d "cares_reinforcement_learning" ] || git clone https://github.com/UoA-CARES/cares_reinforcement_learning.git
-[ -d "gymnasium_envrionments" ] || git clone https://github.com/UoA-CARES/gymnasium_envrionments.git
+[ -d "cares_reinforcement_learning" ] || git clone --branch v3.0.0 https://github.com/UoA-CARES/cares_reinforcement_learning.git
 [ -d "drone_gym" ] || git clone https://github.com/UoA-CARES/drone_gym.git
 [ -d "CrazySim" ] || git clone https://github.com/gtfactslab/CrazySim.git --recursive
 cd CrazySim
 [ -d "crazyflie-clients-python" ] || git clone https://github.com/llanesc/crazyflie-clients-python.git
+[ -d "crazyflie-lib-python" ] || git clone https://github.com/bitcraze/crazyflie-lib-python.git
 
 # .venv SETUP
 cd $base_dir
@@ -29,16 +29,7 @@ source $venv_dir/bin/activate # Or change to your virtual environment path
 
 # cares_reinforcement_learning SETUP
 cd $base_dir/cares_reinforcement_learning
-git checkout main
-git pull
-pip install -r requirements.txt
-pip install -e .
-
-# gymnasium_envrionments SETUP
-cd $base_dir/gymnasium_envrionments
-git checkout main
-git pull
-pip install -r requirements.txt
+pip install -e .[gym]
 
 # drone_gym SETUP
 cd $base_dir/drone_gym
@@ -85,4 +76,4 @@ rm -rf /tmp/crazyflie*
 
 # Run training
 echo 'To run simulation:"cd CrazySim/crazyflie-firmware; bash tools/crazyflie-simulation/simulator_files/gazebo/launch/sitl_singleagent.sh -m crazyflie -x 0 -y 0; exec bash"'
-echo "Training example: run.py train cli drone --task move_random_2d SAC"
+echo "Training example: cares-rl train cli --gym drone --task move_2d SAC"

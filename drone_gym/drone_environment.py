@@ -46,6 +46,23 @@ class DroneEnvironment(ABC):
         # Success tracking for learning phase
         self.success_count = 0
 
+    def _update_visual_boundaries(self):
+        """Push per-task boundary limits to Gazebo visual overlays when available."""
+        if not hasattr(self.drone, "set_visual_boundary_lines"):
+            return
+
+        drone_xy = float(self.xy_limit)
+        z_level = float(self.reset_position[2])
+
+        if hasattr(self, "boundary") and isinstance(self.boundary, list) and len(self.boundary) >= 4:
+            drone_xy = float(self.boundary[0])
+            z_level = float(max(self.boundary[2], self.reset_position[2]))
+
+        self.drone.set_visual_boundary_lines(
+            drone_xy_limit=drone_xy,
+            z_level=z_level,
+        )
+
     def _reset_control_properties(self):
         self.drone.clear_command_queue()
         time.sleep(0.5)  # Allow any in-flight commands to be processed
@@ -106,6 +123,9 @@ class DroneEnvironment(ABC):
 
         # Reset task-specific state
         self._reset_task_state()
+
+        # Refresh Gazebo boundary lines using current task limits.
+        self._update_visual_boundaries()
 
         # Record initial position
         initial_position = self.drone.get_position()
@@ -252,9 +272,9 @@ class DroneEnvironment(ABC):
             self._render_task_specific_info()
             print("-" * 50)
 
-    def set_seed(self):
-        """Generate the random seed for the environment"""
-        self.seed = np.random.randint(0, 2**32 - 1)
+    def set_seed(self, seed: int):
+        self.seed = seed
+        np.random.seed(seed)
 
     def grab_frame(self, height: int = 240, width: int = 300) -> np.ndarray:
         """Generate a frame for video recording - to be overridden by tasks"""
