@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(pip install:*)",
+      "Bash(/Users/matthew/Desktop/P4P/drone_gym/.venv/bin/python3.10 -c \"import drone_gym; print\\(drone_gym.__file__\\)\")",
+      "Bash(/Users/matthew/Desktop/P4P/drone_gym/.venv/bin/pip install:*)",
+      "Bash(/Users/matthew/Desktop/P4P/drone_gym/.venv/bin/pip show:*)",
+      "Bash(xhost +local:)",
+      "Bash(DISPLAY=:0 /opt/X11/bin/xhost +local:)"
+    ]
+  }
+}

@@ -135,6 +135,7 @@ This environment is designed to be used with the [CARES Reinforcement Learning](
 ```bash
 # Run a training task (example)
 cares-rl train cli --gym drone --task move_to_random_2d_position SAC
+#cares-rl train cli --gym drone --task intercept_line_3d SAC
 ```
 
 Refer to the [CARES Reinforcement Learning](https://github.com/UoA-CARES/cares_reinforcement_learning) for detailed instructions on running tasks and configuring training parameters.

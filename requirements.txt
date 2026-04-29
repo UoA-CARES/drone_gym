@@ -4,7 +4,7 @@
 # Core dependencies
 gymnasium>=0.26.0
 numpy>=1.21.0
-pybullet>=3.2.0
+#pybullet>=3.2.0
 
 # Visualization
 matplotlib>=3.5.0
