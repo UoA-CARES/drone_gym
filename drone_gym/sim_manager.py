@@ -3,8 +3,40 @@ import subprocess
 import tempfile
 import threading
 import time
-from typing import Optional, Tuple
+from typing import Dict, Optional, Tuple
+from dataclasses import dataclass, field
 
+@dataclass
+class MarkerVisualSettings:
+    """
+    Visual/model-level settings for a Gazebo target marker.
+
+    These describe what the marker looks like and how often it should be
+    retried/updated. 
+    """
+    radius: float = 0.02
+    rgba: Tuple[float, float, float, float] = (1.0, 0.0, 0.0, 0.6)
+    specular: Tuple[float, float, float, float] = (0.1, 0.1, 0.1, 1.0)
+    pose_tolerance: float = 0.005
+    retry_backoff: float = 1.0
+
+@dataclass
+class MarkerState:
+    """
+    Runtime cache state for one Gazebo marker entity.
+
+    Each marker name gets its own MarkerState, so multiple markers do not share:
+    - spawned/not-spawned state
+    - last pose
+    - retry timer
+    - lock
+    - temporary SDF file path
+    """
+    spawned: bool = False
+    last_attempt_time: float = 0.0
+    last_pose: Optional[Tuple[float, float, float]] = None
+    model_file: Optional[str] = None
+    lock: threading.Lock = field(default_factory=threading.Lock)
 
 class SimManager:
     """
@@ -41,16 +73,14 @@ class SimManager:
         # Target marker settings/state
         self.enable_target_marker = enable_target_marker
         self.marker_name = marker_name
-        self.marker_retry_backoff = marker_retry_backoff
-        self.marker_pose_tolerance = marker_pose_tolerance
-        self._marker_spawned = False
-        self._last_marker_attempt_time = 0.0
-        self._last_marker_pose = None
-        self._marker_lock = threading.Lock()
-        self._marker_model_file = os.path.join(
-            tempfile.gettempdir(),
-            f"{self.marker_name}.sdf",
+        
+        self.marker_visual_settings = MarkerVisualSettings(
+            pose_tolerance=marker_pose_tolerance,
+            retry_backoff=marker_retry_backoff,
         )
+
+        self._marker_states: Dict[str, MarkerState] = {}
+        self._marker_states_lock = threading.Lock()
 
         # Boundary visual settings/state
         self.enable_boundary_lines = enable_boundary_lines
@@ -65,45 +95,95 @@ class SimManager:
         # Gazebo command settings
         self.gz_timeout = gz_timeout
 
-    def set_visual_target_marker_position(self, x: float, y: float, z: float) -> None:
+    def _safe_file_name(self, name: str) -> str:
         """
-        Spawn or update the Gazebo visual marker for a task target.
+        Convert a Gazebo entity name into a safe file-name.
+        """
+        return (
+            name.replace("/", "_")
+            .replace("\\", "_")
+            .replace(" ", "_")
+            .replace(":", "_")
+        )
+
+    def _get_target_marker_model_file_path(self, marker_name: str) -> str:
+        """
+        Return the temporary SDF file path for a specific marker.
+        """
+        safe_name = self._safe_file_name(marker_name)
+
+        return os.path.join(
+            tempfile.gettempdir(),
+            f"{safe_name}.sdf",
+        )
+
+    def _get_marker_state(self, marker_name: str) -> MarkerState:
+        """
+        Get or create the runtime cache state for one marker entity.
+        """
+        with self._marker_states_lock:
+            if marker_name not in self._marker_states:
+                self._marker_states[marker_name] = MarkerState(
+                    model_file=self._get_target_marker_model_file_path(marker_name)
+                )
+
+            return self._marker_states[marker_name]
+        
+    def set_visual_target_marker_position(
+        self,
+        x: float,
+        y: float,
+        z: float,
+        marker_name: Optional[str] = None,
+    ) -> None:
+        """
+        Spawn or update a named Gazebo visual marker for a task target.
+
+        If marker_name is not supplied, the default marker name is used.
         """
         if not self.enable_target_marker:
             return
 
+        marker_name = marker_name or self.marker_name
+        marker_state = self._get_marker_state(marker_name)
+        settings = self.marker_visual_settings
         now = time.time()
 
-        with self._marker_lock:
-            if self._last_marker_pose is not None:
-                dx = abs(x - self._last_marker_pose[0])
-                dy = abs(y - self._last_marker_pose[1])
-                dz = abs(z - self._last_marker_pose[2])
+        with marker_state.lock:
+            if marker_state.last_pose is not None:
+                dx = abs(x - marker_state.last_pose[0])
+                dy = abs(y - marker_state.last_pose[1])
+                dz = abs(z - marker_state.last_pose[2])
 
                 if (
-                    dx < self.marker_pose_tolerance
-                    and dy < self.marker_pose_tolerance
-                    and dz < self.marker_pose_tolerance
+                    dx < settings.pose_tolerance
+                    and dy < settings.pose_tolerance
+                    and dz < settings.pose_tolerance
                 ):
                     return
 
-            if not self._marker_spawned:
-                if now - self._last_marker_attempt_time < self.marker_retry_backoff:
+            if not marker_state.spawned:
+                if now - marker_state.last_attempt_time < settings.retry_backoff:
                     return
 
-                self._last_marker_attempt_time = now
-                self._marker_spawned = self._spawn_target_marker(x, y, z)
+                marker_state.last_attempt_time = now
+                marker_state.spawned = self._spawn_target_marker(
+                    marker_name=marker_name,
+                    x=x,
+                    y=y,
+                    z=z,
+                )
 
-                if not self._marker_spawned:
+                if not marker_state.spawned:
                     return
 
-            if not self._set_entity_pose(self.marker_name, x, y, z):
+            if not self._set_entity_pose(marker_name, x, y, z):
                 # The Gazebo world may have restarted or the marker may have been deleted.
-                # Mark it as missing and retry on a later call.
-                self._marker_spawned = False
+                # Mark this specific marker as missing and retry on a later call.
+                marker_state.spawned = False
                 return
 
-            self._last_marker_pose = (x, y, z)
+            marker_state.last_pose = (x, y, z)
 
     def set_visual_boundary_lines(self, xy_limit: float, z_level: float) -> None:
         """
@@ -145,10 +225,12 @@ class SimManager:
         This does not remove entities by itself; it only makes the manager
         attempt to respawn/update them on the next visual call.
         """
-        with self._marker_lock:
-            self._marker_spawned = False
-            self._last_marker_pose = None
-            self._last_marker_attempt_time = 0.0
+        with self._marker_states_lock:
+            for marker_state in self._marker_states.values():
+                with marker_state.lock:
+                    marker_state.spawned = False
+                    marker_state.last_pose = None
+                    marker_state.last_attempt_time = 0.0
 
         with self._boundary_lock:
             self._last_boundary_signature = None
@@ -168,6 +250,29 @@ class SimManager:
         )
 
         return ok
+    
+    def remove_visual_marker(self, marker_name: Optional[str] = None) -> bool:
+        """
+        Remove a visual target marker from Gazebo and clear its cached state.
+        """
+        marker_name = marker_name or self.marker_name
+
+        removed = self.remove_entity(marker_name)
+
+        with self._marker_states_lock:
+            self._marker_states.pop(marker_name, None)
+
+        return removed
+    
+    def remove_all_visual_markers(self) -> None:
+        """
+        Remove all known visual target markers from Gazebo.
+        """
+        with self._marker_states_lock:
+            marker_names = list(self._marker_states.keys())
+
+        for marker_name in marker_names:
+            self.remove_visual_marker(marker_name)
 
     def _run_gz_service(
         self,
@@ -225,39 +330,61 @@ class SimManager:
         # If there was no return-code failure and no explicit error, treat it as ok.
         return True, output
 
-    def _write_target_marker_model_file(self) -> None:
+    def _write_target_marker_model_file(
+        self,
+        marker_name: str,
+        model_file_path: str,
+    ) -> None:
+        settings = self.marker_visual_settings
+        r, g, b, a = settings.rgba
+        sr, sg, sb, sa = settings.specular
+
         model_sdf = f"""<?xml version='1.0'?>
 <sdf version='1.9'>
-  <model name='{self.marker_name}'>
+<model name='{marker_name}'>
     <static>true</static>
     <link name='link'>
-      <visual name='visual'>
+    <visual name='visual'>
         <geometry>
-          <sphere>
-            <radius>0.02</radius>
-          </sphere>
+        <sphere>
+            <radius>{settings.radius}</radius>
+        </sphere>
         </geometry>
         <material>
-          <ambient>1 0 0 0.6</ambient>
-          <diffuse>1 0 0 0.6</diffuse>
-          <specular>0.1 0.1 0.1 1</specular>
+        <ambient>{r} {g} {b} {a}</ambient>
+        <diffuse>{r} {g} {b} {a}</diffuse>
+        <specular>{sr} {sg} {sb} {sa}</specular>
         </material>
-      </visual>
+    </visual>
     </link>
-  </model>
+</model>
 </sdf>
 """
 
-        with open(self._marker_model_file, "w", encoding="utf-8") as model_file:
+        with open(model_file_path, "w", encoding="utf-8") as model_file:
             model_file.write(model_sdf)
 
-    def _spawn_target_marker(self, x: float, y: float, z: float) -> bool:
-        self._write_target_marker_model_file()
+    def _spawn_target_marker(
+        self,
+        marker_name: str,
+        x: float,
+        y: float,
+        z: float,
+    ) -> bool:
+        marker_state = self._get_marker_state(marker_name)
+
+        if marker_state.model_file is None:
+            marker_state.model_file = self._target_marker_model_file_path(marker_name)
+
+        self._write_target_marker_model_file(
+            marker_name=marker_name,
+            model_file_path=marker_state.model_file,
+        )
 
         req = (
-            f'sdf_filename: "{self._marker_model_file}", '
+            f'sdf_filename: "{marker_state.model_file}", '
             + f'pose: {{position: {{x: {x}, y: {y}, z: {z}}}}}, '
-            + f'name: "{self.marker_name}", allow_renaming: false'
+            + f'name: "{marker_name}", allow_renaming: false'
         )
 
         ok, output = self._run_gz_service(

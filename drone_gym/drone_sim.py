@@ -15,21 +15,44 @@ warnings.filterwarnings('ignore', message='Using legacy TYPE_HOVER_LEGACY')
 class DroneSim(DroneSetup):
     def __init__(
             self, 
-            uri="udp://0.0.0.0:19850", 
+            uri="udp://0.0.0.0:19850",
+            agent_id: str = "Drone",
             simulation=True,
             sim_manager: Optional[SimManager] = None,
         ):
         # Drone Properties
         self.simulation = simulation
+        self.agent_id = agent_id
         self.sim_manager = sim_manager or get_default_sim_manager()
 
         super().__init__(uri=uri)
 
-    def set_visual_target_marker_position(self, x: float, y: float, z: float) -> None:
+    def set_visual_target_marker_position(
+        self,
+        x: float,
+        y: float,
+        z: float,
+        marker_name: Optional[str] = None,
+    ) -> None:
         """
-        Backwards-compatible wrapper
+        Backwards-compatible wrapper.
+
+        If marker_name is provided, pass it to SimManager.
+        Otherwise, call SimManager without marker_name so it uses its own default.
         """
-        self.sim_manager.set_visual_target_marker_position(x, y, z)
+        if marker_name is not None:
+            self.sim_manager.set_visual_target_marker_position(
+                x=x,
+                y=y,
+                z=z,
+                marker_name=marker_name,
+            )
+        else:
+            self.sim_manager.set_visual_target_marker_position(
+                x=x,
+                y=y,
+                z=z,
+            )
 
     def set_visual_boundary_lines(self, drone_xy_limit: float, z_level: float) -> None:
         """
@@ -42,7 +65,7 @@ class DroneSim(DroneSetup):
 
     def _update_position(self):
         """Update position from Gazebo via state estimate logs"""
-        print("[Drone] Position tracking thread started")
+        print(f"[{self.agent_id}] Position tracking thread started")
         
         # Wait for CF to be ready
         timeout = time.time() + 10
@@ -50,7 +73,7 @@ class DroneSim(DroneSetup):
             time.sleep(0.1)
         
         if self.cf is None:
-            print("[Drone] ERROR: Crazyflie not initialized")
+            print(f"[{self.agent_id}] ERROR: Crazyflie not initialized")
             return
 
         try:
@@ -63,7 +86,7 @@ class DroneSim(DroneSetup):
             self.cf.log.add_config(position_log_config)
             position_log_config.data_received_cb.add_callback(self._position_callback)
             position_log_config.start()
-            print("[Drone] Position logging started")
+            print(f"[{self.agent_id}] Position logging started")
 
             # Wait for first position
             time.sleep(2)
@@ -83,7 +106,7 @@ class DroneSim(DroneSetup):
                 time.sleep(0.05)
 
         except Exception as e:
-            print(f"[Drone] Error in position thread: {str(e)}")
+            print(f"[{self.agent_id}] Error in position thread: {str(e)}")
         finally:
             if 'position_log_config' in locals():
                 try:
@@ -96,7 +119,7 @@ class DroneSim(DroneSetup):
         """Initialise Crazyflie connection for CrazySim"""
         try:
             cflib.crtp.init_drivers()
-            print("[Drone] Initializing CRTP drivers...")
+            print(f"[{self.agent_id}] Initializing CRTP drivers...")
             
             # Add retries for connection
             max_retries = 3
@@ -104,57 +127,57 @@ class DroneSim(DroneSetup):
             
             for attempt in range(max_retries):
                 try:
-                    print(f"[Drone] Connection attempt {attempt + 1}/{max_retries} to {self.URI}...")
-                    self.scf = SyncCrazyflie(self.URI, cf=Crazyflie(rw_cache="./cache"))
+                    print(f"[{self.agent_id}] Connection attempt {attempt + 1}/{max_retries} to {self.URI}...")
+                    self.scf = SyncCrazyflie(self.URI, cf=Crazyflie(rw_cache=f"./cache/{self.agent_id}/"))
                     self.scf.open_link()
                     self.cf = self.scf.cf
-                    print("[Drone] Successfully connected to CrazySim!")
+                    print(f"[{self.agent_id}] Successfully connected to CrazySim!")
                     break
                 except Exception as e:
-                    print(f"[Drone] Connection attempt {attempt + 1} failed: {str(e)}")
+                    print(f"[{self.agent_id}] Connection attempt {attempt + 1} failed: {str(e)}")
                     if attempt < max_retries - 1:
-                        print(f"[Drone] Retrying in {retry_delay} seconds...")
+                        print(f"[{self.agent_id}] Retrying in {retry_delay} seconds...")
                         time.sleep(retry_delay)
                     else:
-                        print("[Drone] All connection attempts failed")
-                        print("[Drone] Make sure:")
-                        print("  1. Gazebo is running")
-                        print("  2. The SITL firmware is started")
-                        print("  3. The drone model is spawned in Gazebo")
+                        print(f"[{self.agent_id}] All connection attempts failed")
+                        print(f"[{self.agent_id}] Make sure:")
+                        print(f"  1. Gazebo is running")
+                        print(f"  2. The SITL firmware is started")
+                        print(f"  3. The drone model is spawned in Gazebo")
                         raise
 
             # For CrazySim, we can skip deck detection or set it immediately I believe
-            print("[Drone] Setting deck attached (simulated)")
+            print(f"[{self.agent_id}] Setting deck attached (simulated)")
             self.deck_attached_event.set()
 
-            print("[Drone] Waiting for firmware to be ready...")
+            print(f"[{self.agent_id}] Waiting for firmware to be ready...")
             time.sleep(2)
 
-            print("[Drone] Resetting all log configurations")
+            print(f"[{self.agent_id}] Resetting all log configurations")
             self.cf.log.reset()
             time.sleep(0.5)
 
-            print("[Drone] Resetting state estimation (EKF)...")
+            print(f"[{self.agent_id}] Resetting state estimation (EKF)...")
             self.cf.param.set_value("kalman.resetEstimation", "1")
             time.sleep(0.5)
 
             # Arm the drone
-            print("[Drone] Arming Crazyflie...")
+            print(f"[{self.agent_id}] Arming Crazyflie...")
             self.cf.platform.send_arming_request(True)
             time.sleep(1.5)
             self.armed = True
-            print("[Drone] Crazyflie armed.")
+            print(f"[{self.agent_id}] Crazyflie armed.")
 
             self._setup_battery_logging()
             self._setup_velocity_logging()
 
             # Signal that hardware is ready
             self.hardware_ready_event.set()
-            print("[Drone] Hardware initialisation complete - ready to fly!")
+            print(f"[{self.agent_id}] Hardware initialisation complete - ready to fly!")
             return True
 
         except Exception as e:
-            print(f"[Drone] Failed to initialize Crazyflie: {str(e)}")
+            print(f"[{self.agent_id}] Failed to initialize Crazyflie: {str(e)}")
             return False
 
     def _position_callback(self, timestamp, data, logconf):
@@ -180,7 +203,7 @@ class DroneSim(DroneSetup):
         Args
 
         """
-        print("[Drone] Stopping...")
+        print(f"[{self.agent_id}] Stopping...")
         self.set_running(False)
         self.controller_active = False
         self.velocity_controller_active = False
@@ -192,7 +215,7 @@ class DroneSim(DroneSetup):
             except queue.Empty:
                 break
 
-        print("[Drone] Stopped")
+        print(f"[{self.agent_id}] Stopped")
         self._signal_stop_to_all_threads()
         self._join_all_threads()
         self._reset_shared_state()
@@ -204,10 +227,10 @@ if __name__ == "__main__":
     drone.is_flying_event.wait(timeout=15)
 
     if drone.is_flying_event.is_set():
-        print("Hovering for 5 seconds...")
+        print(f"[{drone.agent_id}] Hovering for 5 seconds...")
         time.sleep(5)
-        
-        print("Moving forward...")
+
+        print(f"[{drone.agent_id}] Moving forward...")
         drone.set_velocity_vector(0.2, 0, 0)
         time.sleep(3)
         
