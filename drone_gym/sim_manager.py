@@ -374,7 +374,7 @@ class SimManager:
         marker_state = self._get_marker_state(marker_name)
 
         if marker_state.model_file is None:
-            marker_state.model_file = self._target_marker_model_file_path(marker_name)
+            marker_state.model_file = self._get_target_marker_model_file_path(marker_name)
 
         self._write_target_marker_model_file(
             marker_name=marker_name,

@@ -10,16 +10,9 @@ from drone_gym.drone_sim import DroneSim
 from drone_gym.drone import Drone
 
 ########### NOTES ################
-# Previously sim was run with the command below
-# To run simulation:"cd CrazySim/crazyflie-firmware; bash tools/crazyflie-simulation/simulator_files/gazebo/launch/sitl_singleagent.sh -m crazyflie -x 0 -y 0; exec bash"
-# Which runs a simulation with specfically one drone
-# Since now we are doing multiple drones the sim command has to run either 
-# sitl_multiagent_square.sh or sitl_multiagent_text.sh
-# See those files for usage instructions 
-#
-#
-# Also need to update Drone class to work with multiple drones and probably 
+# [ ] Need to update Drone class to work with multiple drones and probably 
 # have a shared viacon class or smth like above
+# [ ] Add type hinting to this class
 
 class MarlDroneEnvironment(ParallelEnv):
     metadata = {"name": "marl_drone_environment_v0", "render_modes": ["human"]}
