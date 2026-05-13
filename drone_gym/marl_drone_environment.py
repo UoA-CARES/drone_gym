@@ -8,6 +8,7 @@ from pettingzoo.utils.env import ParallelEnv
 
 from drone_gym.drone_sim import DroneSim
 from drone_gym.drone import Drone
+from drone_gym.sim_manager import SimManager
 
 ########### NOTES ################
 # [ ] Need to update Drone class to work with multiple drones and probably 
@@ -36,6 +37,11 @@ class MarlDroneEnvironment(ParallelEnv):
         self.use_simulator = use_simulator
         self.num_agents_config = num_agents
 
+        if self.use_simulator:
+            self.sim_manager = SimManager(world_name="crazysim_default")
+        else:
+            self.sim_manager = None
+
         # Control limits
         self.max_velocity = max_velocity
         self.max_velocity_z = max_velocity_z
@@ -47,8 +53,8 @@ class MarlDroneEnvironment(ParallelEnv):
         self.z_max = z_max
         self.max_xy_range = xy_limit*2
         self.max_z_range = (self.z_max - self.z_min)
-        self.max_distance_2d = np.sqrt(self.max_xy_range^2 + self.max_xy_range^2)
-        self.max_distance_3d = np.sqrt(self.max_xy_range^2 + self.max_xy_range^2 + self.max_z_range^2)
+        self.max_distance_2d = np.sqrt(self.max_xy_range**2 + self.max_xy_range**2)
+        self.max_distance_3d = np.sqrt(self.max_xy_range**2 + self.max_xy_range**2 + self.max_z_range**2)
 
         # Reset layout
         self.reset_height = reset_height
@@ -103,8 +109,8 @@ class MarlDroneEnvironment(ParallelEnv):
         # Observation:
         # [x, y, z, vx, vy, vz, target_dx, target_dy, target_dz]
         self._observation_space = spaces.Box(
-            low=-1.0,
-            high=1.0,
+            low=-np.inf,
+            high=np.inf,
             shape=(9,),
             dtype=np.float32,
         )
@@ -241,7 +247,14 @@ class MarlDroneEnvironment(ParallelEnv):
     def _create_drones(self):
         for agent in self.possible_agents:
             if self.use_simulator:
-                self.drones[agent] = DroneSim(uri=self.drone_uris[agent])
+                # TODO: sim_manager shoudn't be passed to each drone
+                # SARL tasks need to be updated to use sim_manager directly
+                # before this can be removed from the drone constructor 
+                self.drones[agent] = DroneSim(
+                    uri=self.drone_uris[agent],
+                    agent_id=agent,
+                    sim_manager=self.sim_manager
+                )
             else:
                 self.drones[agent] = Drone()
 
@@ -268,7 +281,7 @@ class MarlDroneEnvironment(ParallelEnv):
 
         return reset_positions
     
-    def _generate_sim_uris(self) -> Dict[str, str]:
+    def _generate_default_sim_uris(self) -> Dict[str, str]:
         return {
             agent: f"udp://0.0.0.0:{19850 + i}"
             for i, agent in enumerate(self.possible_agents)
@@ -403,6 +416,41 @@ class MarlDroneEnvironment(ParallelEnv):
     def set_seed(self, seed: int):
         self.seed_value = seed
         np.random.seed(seed)
+
+    # Simulation helpers
+
+    def _set_target_marker(
+        self,
+        position: List[float],
+        marker_name: str = "target",
+    ):
+        """
+        Draw or update one Gazebo target marker
+
+        This should be used by MARL tasks instead of going through DroneSim,
+        because the target belongs to the task/environment, not the drone object.
+        """
+        if self.sim_manager is None:
+            return
+
+        self.sim_manager.set_visual_target_marker_position(
+            x=float(position[0]),
+            y=float(position[1]),
+            z=float(position[2]),
+            marker_name=f"{marker_name}",
+        )
+
+    def _update_visual_boundaries(self):
+        """
+        Draw or update the shared MARL flight boundary.
+        """
+        if self.sim_manager is None:
+            return
+
+        self.sim_manager.set_visual_boundary_lines(
+            xy_limit=float(self.xy_limit),
+            z_level=float(self.reset_height),
+        )
 
     # Abstract methods to be implemented by task-specific environments
 
