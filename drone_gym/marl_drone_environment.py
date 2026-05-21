@@ -156,6 +156,9 @@ class MarlDroneEnvironment(ParallelEnv):
         # Reset task-specific state
         self._reset_task_state()
 
+        # Refresh Gazebo boundary visual
+        self._update_visual_boundaries()
+
         observations = self._get_observations()
         infos = self._get_infos()
 
@@ -175,9 +178,22 @@ class MarlDroneEnvironment(ParallelEnv):
 
         # Apply all actions
         denormalized_actions = {}
+        action_filter_infos = {}
+
         for agent in self.agents:
             vx, vy, vz = self._denormalize_action(actions[agent])
+
+            vx, vy, vz, action_filter_info = self._apply_task_action_filter(
+                agent=agent,
+                vx=vx,
+                vy=vy,
+                vz=vz,
+                current_position=old_positions[agent],
+            )
+
             denormalized_actions[agent] = [vx, vy, vz]
+            action_filter_infos[agent] = action_filter_info
+
             self.drones[agent].set_velocity_vector(vx, vy, vz)
 
         # Advance simulation / wait control interval
@@ -200,11 +216,12 @@ class MarlDroneEnvironment(ParallelEnv):
         truncations = self._check_truncations(state_dicts)
 
         infos = self._get_infos(
-            state_dicts,
-            denormalized_actions,
-            actions,
-            old_positions,
-            new_positions,
+            state_dicts=state_dicts,
+            denormalized_actions=denormalized_actions,
+            normalized_actions=actions,
+            old_positions=old_positions,
+            new_positions=new_positions,
+            action_filter_infos=action_filter_infos,
         )
 
         observations = self._get_observations()
@@ -342,6 +359,31 @@ class MarlDroneEnvironment(ParallelEnv):
         vz = float(action[2]) * self.max_velocity_z
 
         return vx, vy, vz
+    
+    def _apply_task_action_processing(
+        self,
+        agent: str,
+        vx: float,
+        vy: float,
+        vz: float,
+        current_position: List[float],
+    ):
+        """
+        Task-specific action processing.
+
+        Default behaviour:
+            Do not modify the action.
+
+        Task environments can override this to implement behaviours such as:
+            - zeroing actions that would leave the boundary
+            - clipping actions near walls
+            - bouncing at boundaries
+            - slowing down near obstacles
+
+        Returns:
+            vx, vy, vz, action_info
+        """
+        return vx, vy, vz, {}
 
     def _normalize_position(self, position: List[float]) -> np.ndarray:
         x, y, z = position
@@ -437,7 +479,7 @@ class MarlDroneEnvironment(ParallelEnv):
             x=float(position[0]),
             y=float(position[1]),
             z=float(position[2]),
-            marker_name=f"{marker_name}",
+            marker_name=marker_name,
         )
 
     def _update_visual_boundaries(self):
@@ -494,6 +536,7 @@ class MarlDroneEnvironment(ParallelEnv):
         normalized_actions: Dict[str, np.ndarray] | None = None,
         old_positions: Dict[str, List[float]] | None = None,
         new_positions: Dict[str, List[float]] | None = None,
+        action_filter_infos: Dict[str, Dict[str, Any]] | None = None,
     ) -> Dict[str, Dict[str, Any]]:
         pass
 
