@@ -35,7 +35,7 @@ class MarlDroneEnvironment(ParallelEnv):
 
         # Environment setup
         self.use_simulator = use_simulator
-        self.num_agents_config = num_agents
+        self.num_agents = num_agents
 
         if self.use_simulator:
             self.sim_manager = SimManager(world_name="crazysim_default")
@@ -287,7 +287,7 @@ class MarlDroneEnvironment(ParallelEnv):
         """
         reset_positions = {}
 
-        centre_index = (self.num_agents_config - 1) / 2.0
+        centre_index = (self.num_agents - 1) / 2.0
 
         for i, agent in enumerate(self.possible_agents):
             x = (i - centre_index) * self.reset_spacing

@@ -61,6 +61,7 @@ class MarlMoveToTargets2D(MarlDroneEnvironment):
         self.local_ratio = local_ratio
         self.success_bonus = success_bonus
         self.target_xy_margin = target_xy_margin
+        self.env_dim = 2 # 2D task
 
 
         self.target_positions: Dict[str, List[float]] = {}
@@ -81,7 +82,7 @@ class MarlMoveToTargets2D(MarlDroneEnvironment):
         # self xy position: 2
         # own target relative position: 2
         # other drone relative positions: 2 * (N - 1)
-        obs_dim = 6 + 2 * (self.num_agents_config - 1)
+        obs_dim = 3 * self.env_dim + self.env_dim * (self.num_agents - 1)
 
         self._observation_space = spaces.Box(
             low=-np.inf,
@@ -89,6 +90,22 @@ class MarlMoveToTargets2D(MarlDroneEnvironment):
             shape=(obs_dim,),
             dtype=np.float32,
         )
+
+        #TODO: Add global state space definition
+        # look at f1tenth and mpe CARES RL wrapper observation_space for information
+        # look at f1tenth multi_f1tenth_environment.py for understanding how they build observation_space
+        # look at https://github.com/Farama-Foundation/MPE2/blob/main/mpe2/_mpe_utils/simple_env.py for how mpe build observation_space
+        state_dim = self.num_agents * self.env_dim + self.num_agents * self.env_dim + self.num_targets * self.env_dim
+        self.state_space = spaces.Box(
+            low=-np.inf,
+            high=np.inf,
+            shape=(state_dim,),
+            dtype=np.float32,
+        )
+
+        #############
+        # I NEED TO INVESTIGATE SATE AS THATS NEXT WHATS NEEDED FOR THE WRAPPER
+        #############
 
     def _denormalize_action(self, action: np.ndarray):
         """
@@ -297,7 +314,7 @@ class MarlMoveToTargets2D(MarlDroneEnvironment):
         """
         Penalise this agent for being too close to other active agents.
 
-        TODO check if position can be foudn from state_dicts instead of get_position() calls
+        TODO check if position can be found from state_dicts instead of get_position() calls
         TODO consider multiple levels of penalty based on distance, similar design to a paper that used multiple circle radii for different penalty levels 
         """
         if agent not in self.agents:
