@@ -62,6 +62,7 @@ class MarlMoveToTargets2D(MarlDroneEnvironment):
         self.success_bonus = success_bonus
         self.target_xy_margin = target_xy_margin
         self.env_dim = 2 # 2D task
+        self.num_targets = num_agents
 
 
         self.target_positions: Dict[str, List[float]] = {}

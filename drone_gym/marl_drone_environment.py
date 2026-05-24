@@ -35,7 +35,7 @@ class MarlDroneEnvironment(ParallelEnv):
 
         # Environment setup
         self.use_simulator = use_simulator
-        self.num_agents = num_agents
+        self.num_agents_config = num_agents
 
         if self.use_simulator:
             self.sim_manager = SimManager(world_name="crazysim_default")
@@ -68,7 +68,7 @@ class MarlDroneEnvironment(ParallelEnv):
         self.battery_threshold = 3.25
 
         # PettingZoo agent lists
-        self.possible_agents = [f"drone_{i}" for i in range(num_agents)]
+        self.possible_agents = [f"drone_{i}" for i in range(self.num_agents_config)]
         self.agents = []
 
         # Optional helper mapping
