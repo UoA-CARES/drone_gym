@@ -11,6 +11,7 @@ from drone_gym.tasks.move_circle.move_circle_2d import MoveCircle2D
 from drone_gym.tasks.move_circle.move_circle_2d_velocity import MoveCircle2DVelocity
 from drone_gym.tasks.move_circle.move_circle_2d_acceleration import MoveCircle2DAcceleration
 from drone_gym.tasks.move_circle.move_circle_2d_slow import MoveCircle2DSlow
+from drone_gym.tasks.evade_pursuers.evade_pursuers_2d import EvadePursuers2D
 
 
 def make(task_name: str, use_simulator: Literal[0,1], **kwargs):
@@ -35,6 +36,8 @@ def make(task_name: str, use_simulator: Literal[0,1], **kwargs):
         env = InterceptTargetLine2D(use_simulator, **kwargs)
     elif task_name == "intercept_line_3d":
         env = InterceptTargetLine3D(use_simulator, **kwargs)
+    elif task_name == "evade_pursuers_2d":
+        env = EvadePursuers2D(use_simulator, **kwargs)
     else:
         raise ValueError(f"Unknown task name: {task_name}")
     return env

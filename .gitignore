@@ -177,3 +177,6 @@ cython_debug/
 .DS_Store
 .AppleDouble
 .LSOverride
+
+# Claude Code
+.claude/
