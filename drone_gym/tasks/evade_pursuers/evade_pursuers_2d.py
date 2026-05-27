@@ -28,7 +28,7 @@ class EvadePursuers2D(DroneEnvironment):
 
     def __init__(self, use_simulator: Literal[0, 1], max_velocity: float = 0.25, step_time: float = 0.5,
                  exploration_steps: int = 1000, episode_length: int = 40,
-                 n_pursuers: int = 2, pursuer_max_velocity: float = 0.20):
+                 n_pursuers: int = 1, pursuer_max_velocity: float = 0.20):
 
         super().__init__(use_simulator, max_velocity, step_time)
 
@@ -277,7 +277,6 @@ class EvadePursuers2D(DroneEnvironment):
         sz = time_step * vz
 
         new_position = [sx + position[0], sy + position[1], sz + position[2]]
-        print(f" new position is: {new_position}")
         # Check if new position would exceed boundaries — zero velocity for this step
         if (new_position[0] < -self.boundary[0] or new_position[0] > self.boundary[0] or
                 new_position[1] < -self.boundary[1] or new_position[1] > self.boundary[1] or
