@@ -1,6 +1,6 @@
 from abc import abstractmethod
 import time
-from typing import Any, Dict, List, Literal
+from typing import Any, Literal
 
 import numpy as np
 from gymnasium import spaces
@@ -12,8 +12,8 @@ from drone_gym.sim_manager import SimManager
 
 ########### NOTES ################
 # [ ] Need to update Drone class to work with multiple drones and probably 
-# have a shared viacon class or smth like above
-# [ ] Add type hinting to this class
+# have a shared vicon class or smth like above
+
 
 class MarlDroneEnvironment(ParallelEnv):
     metadata = {"name": "marl_drone_environment_v0", "render_modes": ["human"]}
@@ -79,21 +79,21 @@ class MarlDroneEnvironment(ParallelEnv):
         self.drone_uris = self._generate_default_sim_uris()
 
         # Per-agent drone objects and state containers
-        self.drones: Dict[str, Any] = {}
+        self.drones: dict[str, Drone | DroneSim] = {}
 
         # Reset positions must be separated so drones do not start in collision
-        self.reset_positions: Dict[str, List[float]] = self._generate_default_reset_positions()
+        self.reset_positions: dict[str, list[float]] = self._generate_default_reset_positions()
 
-        self.episode_positions: Dict[str, List[List[float]]] = {
+        self.episode_positions: dict[str, list[list[float]]] = {
             agent: [] for agent in self.possible_agents
         }
 
-        self.prior_states: Dict[str, Dict[str, Any]] = {}
-        self.current_batteries: Dict[str, float] = {}
+        self.prior_states: dict[str, dict[str, Any]] = {}
+        self.current_batteries: dict[str, float] = {}
 
         # Evaluation episode tracking
         self._is_evaluating = False
-        self.success_counts: Dict[str, int] = {
+        self.success_counts: dict[str, int] = {
             agent: 0 for agent in self.possible_agents
         }
         self.team_success_count = 0
@@ -119,13 +119,13 @@ class MarlDroneEnvironment(ParallelEnv):
 
     # PettingZoo-required API
 
-    def observation_space(self, agent):
+    def observation_space(self, agent: str) -> spaces.Space:
         return self._observation_space
 
-    def action_space(self, agent):
+    def action_space(self, agent: str) -> spaces.Space:
         return self._action_space
 
-    def reset(self, seed=None, options=None):
+    def reset(self, seed: int | None = None, options: dict[str, Any] | None = None) -> tuple[dict[str, np.ndarray], dict[str, dict[str, Any]]]:
         """Reset the drones to initial position and state"""
 
         # PettingZoo talks about setting seed in reset but this might be handled by the cares rl wrapper??
@@ -164,7 +164,12 @@ class MarlDroneEnvironment(ParallelEnv):
 
         return observations, infos
 
-    def step(self, actions: Dict[str, np.ndarray]):
+    def step(self, actions: dict[str, np.ndarray]
+        ) -> tuple[dict[str, np.ndarray], 
+                   dict[str, float], 
+                   dict[str, bool], 
+                   dict[str, bool], 
+                   dict[str, dict[str, Any]]]:
 
         self.steps += 1
 
@@ -215,6 +220,18 @@ class MarlDroneEnvironment(ParallelEnv):
         terminations = self._check_terminations(state_dicts)
         truncations = self._check_truncations(state_dicts)
 
+        finished_agents = [
+            agent
+            for agent in self.agents
+            if terminations.get(agent, False) or truncations.get(agent, False)
+        ]
+
+        if finished_agents:
+            self._stop_drones(
+                agents=finished_agents,
+                reason="episode terminated/truncated",
+            )
+
         infos = self._get_infos(
             state_dicts=state_dicts,
             denormalized_actions=denormalized_actions,
@@ -235,7 +252,7 @@ class MarlDroneEnvironment(ParallelEnv):
 
         return observations, rewards, terminations, truncations, infos
 
-    def render(self):
+    def render(self) -> None:
         for agent in self.possible_agents:
             if agent in self.drones:
                 pos = self.drones[agent].get_position()
@@ -244,7 +261,7 @@ class MarlDroneEnvironment(ParallelEnv):
         self._render_task_specific_info()
         print("-" * 60)
 
-    def close(self):
+    def close(self) -> None:
         for agent, drone in self.drones.items():
             try:
                 drone.land()
@@ -253,7 +270,7 @@ class MarlDroneEnvironment(ParallelEnv):
             except Exception as exc:
                 print(f"Error closing {agent}: {exc}")
 
-    def state(self):
+    def state(self) -> np.ndarray:
         """
         Optional global state for centralized training.
         """
@@ -261,7 +278,7 @@ class MarlDroneEnvironment(ParallelEnv):
 
     # Drone env helpers
 
-    def _create_drones(self):
+    def _create_drones(self) -> None:
         for agent in self.possible_agents:
             if self.use_simulator:
                 # TODO: sim_manager shoudn't be passed to each drone
@@ -273,44 +290,113 @@ class MarlDroneEnvironment(ParallelEnv):
                     sim_manager=self.sim_manager
                 )
             else:
-                self.drones[agent] = Drone()
-
-    def _generate_default_reset_positions(self) -> Dict[str, List[float]]:
+                self.drones[agent] = Drone(agent_id=agent)
+    
+    def _generate_default_reset_positions(self) -> dict[str, list[float]]:
         """
-        Generate reset positions with 30 cm spacing by default.
+        Generate reset positions in a centred 2D grid that respects xy_limit.
 
-        For 2 agents:
-            drone_0 -> [-0.15, 0.0, reset_height]
-            drone_1 -> [ 0.15, 0.0, reset_height]
+        The grid uses reset_spacing where possible. If the requested spacing
+        cannot fit inside the allowed x-y area, an error is raised rather than
+        silently placing drones outside the boundary.
 
-        Error: Currently ignores area boundary 
+        Example for 4 agents:
+            drone_0 -> [-0.15, -0.15, reset_height]
+            drone_1 -> [ 0.15, -0.15, reset_height]
+            drone_2 -> [-0.15,  0.15, reset_height]
+            drone_3 -> [ 0.15,  0.15, reset_height]
         """
         reset_positions = {}
 
-        centre_index = (self.num_agents - 1) / 2.0
+        num_agents = len(self.possible_agents)
+
+        if num_agents == 0:
+            return reset_positions
+
+        # Keep reset positions slightly away from the boundary.
+        reset_margin = 0.05
+        usable_xy_limit = self.xy_limit - reset_margin
+
+        if num_agents == 1:
+            agent = self.possible_agents[0]
+            reset_positions[agent] = [0.0, 0.0, self.reset_height]
+            return reset_positions
+
+        # Maximum number of grid positions that can fit along one axis.
+        # Example:
+        #   xy_limit = 1.0, margin = 0.05, spacing = 0.3
+        #   usable range is [-0.95, 0.95], width = 1.9
+        #   floor(1.9 / 0.3) + 1 = 7 positions along an axis
+        max_positions_per_axis = int((2.0 * usable_xy_limit) // self.reset_spacing) + 1
+
+        if max_positions_per_axis <= 0:
+            raise ValueError(
+                f"reset_spacing={self.reset_spacing} is too large for xy_limit={self.xy_limit}."
+            )
+
+        max_grid_positions = max_positions_per_axis * max_positions_per_axis
+
+        if num_agents > max_grid_positions:
+            raise ValueError(
+                f"Cannot place {num_agents} drones inside xy_limit={self.xy_limit} "
+                f"with reset_spacing={self.reset_spacing}. "
+                f"Maximum possible grid positions: {max_grid_positions}."
+            )
+
+        # Choose a compact grid shape.
+        num_cols = min(max_positions_per_axis, int(np.ceil(np.sqrt(num_agents))))
+        num_rows = int(np.ceil(num_agents / num_cols))
+
+        # If rows do not fit, increase columns until rows fit.
+        while num_rows > max_positions_per_axis:
+            num_cols += 1
+
+            if num_cols > max_positions_per_axis:
+                raise ValueError(
+                    f"Cannot create valid reset grid for {num_agents} drones with "
+                    f"xy_limit={self.xy_limit} and reset_spacing={self.reset_spacing}."
+                )
+
+            num_rows = int(np.ceil(num_agents / num_cols))
+
+        # Centre the grid around (0, 0).
+        x_centre_index = (num_cols - 1) / 2.0
+        y_centre_index = (num_rows - 1) / 2.0
 
         for i, agent in enumerate(self.possible_agents):
-            x = (i - centre_index) * self.reset_spacing
-            y = 0.0
+            row = i // num_cols
+            col = i % num_cols
+
+            x = (col - x_centre_index) * self.reset_spacing
+            y = (row - y_centre_index) * self.reset_spacing
             z = self.reset_height
 
-            reset_positions[agent] = [x, y, z]
+            if abs(x) > usable_xy_limit or abs(y) > usable_xy_limit:
+                raise ValueError(
+                    f"Generated reset position for {agent} is outside usable bounds: "
+                    f"position={[x, y, z]}, usable_xy_limit={usable_xy_limit}"
+                )
+
+            reset_positions[agent] = [float(x), float(y), float(z)]
 
         return reset_positions
     
-    def _generate_default_sim_uris(self) -> Dict[str, str]:
+    def _generate_default_sim_uris(self) -> dict[str, str]:
         return {
             agent: f"udp://0.0.0.0:{19850 + i}"
             for i, agent in enumerate(self.possible_agents)
         }
 
-    def _reset_all_drones(self):
+    def _reset_all_drones(self) -> None:
         """
         Resets each drone one by one 
         Can be improved to do all drones at once
         """
+        print("Resetting all drones to initial positions...")
+        print(f"Reset positions: {self.reset_positions}")
         for agent in self.possible_agents:
             drone = self.drones[agent]
+            print(f"Resetting {agent}")
             self._reset_control_properties(agent)
 
             if drone.velocity_controller_active:
@@ -330,6 +416,7 @@ class MarlDroneEnvironment(ParallelEnv):
             time.sleep(0.1)
 
             drone.start_position_control()
+            print(f"[{agent}] Moving to reset position {reset_pos}...")
             drone.at_reset_position.wait(timeout=12)
             time.sleep(1)
 
@@ -337,11 +424,13 @@ class MarlDroneEnvironment(ParallelEnv):
             drone.clear_reset_position_event()
 
             initial_position = drone.get_position()
+            print(f"[{agent}] Current position: {initial_position}")
+            print(f"[{agent}] Reset position:   {reset_pos}")
             self.episode_positions[agent].append(initial_position)
 
             drone.start_velocity_control()
 
-    def _reset_control_properties(self, agent: str):
+    def _reset_control_properties(self, agent: str) -> None:
         drone = self.drones[agent]
 
         drone.clear_command_queue()
@@ -353,7 +442,7 @@ class MarlDroneEnvironment(ParallelEnv):
         drone.velocity_integral = {"x": 0.0, "y": 0.0, "z": 0.0}
         drone.target_velocity = {"x": 0.0, "y": 0.0, "z": 0.0}
 
-    def _denormalize_action(self, action: np.ndarray):
+    def _denormalize_action(self, action: np.ndarray) -> tuple[float, float, float]:
         vx = float(action[0]) * self.max_velocity
         vy = float(action[1]) * self.max_velocity
         vz = float(action[2]) * self.max_velocity_z
@@ -366,8 +455,8 @@ class MarlDroneEnvironment(ParallelEnv):
         vx: float,
         vy: float,
         vz: float,
-        current_position: List[float],
-    ):
+        current_position: list[float],
+    ) -> tuple[float, float, float, dict[str, Any]]:
         """
         Task-specific action processing.
 
@@ -385,7 +474,7 @@ class MarlDroneEnvironment(ParallelEnv):
         """
         return vx, vy, vz, {}
 
-    def _normalize_position(self, position: List[float]) -> np.ndarray:
+    def _normalize_position(self, position: list[float]) -> np.ndarray:
         x, y, z = position
 
         x_norm = np.clip(x / self.xy_limit, -1.0, 1.0)
@@ -397,7 +486,7 @@ class MarlDroneEnvironment(ParallelEnv):
 
         return np.array([x_norm, y_norm, z_norm], dtype=np.float32)
 
-    def _normalize_velocity(self, velocity_xyz: List[float]) -> np.ndarray:
+    def _normalize_velocity(self, velocity_xyz: list[float]) -> np.ndarray:
         vx, vy, vz = velocity_xyz
 
         return np.array(
@@ -409,7 +498,7 @@ class MarlDroneEnvironment(ParallelEnv):
             dtype=np.float32,
         )
 
-    def _normalize_relative_position(self, rel_xyz: List[float]) -> np.ndarray:
+    def _normalize_relative_position(self, rel_xyz: list[float]) -> np.ndarray:
         rx, ry, rz = rel_xyz
 
         return np.array(
@@ -423,8 +512,8 @@ class MarlDroneEnvironment(ParallelEnv):
 
     def _generate_state_dicts(
         self,
-        positions: Dict[str, List[float]],
-    ) -> Dict[str, Dict[str, Any]]:
+        positions: dict[str, list[float]],
+    ) -> dict[str, dict[str, Any]]:
         state_dicts = {}
 
         for agent, position in positions.items():
@@ -438,7 +527,7 @@ class MarlDroneEnvironment(ParallelEnv):
 
         return state_dicts
 
-    def is_in_boundaries(self, position: List[float]) -> bool:
+    def is_in_boundaries(self, position: list[float]) -> bool:
         x, y, z = position
 
         in_xy_range = abs(x) <= self.xy_limit and abs(y) <= self.xy_limit
@@ -446,7 +535,7 @@ class MarlDroneEnvironment(ParallelEnv):
 
         return in_xy_range and in_z_range
 
-    def set_reset_position(self, agent: str, position: List[float]):
+    def set_reset_position(self, agent: str, position: list[float]) -> None:
         if agent not in self.possible_agents:
             raise ValueError(f"Unknown agent: {agent}")
 
@@ -455,7 +544,7 @@ class MarlDroneEnvironment(ParallelEnv):
 
         self.reset_positions[agent] = position.copy()
 
-    def set_seed(self, seed: int):
+    def set_seed(self, seed: int) -> None:
         self.seed_value = seed
         np.random.seed(seed)
 
@@ -463,9 +552,9 @@ class MarlDroneEnvironment(ParallelEnv):
 
     def _set_target_marker(
         self,
-        position: List[float],
+        position: list[float],
         marker_name: str = "target",
-    ):
+    ) -> None:
         """
         Draw or update one Gazebo target marker
 
@@ -482,7 +571,7 @@ class MarlDroneEnvironment(ParallelEnv):
             marker_name=marker_name,
         )
 
-    def _update_visual_boundaries(self):
+    def _update_visual_boundaries(self) -> None:
         """
         Draw or update the shared MARL flight boundary.
         """
@@ -494,14 +583,137 @@ class MarlDroneEnvironment(ParallelEnv):
             z_level=float(self.reset_height),
         )
 
+
+    # TODO Add support for real drones regarding battery changes 
+    def restart_drone(
+        self,
+        agent: str,
+        require_user_confirmation: bool = True,
+    ) -> bool:
+        """
+        Restart one drone after an unsafe condition.
+
+        Returns:
+            True if the drone was successfully reinitialised and took off.
+            False if restart failed or the user aborted.
+        """
+        if agent not in self.drones:
+            print(f"[Restart] Unknown agent: {agent}")
+            return False
+
+        drone = self.drones[agent]
+
+        print(f"[{agent}] Restart requested.")
+
+        if drone is Drone:
+            try:
+                drone.pre_battery_change_cleanup()
+                time.sleep(2)
+            except Exception as exc:
+                print(f"[{agent}] Error during pre-restart cleanup: {exc}")
+
+        if require_user_confirmation:
+            while True:
+                response = input(
+                    f"[{agent}] Is the drone ready to fly again? (y/n): "
+                ).lower()
+
+                if response == "y":
+                    break
+
+                if response == "n":
+                    print(f"[{agent}] Operation aborted by user.")
+                    return False
+
+                print(
+                    f"[{agent}] Invalid input. Please enter 'y' for yes or 'n' to abort."
+                )
+
+        try:
+            if not drone.initialise_crazyflie():
+                print(f"[{agent}] Failed to initialise Crazyflie.")
+                return False
+
+            drone.take_off()
+
+            if not drone.is_flying_event.wait(timeout=15):
+                print(
+                    f"[{agent}] [ERROR] Drone failed to confirm take-off. "
+                    "MANUAL INTERVENTION REQUIRED."
+                )
+                return False
+
+            print(f"[{agent}] Restart complete.")
+            return True
+
+        except Exception as exc:
+            print(f"[{agent}] Restart failed: {exc}")
+            return False    
+
+    def restart_drones(
+        self,
+        agents: list[str] | None = None,
+        require_user_confirmation: bool = True,
+    ) -> bool:
+        """
+        Restart a group of drones.
+
+        Returns:
+            True if all requested drones restarted successfully.
+            False if any restart failed.
+        """
+        agents_to_restart = agents or self.possible_agents
+
+        print(f"[Restart] Restart requested for agents: {agents_to_restart}")
+
+        all_ok = True
+
+        for agent in agents_to_restart:
+            ok = self.restart_drone(
+                agent=agent,
+                require_user_confirmation=require_user_confirmation,
+            )
+
+            if not ok:
+                all_ok = False
+
+        return all_ok
+    
+    def _stop_drones(
+        self,
+        agents: list[str] | None = None,
+        reason: str = "",
+    ) -> None:
+        """
+        Send zero velocity to one or more drones.
+
+        This does not stop or clean up the DroneSim/Drone object. It only cancels
+        the currently commanded motion so the drone does not continue flying with
+        its last velocity after an episode terminates or truncates.
+        """
+        agents_to_stop = agents or list(self.possible_agents)
+
+        for agent in agents_to_stop:
+            if agent not in self.drones:
+                continue
+
+            try:
+                self.drones[agent].set_velocity_vector(0.0, 0.0, 0.0)
+
+                if reason:
+                    print(f"[{agent}] Zero velocity command sent: {reason}")
+
+            except Exception as e:
+                print(f"[{agent}] Failed to send zero velocity command: {e}")
+
     # Abstract methods to be implemented by task-specific environments
 
     @abstractmethod
-    def _reset_task_state(self):
+    def _reset_task_state(self) -> None:
         pass
 
     @abstractmethod
-    def _get_observations(self) -> Dict[str, np.ndarray]:
+    def _get_observations(self) -> dict[str, np.ndarray]:
         """
         Return one normalized observation vector per active agent.
         """
@@ -510,38 +722,38 @@ class MarlDroneEnvironment(ParallelEnv):
     @abstractmethod
     def _calculate_rewards(
         self,
-        state_dicts: Dict[str, Dict[str, Any]],
-    ) -> Dict[str, float]:
+        state_dicts: dict[str, dict[str, Any]],
+    ) -> dict[str, float]:
         pass
 
     @abstractmethod
     def _check_terminations(
         self,
-        state_dicts: Dict[str, Dict[str, Any]],
-    ) -> Dict[str, bool]:
+        state_dicts: dict[str, dict[str, Any]],
+    ) -> dict[str, bool]:
         pass
 
     @abstractmethod
     def _check_truncations(
         self,
-        state_dicts: Dict[str, Dict[str, Any]],
-    ) -> Dict[str, bool]:
+        state_dicts: dict[str, dict[str, Any]],
+    ) -> dict[str, bool]:
         pass
 
     @abstractmethod
     def _get_infos(
         self,
-        state_dicts: Dict[str, Dict[str, Any]] | None = None,
-        denormalized_actions: Dict[str, List[float]] | None = None,
-        normalized_actions: Dict[str, np.ndarray] | None = None,
-        old_positions: Dict[str, List[float]] | None = None,
-        new_positions: Dict[str, List[float]] | None = None,
-        action_filter_infos: Dict[str, Dict[str, Any]] | None = None,
-    ) -> Dict[str, Dict[str, Any]]:
+        state_dicts: dict[str, dict[str, Any]] | None = None,
+        denormalized_actions: dict[str, list[float]] | None = None,
+        normalized_actions: dict[str, np.ndarray] | None = None,
+        old_positions: dict[str, list[float]] | None = None,
+        new_positions: dict[str, list[float]] | None = None,
+        action_filter_infos: dict[str, dict[str, Any]] | None = None,
+    ) -> dict[str, dict[str, Any]]:
         pass
 
     @abstractmethod
-    def _distance_to_target(self, agent: str, position: List[float]) -> float:
+    def _distance_to_target(self, agent: str, position: list[float]) -> float:
         pass
 
     @abstractmethod
@@ -549,5 +761,5 @@ class MarlDroneEnvironment(ParallelEnv):
         pass
 
     @abstractmethod
-    def _render_task_specific_info(self):
+    def _render_task_specific_info(self) -> None:
         pass

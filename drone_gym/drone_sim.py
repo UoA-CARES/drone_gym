@@ -1,6 +1,6 @@
 import queue
 import time
-from typing import Optional
+from typing import Any
 
 import cflib.crtp
 from cflib.crazyflie import Crazyflie
@@ -14,25 +14,25 @@ warnings.filterwarnings('ignore', message='Using legacy TYPE_HOVER_LEGACY')
 
 class DroneSim(DroneSetup):
     def __init__(
-            self, 
-            uri="udp://0.0.0.0:19850",
+            self,
+            uri: str = "udp://0.0.0.0:19850",
             agent_id: str = "Drone",
-            simulation=True,
-            sim_manager: Optional[SimManager] = None,
-        ):
+            simulation: bool = True,
+            sim_manager: SimManager | None = None,
+        ) -> None:
         # Drone Properties
         self.simulation = simulation
         self.agent_id = agent_id
         self.sim_manager = sim_manager or get_default_sim_manager()
 
-        super().__init__(uri=uri)
+        super().__init__(uri=uri, agent_id=agent_id)
 
     def set_visual_target_marker_position(
         self,
         x: float,
         y: float,
         z: float,
-        marker_name: Optional[str] = None,
+        marker_name: str | None = None,
     ) -> None:
         """
         Backwards-compatible wrapper.
@@ -63,7 +63,7 @@ class DroneSim(DroneSetup):
             z_level=z_level,
         )
 
-    def _update_position(self):
+    def _update_position(self) -> None:
         """Update position from Gazebo via state estimate logs"""
         print(f"[{self.agent_id}] Position tracking thread started")
         
@@ -115,7 +115,7 @@ class DroneSim(DroneSetup):
                 except:
                     pass
 
-    def initialise_crazyflie(self):
+    def initialise_crazyflie(self) -> bool:
         """Initialise Crazyflie connection for CrazySim"""
         try:
             cflib.crtp.init_drivers()
@@ -180,7 +180,7 @@ class DroneSim(DroneSetup):
             print(f"[{self.agent_id}] Failed to initialize Crazyflie: {str(e)}")
             return False
 
-    def _position_callback(self, timestamp, data, logconf):
+    def _position_callback(self, timestamp: int, data: dict[str, Any], logconf: Any) -> None:
         """Callback for position data from Gazebo"""
         current_time = time.time()
         
@@ -196,7 +196,7 @@ class DroneSim(DroneSetup):
         self.position_history.append((current_time, current_pos))
 
 
-    def stop(self):
+    def stop(self) -> None:
         """
         Fully stop the drone and optionally prepare for a clean restart.
 

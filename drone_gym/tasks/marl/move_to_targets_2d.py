@@ -1,6 +1,6 @@
 import numpy as np
 from gymnasium import spaces
-from typing import Any, Dict, List, Literal, Optional
+from typing import Any, Literal
 
 from drone_gym.marl_drone_environment import MarlDroneEnvironment
 
@@ -32,15 +32,15 @@ class MarlMoveToTargets2D(MarlDroneEnvironment):
         z_min: float = 0.5,
         z_max: float = 1.5,
         reset_height: float = 1.0,
-        reset_spacing: float = 0.4,
+        reset_spacing: float = 0.5,
         episode_length: int = 80,
         target_threshold: float = 0.05,
-        collision_distance: float = 0.15,
+        collision_distance: float = 0.2,
         collision_penalty: float = 0.5,
         local_ratio: float = 0.5,
         success_bonus: float = 2.0,
         target_xy_margin: float = 0.2,
-    ):
+    ) -> None:
         super().__init__(
             use_simulator=use_simulator,
             num_agents=num_agents,
@@ -66,8 +66,8 @@ class MarlMoveToTargets2D(MarlDroneEnvironment):
         self.num_targets = num_agents
 
 
-        self.target_positions: Dict[str, List[float]] = {}
-        self.agent_success: Dict[str, bool] = {
+        self.target_positions: dict[str, list[float]] = {}
+        self.agent_success: dict[str, bool] = {
             agent: False for agent in self.possible_agents
         }
 
@@ -101,7 +101,7 @@ class MarlMoveToTargets2D(MarlDroneEnvironment):
             dtype=np.float32,
         )
 
-    def _denormalize_action(self, action: np.ndarray):
+    def _denormalize_action(self, action: np.ndarray) -> tuple[float, float, float]:
         """
         Convert normalized 2D action [ax, ay] into drone velocity command.
 
@@ -120,8 +120,8 @@ class MarlMoveToTargets2D(MarlDroneEnvironment):
         vx: float,
         vy: float,
         vz: float,
-        current_position: List[float],
-    ):
+        current_position: list[float],
+    ) -> tuple[float, float, float, dict[str, Any]]:
         """
         If the proposed velocity command is predicted to move the drone outside
         the allowed flight boundary, replace it with zero velocity.
@@ -146,7 +146,7 @@ class MarlMoveToTargets2D(MarlDroneEnvironment):
 
         return vx, vy, vz, {}
 
-    def _reset_task_state(self):
+    def _reset_task_state(self) -> None:
         """
         Generate one target per drone and draw/update target markers.
         """
@@ -165,7 +165,7 @@ class MarlMoveToTargets2D(MarlDroneEnvironment):
                     marker_name=f"target_{agent}",
                 )
 
-    def _sample_target_position(self) -> List[float]:
+    def _sample_target_position(self) -> list[float]:
         """
         Randomly sample a position for target inside the allowed flight area.
         """
@@ -177,7 +177,7 @@ class MarlMoveToTargets2D(MarlDroneEnvironment):
 
         return [x, y, z]
 
-    def _get_observations(self) -> Dict[str, np.ndarray]:
+    def _get_observations(self) -> dict[str, np.ndarray]:
         observations = {}
 
         positions = {
@@ -231,7 +231,7 @@ class MarlMoveToTargets2D(MarlDroneEnvironment):
 
         return observations
 
-    def _get_drone_velocity_xy(self, agent: str) -> List[float]:
+    def _get_drone_velocity_xy(self, agent: str) -> list[float]:
         """
         Get the drone's calculated x-y velocity.
         """
@@ -242,7 +242,7 @@ class MarlMoveToTargets2D(MarlDroneEnvironment):
             float(velocity.get("y", 0.0)),
         ]
 
-    def _normalize_position_xy(self, position: List[float]) -> np.ndarray:
+    def _normalize_position_xy(self, position: list[float]) -> np.ndarray:
         x, y = position[0], position[1]
 
         return np.array(
@@ -253,7 +253,7 @@ class MarlMoveToTargets2D(MarlDroneEnvironment):
             dtype=np.float32,
         )
 
-    def _normalize_velocity_xy(self, velocity_xyz: List[float]) -> np.ndarray:
+    def _normalize_velocity_xy(self, velocity_xyz: list[float]) -> np.ndarray:
         vx, vy = velocity_xyz[0], velocity_xyz[1]
 
         return np.array(
@@ -264,7 +264,7 @@ class MarlMoveToTargets2D(MarlDroneEnvironment):
             dtype=np.float32,
         )
 
-    def _normalize_relative_xy(self, rel_xy: List[float]) -> np.ndarray:
+    def _normalize_relative_xy(self, rel_xy: list[float]) -> np.ndarray:
         rx, ry = rel_xy
 
         return np.array(
@@ -277,8 +277,8 @@ class MarlMoveToTargets2D(MarlDroneEnvironment):
 
     def _calculate_rewards(
         self,
-        state_dicts: Dict[str, Dict[str, Any]],
-    ) -> Dict[str, float]:
+        state_dicts: dict[str, dict[str, Any]],
+    ) -> dict[str, float]:
         distances = {
             agent: state_dicts[agent]["distance_to_target"]
             for agent in self.agents
@@ -340,7 +340,7 @@ class MarlMoveToTargets2D(MarlDroneEnvironment):
 
         return penalty
 
-    def _is_in_xy_boundaries(self, position: List[float]) -> bool:
+    def _is_in_xy_boundaries(self, position: list[float]) -> bool:
         """
         Check only the x-y flight boundary.
         """
@@ -348,7 +348,7 @@ class MarlMoveToTargets2D(MarlDroneEnvironment):
 
         return abs(x) <= self.xy_limit and abs(y) <= self.xy_limit
     
-    def _is_in_z_boundaries(self, position: List[float]) -> bool:
+    def _is_in_z_boundaries(self, position: list[float]) -> bool:
         """
         Check z-only truncation condition.
         """
@@ -362,8 +362,8 @@ class MarlMoveToTargets2D(MarlDroneEnvironment):
 
     def _agents_with_z_boundary_violation(
         self,
-        state_dicts: Dict[str, Dict[str, Any]],
-    ) -> List[str]:
+        state_dicts: dict[str, dict[str, Any]],
+    ) -> list[str]:
         """
         Return active agents whose z position violates z boundary.
         """
@@ -379,8 +379,8 @@ class MarlMoveToTargets2D(MarlDroneEnvironment):
 
     def _check_terminations(
         self,
-        state_dicts: Dict[str, Dict[str, Any]],
-    ) -> Dict[str, bool]:
+        state_dicts: dict[str, dict[str, Any]],
+    ) -> dict[str, bool]:
         """
         Cooperative termination: end the episode for all agents only when
         every drone has reached its assigned target.
@@ -400,8 +400,8 @@ class MarlMoveToTargets2D(MarlDroneEnvironment):
 
     def _check_truncations(
         self,
-        state_dicts: Dict[str, Dict[str, Any]],
-    ) -> Dict[str, bool]:
+        state_dicts: dict[str, dict[str, Any]],
+    ) -> dict[str, bool]:
         """
         Truncate all agents together if the episode is too long or unsafe.
         """
@@ -413,7 +413,6 @@ class MarlMoveToTargets2D(MarlDroneEnvironment):
             for agent in self.agents
         )
 
-        # TODO: consider what needs to be done for the specific drones breaking z bounderies (e.g. battery change)
         z_violation_agents = self._agents_with_z_boundary_violation(state_dicts)
         any_z_violation = len(z_violation_agents) > 0
 
@@ -422,6 +421,16 @@ class MarlMoveToTargets2D(MarlDroneEnvironment):
                 "[TASK] Z boundary violation detected for agents: "
                 f"{z_violation_agents}. Truncating episode."
             )
+            restart_ok = self.restart_drones(
+                agents=list(self.agents),
+                require_user_confirmation=True,
+            )
+
+            if not restart_ok:
+                print(
+                    "[MARL 2D] Restart failed or was aborted. "
+                    "Manual intervention may be required."
+                )
 
         truncate_all = (
             time_limit_reached
@@ -436,13 +445,13 @@ class MarlMoveToTargets2D(MarlDroneEnvironment):
 
     def _get_infos(
         self,
-        state_dicts: Optional[Dict[str, Dict[str, Any]]] = None,
-        denormalized_actions: Optional[Dict[str, List[float]]] = None,
-        normalized_actions: Optional[Dict[str, np.ndarray]] = None,
-        old_positions: Optional[Dict[str, List[float]]] = None,
-        new_positions: Optional[Dict[str, List[float]]] = None,
-        action_filter_infos: Dict[str, Dict[str, Any]] | None = None,
-    ) -> Dict[str, Dict[str, Any]]:
+        state_dicts: dict[str, dict[str, Any]] | None = None,
+        denormalized_actions: dict[str, list[float]] | None = None,
+        normalized_actions: dict[str, np.ndarray] | None = None,
+        old_positions: dict[str, list[float]] | None = None,
+        new_positions: dict[str, list[float]] | None = None,
+        action_filter_infos: dict[str, dict[str, Any]] | None = None,
+    ) -> dict[str, dict[str, Any]]:
         infos = {}
 
 
@@ -487,7 +496,7 @@ class MarlMoveToTargets2D(MarlDroneEnvironment):
 
         return infos
 
-    def _distance_to_target(self, agent: str, position: List[float]) -> float:
+    def _distance_to_target(self, agent: str, position: list[float]) -> float:
         target_position = self.target_positions.get(agent)
 
         if target_position is None:
@@ -499,7 +508,7 @@ class MarlMoveToTargets2D(MarlDroneEnvironment):
 
     def _all_targets_reached(
         self,
-        state_dicts: Dict[str, Dict[str, Any]],
+        state_dicts: dict[str, dict[str, Any]],
     ) -> bool:
         if not self.agents:
             return False
@@ -539,7 +548,7 @@ class MarlMoveToTargets2D(MarlDroneEnvironment):
 
         return np.concatenate(state_parts).astype(np.float32)  
 
-    def _render_task_specific_info(self):
+    def _render_task_specific_info(self) -> None:
         print("Targets:")
 
         for agent in self.possible_agents:

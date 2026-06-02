@@ -3,7 +3,6 @@ import subprocess
 import tempfile
 import threading
 import time
-from typing import Dict, Optional, Tuple
 from dataclasses import dataclass, field
 
 @dataclass
@@ -15,8 +14,8 @@ class MarkerVisualSettings:
     retried/updated. 
     """
     radius: float = 0.02
-    rgba: Tuple[float, float, float, float] = (1.0, 0.0, 0.0, 0.6)
-    specular: Tuple[float, float, float, float] = (0.1, 0.1, 0.1, 1.0)
+    rgba: tuple[float, float, float, float] = (1.0, 0.0, 0.0, 0.6)
+    specular: tuple[float, float, float, float] = (0.1, 0.1, 0.1, 1.0)
     pose_tolerance: float = 0.005
     retry_backoff: float = 1.0
 
@@ -34,8 +33,8 @@ class MarkerState:
     """
     spawned: bool = False
     last_attempt_time: float = 0.0
-    last_pose: Optional[Tuple[float, float, float]] = None
-    model_file: Optional[str] = None
+    last_pose: tuple[float, float, float] | None = None
+    model_file: str | None = None
     lock: threading.Lock = field(default_factory=threading.Lock)
 
 class SimManager:
@@ -67,7 +66,7 @@ class SimManager:
         boundary_line_thickness: float = 0.02,
         boundary_visual_height: float = 0.8,
         gz_timeout: float = 1.5,
-    ):
+    ) -> None:
         self.world_name = world_name
 
         # Target marker settings/state
@@ -79,7 +78,7 @@ class SimManager:
             retry_backoff=marker_retry_backoff,
         )
 
-        self._marker_states: Dict[str, MarkerState] = {}
+        self._marker_states: dict[str, MarkerState] = {}
         self._marker_states_lock = threading.Lock()
 
         # Boundary visual settings/state
@@ -88,7 +87,7 @@ class SimManager:
         self.boundary_retry_backoff = boundary_retry_backoff
         self.boundary_line_thickness = boundary_line_thickness
         self.boundary_visual_height = boundary_visual_height
-        self._last_boundary_signature = None
+        self._last_boundary_signature: tuple[float, float] | None = None
         self._last_boundary_attempt_time = 0.0
         self._boundary_lock = threading.Lock()
 
@@ -134,7 +133,7 @@ class SimManager:
         x: float,
         y: float,
         z: float,
-        marker_name: Optional[str] = None,
+        marker_name: str | None = None,
     ) -> None:
         """
         Spawn or update a named Gazebo visual marker for a task target.
@@ -251,7 +250,7 @@ class SimManager:
 
         return ok
     
-    def remove_visual_marker(self, marker_name: Optional[str] = None) -> bool:
+    def remove_visual_marker(self, marker_name: str | None = None) -> bool:
         """
         Remove a visual target marker from Gazebo and clear its cached state.
         """
@@ -280,7 +279,7 @@ class SimManager:
         reqtype: str,
         reptype: str,
         req: str,
-    ) -> Tuple[bool, str]:
+    ) -> tuple[bool, str]:
         """
         Call a Gazebo transport service using the gz CLI.
         """
@@ -429,7 +428,7 @@ class SimManager:
         name: str,
         xy_limit: float,
         z_level: float,
-        rgba: Tuple[float, float, float, float],
+        rgba: tuple[float, float, float, float],
     ) -> str:
         model_file_path = self._boundary_model_file_path(name, xy_limit, z_level)
 
@@ -481,7 +480,7 @@ class SimManager:
         name: str,
         xy_limit: float,
         z_level: float,
-        rgba: Tuple[float, float, float, float],
+        rgba: tuple[float, float, float, float],
     ) -> bool:
         self.remove_entity(name)
 
@@ -511,7 +510,7 @@ class SimManager:
         return ok
 
 
-_DEFAULT_SIM_MANAGER: Optional[SimManager] = None
+_DEFAULT_SIM_MANAGER: SimManager | None = None
 _DEFAULT_SIM_MANAGER_LOCK = threading.Lock()
 
 
