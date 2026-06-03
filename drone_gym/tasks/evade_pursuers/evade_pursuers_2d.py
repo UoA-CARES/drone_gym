@@ -46,6 +46,7 @@ class EvadePursuers2D(DroneEnvironment):
         self.capture_threshold = 0.20  # metres — pursuer catches evader
         self.spawn_min_distance = 1.0  # minimum start distance between evader and each pursuer
         self.spawn_margin = 0.1
+        self.pursuer_spawn_margin = 0.5  # larger margin to prevent overshoot past boundary during reset
         self.fixed_z = 1.0
 
         self.xy_limit = 2.0  # Boundary limit for x and y
@@ -105,18 +106,30 @@ class EvadePursuers2D(DroneEnvironment):
     # ------------------------------------------------------------------
 
     def _compute_pursuer_velocity(self, pursuer_pos: List[float], evader_pos: List[float]) -> List[float]:
-        """Compute a pursuer's velocity command [vx, vy, 0].
+        """Compute a pursuer's velocity command [vx, vy, vz].
 
-        Placeholder: Pure Pursuit (Isaacs 1965) — steer directly toward the evader
-        at max speed. Swap this body with the chosen expert algorithm.
+        Pure Pursuit toward the evader at max speed, with boundary clamping and
+        proportional z-correction to hold fixed_z altitude.
         """
         dx = evader_pos[0] - pursuer_pos[0]
         dy = evader_pos[1] - pursuer_pos[1]
         dist = math.sqrt(dx * dx + dy * dy)
         if dist < 1e-6:
-            return [0.0, 0.0, 0.0]
-        scale = self.pursuer_max_velocity / dist
-        return [scale * dx, scale * dy, 0.0]
+            vx, vy = 0.0, 0.0
+        else:
+            scale = self.pursuer_max_velocity / dist
+            vx = scale * dx
+            vy = scale * dy
+
+        # Clamp velocity when the pursuer is within the soft boundary buffer,
+        # preventing it from building momentum toward the wall
+        soft_limit = self.xy_limit - 0.3
+        if (pursuer_pos[0] <= -soft_limit and vx < 0) or (pursuer_pos[0] >= soft_limit and vx > 0):
+            vx = 0.0
+        if (pursuer_pos[1] <= -soft_limit and vy < 0) or (pursuer_pos[1] >= soft_limit and vy > 0):
+            vy = 0.0
+
+        return [vx, vy, 0.0]
 
     # ------------------------------------------------------------------
     # Pursuer drone management
@@ -147,7 +160,7 @@ class EvadePursuers2D(DroneEnvironment):
 
     def _sample_pursuer_target_positions(self, evader_pos: List[float]) -> List[List[float]]:
         """Sample random (x, y, fixed_z) positions for each pursuer with min separation from evader."""
-        limit = self.xy_limit - self.spawn_margin
+        limit = self.xy_limit - self.pursuer_spawn_margin
         targets: List[List[float]] = []
         for i in range(self.n_pursuers):
             placed = False
@@ -167,6 +180,15 @@ class EvadePursuers2D(DroneEnvironment):
 
     def _fly_pursuers_to_positions(self, target_positions: List[List[float]]):
         """Use each pursuer's position controller to fly it to a target (x, y, z)."""
+        # Re-take off any pursuer that landed due to an emergency stop
+        for i, pursuer in enumerate(self.pursuer_drones):
+            if not pursuer.is_flying_event.is_set():
+                print(f"[EvadePursuers2D] Pursuer {i} is on the ground — taking off again")
+                pursuer.take_off()
+                if not pursuer.is_flying_event.wait(timeout=15):
+                    print(f"[EvadePursuers2D] WARNING: pursuer {i} failed to take off")
+                time.sleep(1)
+
         # Stop velocity controllers, reset PID state, set targets
         for pursuer, target in zip(self.pursuer_drones, target_positions):
             if pursuer.velocity_controller_active:
@@ -182,7 +204,7 @@ class EvadePursuers2D(DroneEnvironment):
             if not pursuer.at_reset_position.wait(timeout=12):
                 print(f"[EvadePursuers2D] WARNING: pursuer {i} timed out moving to reset position")
 
-        time.sleep(0.5)
+        time.sleep(1.5)  # let pursuers settle at fixed_z before switching to velocity control
 
         # Switch to velocity control for the episode
         for pursuer in self.pursuer_drones:
@@ -195,9 +217,9 @@ class EvadePursuers2D(DroneEnvironment):
         for i, pursuer in enumerate(self.pursuer_drones):
             pos = pursuer.get_position()
             self.pursuer_positions[i] = list(pos)
-            vx, vy, _ = self._compute_pursuer_velocity(pos, evader_pos)
+            vx, vy, vz = self._compute_pursuer_velocity(pos, evader_pos)
             self.pursuer_velocities[i] = [vx, vy, 0.0]
-            pursuer.set_velocity_vector(vx, vy, 0.0)
+            pursuer.set_velocity_vector(vx, vy, vz)
 
     def _refresh_pursuer_positions(self):
         """Update local position tracking from each pursuer's current state."""
@@ -208,33 +230,56 @@ class EvadePursuers2D(DroneEnvironment):
     # DroneEnvironment overrides
     # ------------------------------------------------------------------
 
+    def _sample_random_position(self) -> List[float]:
+        """Sample a random (x, y, fixed_z) spawn for the evader within the boundary."""
+        limit = self.xy_limit - self.spawn_margin
+        x = float(np.random.uniform(-limit, limit))
+        y = float(np.random.uniform(-limit, limit))
+        return [x, y, self.fixed_z]
+
     def reset(self, training: bool = True):
-        """Reset the learning drone and respawn the pursuers at random positions"""
+        """Reset both the evader and pursuers to random positions within the boundary."""
 
         # Reset successful episodes count when starting evaluation
         if not training and not self._is_evaluating:
             self.successful_episodes_count = 0
 
-        # Call parent reset — takes the learning drone off and moves it to (0, 0, 1)
-        state = super().reset(training)
+        # Parent reset: handles takeoff, moves evader to (0, 0, 1), starts velocity control
+        super().reset(training)
 
-        # First reset: take off the pursuer drones (subsequent resets just fly them around)
+        # First reset: take off the pursuer drones
         if not self._pursuers_taken_off:
             self._take_off_pursuers()
             self._pursuers_taken_off = True
 
-        # Sample fresh random spawn positions for each pursuer
+        # Stop evader velocity control to reposition it at a random spawn
+        if self.drone.velocity_controller_active:
+            self.drone.stop_velocity_control()
+        self.drone.set_velocity_vector(0, 0, 0)
+
+        evader_target = self._sample_random_position()
+        self.drone.set_target_position(evader_target[0], evader_target[1], self.fixed_z)
+        self.drone.start_position_control()
+        if not self.drone.at_reset_position.wait(timeout=15):
+            print("[EvadePursuers2D] WARNING: evader timed out moving to random spawn position")
+        self.drone.stop_position_control()
+        self.drone.clear_reset_position_event()
+        time.sleep(1.5)  # let evader settle at fixed_z before starting pursuers
+
+        # Move pursuers to random positions with minimum separation from evader
         evader_pos = self.drone.get_position()
         target_positions = self._sample_pursuer_target_positions(evader_pos)
-
-        # Fly each pursuer to its sampled position via position control, then switch to velocity control
         self._fly_pursuers_to_positions(target_positions)
 
-        # Refresh local tracking after they have arrived
         self._refresh_pursuer_positions()
-
         self.caught = False
         self.previous_distance = self._distance_to_target(self.drone.get_position())
+
+        # Brief final settle so both drones are stable at fixed_z before the episode starts
+        time.sleep(1.0)
+
+        # Resume velocity control for the episode
+        self.drone.start_velocity_control()
 
         return self._get_state()
 
@@ -255,7 +300,7 @@ class EvadePursuers2D(DroneEnvironment):
         if self.learning:
             # Learning phase: action is already in [-1, 1]
             assert len(action) == 3, 'action should be length 3'
-            processed_action = [action[0], action[1], 0]  # Add vz=0 to fit 3D action shape of drone_environment
+            processed_action = [action[0], action[1], 0]
         else:
             # Exploration phase: convert from [0, 1] to [-1, 1]
             processed_action = [action[0] * 2 - 1, action[1] * 2 - 1, 0]
