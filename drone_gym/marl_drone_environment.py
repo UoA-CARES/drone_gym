@@ -389,43 +389,75 @@ class MarlDroneEnvironment(ParallelEnv):
 
     def _reset_all_drones(self) -> None:
         """
-        Resets each drone one by one 
+        Resets all drones at once
         Can be improved to do all drones at once
         """
         print("Resetting all drones to initial positions...")
         print(f"Reset positions: {self.reset_positions}")
+
         for agent in self.possible_agents:
             drone = self.drones[agent]
-            print(f"Resetting {agent}")
-            self._reset_control_properties(agent)
-
+            
+            # Question
+            # is this needed as _stop_drones is called in step after termination/truncation and should have already sent zero velocity commands to all finished drones?
+            drone.set_velocity_vector(0, 0, 0)
+            
             if drone.velocity_controller_active:
                 drone.stop_velocity_control()
 
-            drone.set_velocity_vector(0, 0, 0)
             time.sleep(0.5)
+            # print(f"Resetting {agent}")
+            self._reset_control_properties(agent)
+            drone.set_velocity_vector(0, 0, 0)
+
+        for agent in self.possible_agents:
+            drone = self.drones[agent]
 
             if not drone.is_flying_event.is_set():
+                print(f"[{agent}] Taking off before reset...")
                 drone.take_off()
-                time.sleep(1)
 
-            drone.is_flying_event.wait(timeout=15)
+        time.sleep(1)
+
+        for agent in self.possible_agents:
+            drone = self.drones[agent]
+
+            if not drone.is_flying_event.wait(timeout=15):
+                raise RuntimeError(f"[{agent}] Failed to confirm take-off during reset.")
+
+        for agent in self.possible_agents:
+            drone = self.drones[agent]
 
             reset_pos = self.reset_positions[agent]
             drone.set_target_position(*reset_pos)
-            time.sleep(0.1)
+
+        time.sleep(0.1)
+
+        for agent in self.possible_agents:
+            drone = self.drones[agent]
 
             drone.start_position_control()
-            print(f"[{agent}] Moving to reset position {reset_pos}...")
-            drone.at_reset_position.wait(timeout=12)
-            time.sleep(1)
+        
+        reset_success = self._wait_for_all_reset_events(timeout=12)
+
+        if not reset_success:
+            print("[ERROR] Not all drones reached reset positions in time. Check drone states and reset position configuration.")
+
+        time.sleep(1)
+
+        for agent in self.possible_agents:
+            drone = self.drones[agent]
 
             drone.stop_position_control()
             drone.clear_reset_position_event()
+            drone.set_velocity_vector(0.0, 0.0, 0.0)
+
+        for agent in self.possible_agents:
+            drone = self.drones[agent]
 
             initial_position = drone.get_position()
-            print(f"[{agent}] Current position: {initial_position}")
-            print(f"[{agent}] Reset position:   {reset_pos}")
+            print(f"[{agent}] Current position after reset: {initial_position}")
+            print(f"[{agent}] Desired reset target: {self.reset_positions[agent]}")
             self.episode_positions[agent].append(initial_position)
 
             drone.start_velocity_control()
@@ -441,6 +473,45 @@ class MarlDroneEnvironment(ParallelEnv):
         drone.velocity_last_error = {"x": 0.0, "y": 0.0, "z": 0.0}
         drone.velocity_integral = {"x": 0.0, "y": 0.0, "z": 0.0}
         drone.target_velocity = {"x": 0.0, "y": 0.0, "z": 0.0}
+
+    def _wait_for_all_reset_events(self, timeout: float = 12.0) -> bool:
+        """
+        Wait until every drone has reached its reset position.
+        """
+        deadline = time.time() + timeout
+
+        while time.time() < deadline:
+            reached_agents = [
+                agent
+                for agent in self.possible_agents
+                if self.drones[agent].at_reset_position.is_set()
+            ]
+
+            if len(reached_agents) == len(self.possible_agents):
+                print("[RESET] All drones reached their reset targets.")
+                return True
+
+            waiting_agents = [
+                agent
+                for agent in self.possible_agents
+                if agent not in reached_agents
+            ]
+
+            print(
+                "[RESET] Waiting for drones: "
+                f"{waiting_agents}. Reached: {reached_agents}"
+            )
+
+            time.sleep(0.5)
+
+        timed_out_agents = [
+            agent
+            for agent in self.possible_agents
+            if not self.drones[agent].at_reset_position.is_set()
+        ]
+
+        print(f"[RESET] Timeout waiting for drones: {timed_out_agents}")
+        return False
 
     def _denormalize_action(self, action: np.ndarray) -> tuple[float, float, float]:
         vx = float(action[0]) * self.max_velocity
