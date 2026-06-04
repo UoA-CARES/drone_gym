@@ -82,7 +82,7 @@ class MarlDroneEnvironment(ParallelEnv):
         self.drones: dict[str, Drone | DroneSim] = {}
 
         # Reset positions must be separated so drones do not start in collision
-        self.reset_positions: dict[str, list[float]] = self._generate_default_reset_positions()
+        self.reset_positions: dict[str, list[float]] = self._generate_grid_reset_positions()
 
         self.episode_positions: dict[str, list[list[float]]] = {
             agent: [] for agent in self.possible_agents
@@ -120,14 +120,37 @@ class MarlDroneEnvironment(ParallelEnv):
     # PettingZoo-required API
 
     def observation_space(self, agent: str) -> spaces.Space:
+        """
+        Return gymnasium Space object for the given agent's observations.
+        """
         return self._observation_space
 
     def action_space(self, agent: str) -> spaces.Space:
+        """
+        Return gymnasium Space object for the given agent's actions.
+        """
         return self._action_space
 
     def reset(self, seed: int | None = None, options: dict[str, Any] | None = None) -> tuple[dict[str, np.ndarray], dict[str, dict[str, Any]]]:
-        """Reset the drones to initial position and state"""
+        """
+        Reset the environment and return initial observations.
 
+        Resets all drones, episode bookkeeping, task-specific state, and visual
+        boundaries before starting a new episode.
+
+        Args:
+            seed: Optional random seed accepted for PettingZoo API compatibility.
+                Currently unused.
+            options: Optional reset options. Supports `training`, which defaults
+                to True. When `training` is False, evaluation-mode bookkeeping is
+                enabled.
+
+        Returns:
+            A tuple containing:
+
+            - observations: Initial observations for each active agent.
+            - infos: Initial info dictionaries for each active agent.
+        """
         # PettingZoo talks about setting seed in reset but this might be handled by the cares rl wrapper??
         # if seed is not None:
         #     self.set_seed(seed)
@@ -170,7 +193,24 @@ class MarlDroneEnvironment(ParallelEnv):
                    dict[str, bool], 
                    dict[str, bool], 
                    dict[str, dict[str, Any]]]:
+        """
+        Take a step in the environment using the provided actions.
 
+        Actions are expected to be normalized in the range [-1, 1]. They are
+        denormalized to velocity commands based on `max_velocity` and
+        `max_velocity_z`.
+
+        Args:
+            actions: Normalized action commands for each active agent.
+
+        Returns:
+            A tuple containing:
+                - observations: New observations for each active agent.
+                - rewards: Rewards for each active agent.
+                - terminations: Whether each agent's episode has terminated.
+                - truncations: Whether each agent's episode has been truncated.
+                - infos: Additional info for each active agent.
+        """
         self.steps += 1
 
         # Read old positions before applying actions
@@ -253,6 +293,8 @@ class MarlDroneEnvironment(ParallelEnv):
         return observations, rewards, terminations, truncations, infos
 
     def render(self) -> None:
+        """Render the environment state"""
+
         for agent in self.possible_agents:
             if agent in self.drones:
                 pos = self.drones[agent].get_position()
@@ -262,6 +304,8 @@ class MarlDroneEnvironment(ParallelEnv):
         print("-" * 60)
 
     def close(self) -> None:
+        """Clean up the drone environment"""
+        
         for agent, drone in self.drones.items():
             try:
                 drone.land()
@@ -279,6 +323,7 @@ class MarlDroneEnvironment(ParallelEnv):
     # Drone env helpers
 
     def _create_drones(self) -> None:
+        """Create drone instances for all possible agents."""
         for agent in self.possible_agents:
             if self.use_simulator:
                 # TODO: sim_manager shoudn't be passed to each drone
@@ -292,7 +337,7 @@ class MarlDroneEnvironment(ParallelEnv):
             else:
                 self.drones[agent] = Drone(agent_id=agent)
     
-    def _generate_default_reset_positions(self) -> dict[str, list[float]]:
+    def _generate_grid_reset_positions(self) -> dict[str, list[float]]:
         """
         Generate reset positions in a centred 2D grid that respects xy_limit.
 
@@ -382,6 +427,7 @@ class MarlDroneEnvironment(ParallelEnv):
         return reset_positions
     
     def _generate_default_sim_uris(self) -> dict[str, str]:
+        """Generate default simulator URIs for all possible agents."""
         return {
             agent: f"udp://0.0.0.0:{19850 + i}"
             for i, agent in enumerate(self.possible_agents)
@@ -389,8 +435,10 @@ class MarlDroneEnvironment(ParallelEnv):
 
     def _reset_all_drones(self) -> None:
         """
-        Resets all drones at once
-        Can be improved to do all drones at once
+        Resets all drones at once to their respective reset positions.
+        Ends by enabling velocity control for all drones so they are ready for the first step.
+        
+        This method can be improved to avoid collision during reset
         """
         print("Resetting all drones to initial positions...")
         print(f"Reset positions: {self.reset_positions}")
@@ -463,6 +511,12 @@ class MarlDroneEnvironment(ParallelEnv):
             drone.start_velocity_control()
 
     def _reset_control_properties(self, agent: str) -> None:
+        """
+        Reset control state for the given agent's drone.
+
+        Clears queued commands, waits briefly for the queue to settle, and resets
+        position and velocity controller errors to zero.
+        """
         drone = self.drones[agent]
 
         drone.clear_command_queue()
@@ -476,7 +530,17 @@ class MarlDroneEnvironment(ParallelEnv):
 
     def _wait_for_all_reset_events(self, timeout: float = 12.0) -> bool:
         """
-        Wait until every drone has reached its reset position.
+        Wait for all drones to signal that they reached their reset positions.
+
+        Polls each drone's `at_reset_position` event until every possible agent has
+        reached its reset target or the timeout expires.
+
+        Args:
+            timeout: Maximum number of seconds to wait before giving up.
+
+        Returns:
+            bool: True if all drones reach their reset positions before the timeout;
+            otherwise False.
         """
         deadline = time.time() + timeout
 
@@ -514,6 +578,12 @@ class MarlDroneEnvironment(ParallelEnv):
         return False
 
     def _denormalize_action(self, action: np.ndarray) -> tuple[float, float, float]:
+        """
+        Convert a normalized action into velocity commands.
+
+        The x and y velocity components are scaled by `max_velocity`, while the z
+        velocity component is scaled by `max_velocity_z`.
+        """
         vx = float(action[0]) * self.max_velocity
         vy = float(action[1]) * self.max_velocity
         vz = float(action[2]) * self.max_velocity_z
@@ -529,10 +599,13 @@ class MarlDroneEnvironment(ParallelEnv):
         current_position: list[float],
     ) -> tuple[float, float, float, dict[str, Any]]:
         """
-        Task-specific action processing.
+        Apply task-specific processing to velocity commands before execution.
 
-        Default behaviour:
-            Do not modify the action.
+        This hook allows task environments to modify, filter, or annotate the
+        velocity commands produced from the policy action before they are sent to
+        the drone. 
+        
+        The default implementation returns the commands unchanged.
 
         Task environments can override this to implement behaviours such as:
             - zeroing actions that would leave the boundary
@@ -540,36 +613,51 @@ class MarlDroneEnvironment(ParallelEnv):
             - bouncing at boundaries
             - slowing down near obstacles
 
+        Args:
+            agent: Agent whose action is being processed.
+            vx: Desired x-axis velocity command.
+            vy: Desired y-axis velocity command.
+            vz: Desired z-axis velocity command.
+            current_position: Current position of the agent's drone.
+
         Returns:
-            vx, vy, vz, action_info
+            A tuple containing:
+
+            - vx: Processed x-axis velocity command.
+            - vy: Processed y-axis velocity command.
+            - vz: Processed z-axis velocity command.
+            - action_info: Additional task-specific action metadata.
         """
         return vx, vy, vz, {}
 
     def _normalize_position(self, position: list[float]) -> np.ndarray:
+        """Normalize a 3D position based on environment boundaries."""
         x, y, z = position
 
-        x_norm = np.clip(x / self.xy_limit, -1.0, 1.0)
-        y_norm = np.clip(y / self.xy_limit, -1.0, 1.0)
+        x_norm = x / self.xy_limit
+        y_norm = y / self.xy_limit
 
         z_mid = 0.5 * (self.z_min + self.z_max)
         z_half = 0.5 * (self.z_max - self.z_min)
-        z_norm = np.clip((z - z_mid) / z_half, -1.0, 1.0)
+        z_norm = (z - z_mid) / z_half
 
         return np.array([x_norm, y_norm, z_norm], dtype=np.float32)
 
     def _normalize_velocity(self, velocity_xyz: list[float]) -> np.ndarray:
+        """Normalize a velocity vector based on maximum velocity limits."""
         vx, vy, vz = velocity_xyz
 
         return np.array(
             [
-                np.clip(vx / self.max_velocity, -1.0, 1.0),
-                np.clip(vy / self.max_velocity, -1.0, 1.0),
-                np.clip(vz / self.max_velocity_z, -1.0, 1.0),
+                vx / self.max_velocity,
+                vy / self.max_velocity,
+                vz / self.max_velocity_z,
             ],
             dtype=np.float32,
         )
 
     def _normalize_relative_position(self, rel_xyz: list[float]) -> np.ndarray:
+        """Normalize a relative position vector based on maximum possible distances."""
         rx, ry, rz = rel_xyz
 
         return np.array(
@@ -585,6 +673,7 @@ class MarlDroneEnvironment(ParallelEnv):
         self,
         positions: dict[str, list[float]],
     ) -> dict[str, dict[str, Any]]:
+        """Generate a dictionary of state information for each agent."""
         state_dicts = {}
 
         for agent, position in positions.items():
@@ -599,6 +688,7 @@ class MarlDroneEnvironment(ParallelEnv):
         return state_dicts
 
     def is_in_boundaries(self, position: list[float]) -> bool:
+        """Check if a given position is within the defined flight boundaries (xy range and z range)."""
         x, y, z = position
 
         in_xy_range = abs(x) <= self.xy_limit and abs(y) <= self.xy_limit
@@ -607,6 +697,7 @@ class MarlDroneEnvironment(ParallelEnv):
         return in_xy_range and in_z_range
 
     def set_reset_position(self, agent: str, position: list[float]) -> None:
+        """Set the reset position for a specific agent (x, y, z)."""
         if agent not in self.possible_agents:
             raise ValueError(f"Unknown agent: {agent}")
 
@@ -616,6 +707,10 @@ class MarlDroneEnvironment(ParallelEnv):
         self.reset_positions[agent] = position.copy()
 
     def set_seed(self, seed: int) -> None:
+        """
+        Set the random seed for reproducibility.
+        CARES RL compatible wrapper
+        """
         self.seed_value = seed
         np.random.seed(seed)
 
@@ -627,6 +722,8 @@ class MarlDroneEnvironment(ParallelEnv):
         marker_name: str = "target",
     ) -> None:
         """
+        For simulation only:
+
         Draw or update one Gazebo target marker
 
         This should be used by MARL tasks instead of going through DroneSim,
@@ -644,6 +741,8 @@ class MarlDroneEnvironment(ParallelEnv):
 
     def _update_visual_boundaries(self) -> None:
         """
+        For simulation only:
+        
         Draw or update the shared MARL flight boundary.
         """
         if self.sim_manager is None:
@@ -756,13 +855,19 @@ class MarlDroneEnvironment(ParallelEnv):
         reason: str = "",
     ) -> None:
         """
-        Send zero velocity to one or more drones.
+        Send zero velocity commands to selected drones.
 
-        This does not stop or clean up the DroneSim/Drone object. It only cancels
-        the currently commanded motion so the drone does not continue flying with
-        its last velocity after an episode terminates or truncates.
+        This does not stop, land, disconnect, or clean up the underlying DroneSim or
+        Drone objects. It only cancels the currently commanded motion so drones do
+        not continue flying with their last velocity after an episode terminates or
+        truncates.
+
+        Args:
+            agents: Agents whose drones should be stopped. If None, all possible
+                agents are stopped.
+            reason: Optional message included in the debug output.
         """
-        agents_to_stop = agents or list(self.possible_agents)
+        agents_to_stop = list(self.possible_agents) if agents is None else agents
 
         for agent in agents_to_stop:
             if agent not in self.drones:
@@ -785,9 +890,7 @@ class MarlDroneEnvironment(ParallelEnv):
 
     @abstractmethod
     def _get_observations(self) -> dict[str, np.ndarray]:
-        """
-        Return one normalized observation vector per active agent.
-        """
+        """Return one normalized observation vector per active agent."""
         pass
 
     @abstractmethod
@@ -829,6 +932,7 @@ class MarlDroneEnvironment(ParallelEnv):
 
     @abstractmethod
     def _get_global_state(self) -> np.ndarray:
+        """Generate a global state representation for centralized training."""
         pass
 
     @abstractmethod
