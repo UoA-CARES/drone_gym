@@ -84,7 +84,7 @@ class MarlMoveToTargets2D(MarlDroneEnvironment):
         # self xy position: 2
         # own target relative position: 2
         # other drone relative positions: 2 * (N - 1)
-        obs_dim = 3 * self.env_dim + self.env_dim * (self.num_agents - 1)
+        obs_dim = 3 * self.env_dim + self.env_dim * (self.num_agents_config - 1)
 
         self._observation_space = spaces.Box(
             low=-np.inf,
@@ -93,7 +93,7 @@ class MarlMoveToTargets2D(MarlDroneEnvironment):
             dtype=np.float32,
         )
 
-        state_dim = self.num_agents * self.env_dim + self.num_agents * self.env_dim + self.num_targets * self.env_dim
+        state_dim = self.num_agents_config * self.env_dim + self.num_agents_config * self.env_dim + self.num_targets * self.env_dim
         self.state_space = spaces.Box(
             low=-np.inf,
             high=np.inf,
@@ -421,16 +421,6 @@ class MarlMoveToTargets2D(MarlDroneEnvironment):
                 "[TASK] Z boundary violation detected for agents: "
                 f"{z_violation_agents}. Truncating episode."
             )
-            restart_ok = self.restart_drones(
-                agents=list(self.agents),
-                require_user_confirmation=True,
-            )
-
-            if not restart_ok:
-                print(
-                    "[MARL 2D] Restart failed or was aborted. "
-                    "Manual intervention may be required."
-                )
 
         truncate_all = (
             time_limit_reached
