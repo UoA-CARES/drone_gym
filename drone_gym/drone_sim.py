@@ -205,7 +205,7 @@ class DroneSim(DroneSetup):
         """
         print(f"[{self.agent_id}] Stopping...")
         self.set_running(False)
-        self.controller_active = False
+        self.position_controller_active = False
         self.velocity_controller_active = False
         
         # Clear queue
@@ -220,6 +220,43 @@ class DroneSim(DroneSetup):
         self._join_all_threads()
         self._reset_shared_state()
         self._final_cleanup()
+
+    def _execute_emergency_stop(self):
+        """
+        Simulation-specific emergency stop / hard-boundary response.
+
+        This overrides DroneSetup._execute_emergency_stop().
+
+        For physical drones, the inherited behaviour lands, disarms, exits the
+        command thread, and calls stop(). That is safe for real hardware but 
+        causes issues in simulation.
+        """
+        current_position = self.get_position()
+        if not self.emergency_event.is_set():
+            self.emergency_event.set()
+            print(
+            f"[{self.agent_id}] SIM HARD BOUNDARY VIOLATION. "
+            f"Position={current_position}, limits={self.boundaries}. "
+            )
+
+        if self.mc:
+            print(f"[{self.agent_id}] Initiating simulated emergency landing...")
+            self.mc.land()
+            print(f"[{self.agent_id}] Simulated emergency landing command sent. Waiting for landing to complete...")
+            self.is_landed_event.set()
+            self.is_flying_event.clear()
+            time.sleep(1)
+        print(f"[{self.agent_id} - DRONE SIM] Drone landed due to boundary violation. Current position: {self.get_position()}")
+
+        # Cancel any currently commanded motion.
+        try:
+            self.set_velocity_vector(0.0, 0.0, 0.0)
+        except Exception as exc:
+            print(f"[{self.agent_id}] Failed to send zero velocity after boundary violation: {exc}")
+
+        # Disable high-level controllers so they do not keep pushing the drone.
+        self.position_controller_active = False
+        self.velocity_controller_active = False
 
 if __name__ == "__main__":
     drone = DroneSim()

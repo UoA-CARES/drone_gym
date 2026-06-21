@@ -17,6 +17,7 @@ class DroneSetup:
             self,
             uri: str | None = None,
             agent_id: str = "Drone",
+            simulation: bool = False
         ) -> None:
         # Drone Properties
 
@@ -24,6 +25,8 @@ class DroneSetup:
             default="radio://0/100/2M/E7E7E7E7E7"
         )  # changed radio channel in 22/9
         self.agent_id = agent_id
+        self.default_height = 0.5
+        self.simulation = simulation
         self.default_height = 0.5
         self.deck_attached_event = Event()
         self.battery_lock = threading.Lock()
@@ -50,7 +53,7 @@ class DroneSetup:
         self.running_lock = threading.Lock()
 
         # Controller parameters
-        self.controller_active = False
+        self.position_controller_active = False
         self.controller_thread = None
         self.at_reset_position = Event()
 
@@ -234,7 +237,7 @@ class DroneSetup:
             self.mc.land()
             time.sleep(1)
 
-        self.controller_active = False
+        self.position_controller_active = False
 
         if self.armed and self.cf:
             self.cf.platform.send_arming_request(False)
@@ -315,7 +318,8 @@ class DroneSetup:
             # Main command processing loop
             while self.is_running():
                 try:
-                    if self.emergency_event.is_set():
+                    if self.emergency_event.is_set() and not self.simulation:
+                        print(f"[{self.agent_id} - Drone Setup] Emergency event detected in _run thread. Exiting main loop.")
                         self._handle_command({"land": True})
                         self.is_landed_event.wait(timeout=10)
                         break
@@ -326,7 +330,7 @@ class DroneSetup:
                         print(f"[{self.agent_id}] Shutting down.")
                         break
                     elif command == "emergency_stop":
-                        if self.controller_active:
+                        if self.position_controller_active:
                             self.stop_position_control()
                         if self.is_flying_event.is_set() and self.mc:
                             print(f"[{self.agent_id}] EMERGENCY STOP: Landing and Stopping.")
@@ -495,8 +499,8 @@ class DroneSetup:
 
     def start_position_control(self) -> None:
         """Start the position controller thread for automatic position tracking"""
-        if not self.controller_active:
-            self.controller_active = True
+        if not self.position_controller_active:
+            self.position_controller_active = True
             self.controller_thread = threading.Thread(
                 target=self._position_control_loop
             )
@@ -507,8 +511,8 @@ class DroneSetup:
 
     def stop_position_control(self) -> None:
         """Stop the position controller thread"""
-        if self.controller_active:
-            self.controller_active = False
+        if self.position_controller_active:
+            self.position_controller_active = False
             if self.controller_thread and self.controller_thread.is_alive():
                 self.controller_thread.join()
             print(f"[{self.agent_id}] Position controller stopped")
@@ -538,7 +542,11 @@ class DroneSetup:
             print(f"[{self.agent_id}] Velocity controller already stopped")
 
     def _position_control_loop(self, first_instance: int = 0, debugging: bool = True) -> None:
-        """Main control loop for position-based velocity control"""
+        """
+        Main control loop for position-based velocity control
+        
+        Used for moving drone to reset positions
+        """
         # BUG Is control rate meant to be 0.5 (2Hz) or 0.05 (20Hz)??
         control_rate = 0.5  # Control rate in seconds (20hz)
         error_threshold = 0.17  # Error threshold to consider position reached (meters)
@@ -546,7 +554,7 @@ class DroneSetup:
         print(f"[{self.agent_id}] Position control loop started")
         while (
             self.is_running()
-            and self.controller_active
+            and self.position_controller_active
             and not self.emergency_event.is_set()
         ):
             try:
@@ -619,6 +627,7 @@ class DroneSetup:
                 # FIXME This currently uses target_velocity which is set by the position controller and is open loop velocity control
                 # The closed loop velocity control found from _calculate_velocity_pid is ignored as well as the ramped velocity function
                 # What is the intended behaviour and why, how is performance changed
+                # If _calculate_velocity_pid is used then the drones control properties need to be cleared after position control for reset
 
                 # Get target and actual velocities
                 with self.velocity_lock:
@@ -937,7 +946,7 @@ class DroneSetup:
     def _signal_stop_to_all_threads(self) -> None:
         """Set all shutdown flags so every thread leaves its loop ASAP."""
         self.set_running(False)
-        self.controller_active = False
+        self.position_controller_active = False
         self.velocity_controller_active = False
         # Purge the command queue so no stale commands run after restart
         while not self.command_queue.empty():
@@ -1008,7 +1017,7 @@ class DroneSetup:
 
     def pre_battery_change_cleanup(self) -> None:
 
-        if self.controller_active:
+        if self.position_controller_active:
             self.stop_position_control()
         self.cf = None
         self.scf = None
