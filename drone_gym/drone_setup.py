@@ -25,7 +25,6 @@ class DroneSetup:
             default="radio://0/100/2M/E7E7E7E7E7"
         )  # changed radio channel in 22/9
         self.agent_id = agent_id
-        self.default_height = 0.5
         self.simulation = simulation
         self.default_height = 0.5
         self.deck_attached_event = Event()
@@ -86,7 +85,8 @@ class DroneSetup:
         self.target_velocity = {"x": 0.0, "y": 0.0, "z": 0.0}
         self.max_velocity = 0.40  # Maximum velocity in m/s
         self.position_deadband = (
-            0.10  # Position error below which velocity will be zero (in meters)
+            0.05  # Position error below which velocity will be zero (in meters)
+            # Changed from 0.1 to 0.05 along with position control error
         )
 
         # NEW: Velocity ramping for smooth transitions
@@ -118,6 +118,7 @@ class DroneSetup:
         self.safety_thread = None
         self.in_boundaries = True
         self.emergency_event = Event()
+        self.safety_thread_active = False
 
         # Objective related
         self.target_position = {"x": 0.0, "y": 0.0, "z": 0.0}
@@ -161,6 +162,7 @@ class DroneSetup:
             print(f"[{self.agent_id}] Position system ready, starting safety monitoring...")
 
         # Start safety monitoring last
+        self.safety_thread_active = True
         self.safety_thread = threading.Thread(target=self._check_boundaries)
         self.safety_thread.start()
 
@@ -180,7 +182,7 @@ class DroneSetup:
         time.sleep(2)
         print(f"[{self.agent_id}] Boundary checking now active")
 
-        while self.is_running():
+        while self.is_running() and self.safety_thread_active:
             try:
                 if self.emergency_event.is_set():
                     break
@@ -497,6 +499,38 @@ class DroneSetup:
     def move(self) -> None:
         self.send_command({"move": True})
 
+
+    def start_boundary_monitoring(self) -> None:
+        """Start the boundary monitoring thread for safety checks"""
+        print(f"[{self.agent_id} - DroneSetup] Entering start boundary function")
+        # Wait for position system to stabilize
+        if not self.position_ready_event.wait(timeout=10):
+            print(f"[{self.agent_id}] WARNING: Position system may not be ready")
+        else:
+            print(f"[{self.agent_id}] Position system ready, starting safety monitoring...")
+       
+        if not self.safety_thread_active:
+            self.safety_thread_active = True
+            self.safety_thread = threading.Thread(
+                target=self._check_boundaries
+            )
+            self.safety_thread.start()
+            print(f"[{self.agent_id}] Boundary monitoring started")
+        else:
+            print(f"[{self.agent_id}] Boundary monitoring already active")
+
+    def stop_boundary_monitoring(self) -> None:
+        """Stop the boundary monitoring thread for safety checks"""
+        print(f"[{self.agent_id} - DroneSetup] Entering stop boundary function")
+        if self.safety_thread_active:
+            self.safety_thread_active = False
+            if self.safety_thread and self.safety_thread.is_alive():
+                self.safety_thread.join(timeout=1)
+            print(f"[{self.agent_id}] Boundary monitoring stopped")
+        else:
+            print(f"[{self.agent_id}] Boundary monitoring already stopped")
+
+
     def start_position_control(self) -> None:
         """Start the position controller thread for automatic position tracking"""
         if not self.position_controller_active:
@@ -549,7 +583,8 @@ class DroneSetup:
         """
         # BUG Is control rate meant to be 0.5 (2Hz) or 0.05 (20Hz)??
         control_rate = 0.5  # Control rate in seconds (20hz)
-        error_threshold = 0.17  # Error threshold to consider position reached (meters)
+        error_threshold = 0.05  # Error threshold to consider position reached (meters)
+                                # Changed from 0.17 to 0.05 along with position_deadband        
 
         print(f"[{self.agent_id}] Position control loop started")
         while (
@@ -703,6 +738,9 @@ class DroneSetup:
 
     def clear_reset_position_event(self) -> None:
         self.at_reset_position.clear()
+
+    def clear_emergency_event(self) -> None:
+        self.emergency_event.clear()
 
     def _calculate_pid_velocity(self, error: dict[str, float], dt: float) -> dict[str, float]:
         """Calculate velocity vector using PID control
