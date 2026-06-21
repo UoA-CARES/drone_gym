@@ -25,7 +25,7 @@ class DroneSim(DroneSetup):
         self.agent_id = agent_id
         self.sim_manager = sim_manager or get_default_sim_manager()
 
-        super().__init__(uri=uri, agent_id=agent_id)
+        super().__init__(uri=uri, agent_id=agent_id, simulation=simulation)
 
     def set_visual_target_marker_position(
         self,
@@ -94,7 +94,8 @@ class DroneSim(DroneSetup):
             self.last_velocity_calculation_time = time.time()
 
             # Keep thread alive for logging
-            while self.is_running() and not self.emergency_event.is_set():
+            # while self.is_running() and not self.emergency_event.is_set():
+            while self.is_running():
                 current_time = time.time()
                 
                 # Calculate velocity periodically
@@ -114,6 +115,7 @@ class DroneSim(DroneSetup):
                     position_log_config.delete()
                 except:
                     pass
+        print(f'[{self.agent_id} - Drone Sim] Position tracking thread ending')
 
     def initialise_crazyflie(self) -> bool:
         """Initialise Crazyflie connection for CrazySim"""

@@ -174,7 +174,15 @@ class MarlDroneEnvironment(ParallelEnv):
         self.current_batteries = {}
 
         # Reset each drone to its own separated reset position
-        self._reset_all_drones()
+        while True:
+            self._reset_all_drones()
+            if self._all_drones_safe():
+                for agent in self.possible_agents:
+                    drone = self.drones[agent]
+                    if not drone.safety_thread_active:
+                        drone.start_boundary_monitoring()
+                break
+            time.sleep(20)
 
         # Reset task-specific state
         self._reset_task_state()
@@ -445,6 +453,17 @@ class MarlDroneEnvironment(ParallelEnv):
 
         for agent in self.possible_agents:
             drone = self.drones[agent]
+
+            if isinstance(drone, DroneSim):
+                if drone.emergency_event.is_set():
+                    drone.is_landed_event.wait(timeout=15)
+                    drone.emergency_event.clear()
+                    # TODO
+                # Need to test if it works inside the other if statement or if it needs to be separate like this
+                    if drone.safety_thread_active:
+                        drone.stop_boundary_monitoring()
+                        time.sleep(0.2)
+                        drone.start_boundary_monitoring()
             
             # Question
             # is this needed as _stop_drones is called in step after termination/truncation and should have already sent zero velocity commands to all finished drones?
@@ -486,7 +505,7 @@ class MarlDroneEnvironment(ParallelEnv):
 
             drone.start_position_control()
         
-        reset_success = self._wait_for_all_reset_events(timeout=12)
+        reset_success = self._wait_for_all_reset_events(timeout=10)
 
         if not reset_success:
             print("[ERROR] Not all drones reached reset positions in time. Check drone states and reset position configuration.")
@@ -576,6 +595,17 @@ class MarlDroneEnvironment(ParallelEnv):
 
         print(f"[RESET] Timeout waiting for drones: {timed_out_agents}")
         return False
+    
+    def _all_drones_safe(self) -> bool:
+        """
+        Check if all drones are currently in a safe state (i.e., no emergency events).
+
+        This could be used apart of battery checks or other safety-related terminations in the future.
+        """
+        return all(
+            not self.drones[agent].emergency_event.is_set()
+            for agent in self.possible_agents
+        )
 
     def _denormalize_action(self, action: np.ndarray) -> tuple[float, float, float]:
         """
