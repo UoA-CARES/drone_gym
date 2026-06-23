@@ -440,6 +440,9 @@ class DroneSetup:
                     self.mc.take_off()
                     self.is_landed_event.clear()
                     self.is_flying_event.set()
+                    # Check if the radio link is still alive and connected
+                    if not self.mc._cf.is_connected():
+                        print(f"[{self.agent_id}] Error: The Crazyflie instance is disconnected or invalid!")
                     print(f"[{self.agent_id}] Take-off successful")
                 else:
                     print(f"[{self.agent_id}] Cannot take off - already flying or not armed")

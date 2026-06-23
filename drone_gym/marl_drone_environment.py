@@ -455,25 +455,36 @@ class MarlDroneEnvironment(ParallelEnv):
             drone = self.drones[agent]
 
             if isinstance(drone, DroneSim):
+
+
                 if drone.emergency_event.is_set():
-                    drone.is_landed_event.wait(timeout=15)
                     drone.emergency_event.clear()
-                    # TODO
-                # Need to test if it works inside the other if statement or if it needs to be separate like this
+                    time.sleep(0.5)
+                    drone.is_landed_event.wait(timeout=15)
+                    self.sim_manager.set_drone_pose(
+                        drone_id=self.possible_agents.index(agent), 
+                        x=self.reset_positions[agent][0],
+                        y=self.reset_positions[agent][1],
+                        z=0.02
+                    )
+                    time.sleep(0.5)
+
                     if drone.safety_thread_active:
                         drone.stop_boundary_monitoring()
                         time.sleep(0.2)
                         drone.start_boundary_monitoring()
-            
-            # Question
-            # is this needed as _stop_drones is called in step after termination/truncation and should have already sent zero velocity commands to all finished drones?
-            drone.set_velocity_vector(0, 0, 0)
+                else:
+                        self.sim_manager.set_drone_pose(
+                            drone_id=self.possible_agents.index(agent), 
+                            x=self.reset_positions[agent][0],
+                            y=self.reset_positions[agent][1],
+                            z=self.reset_positions[agent][2]
+                        )
             
             if drone.velocity_controller_active:
                 drone.stop_velocity_control()
 
             time.sleep(0.5)
-            # print(f"Resetting {agent}")
             self._reset_control_properties(agent)
             drone.set_velocity_vector(0, 0, 0)
 

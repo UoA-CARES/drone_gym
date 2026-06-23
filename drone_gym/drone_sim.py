@@ -172,7 +172,9 @@ class DroneSim(DroneSetup):
 
             self._setup_battery_logging()
             self._setup_velocity_logging()
-
+            self.cf.disconnected.add_callback(self._connection_lost)
+            self.cf.connection_lost.add_callback(self._connection_lost)
+    
             # Signal that hardware is ready
             self.hardware_ready_event.set()
             print(f"[{self.agent_id}] Hardware initialisation complete - ready to fly!")
@@ -244,7 +246,6 @@ class DroneSim(DroneSetup):
         if self.mc:
             print(f"[{self.agent_id}] Initiating simulated emergency landing...")
             self.mc.land()
-            print(f"[{self.agent_id}] Simulated emergency landing command sent. Waiting for landing to complete...")
             self.is_landed_event.set()
             self.is_flying_event.clear()
             time.sleep(1)
@@ -259,6 +260,11 @@ class DroneSim(DroneSetup):
         # Disable high-level controllers so they do not keep pushing the drone.
         self.position_controller_active = False
         self.velocity_controller_active = False
+
+    def _connection_lost(self, link_uri):
+        print(f"\n[{self.agent_id}] CRITICAL: Connection no longer works!")
+        print(f"[{self.agent_id}] Reason: Simulation crashed or link was severed.")
+        self.emergency_event.set()
 
 if __name__ == "__main__":
     drone = DroneSim()

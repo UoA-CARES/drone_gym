@@ -410,6 +410,12 @@ class SimManager:
 
         return ok
 
+    def set_drone_pose(self, drone_id: str, x: float, y: float, z: float) -> bool:
+        # drone_id will be a string followed by 
+        drone_name = f"crazyflie_{drone_id}"
+        return self._set_entity_pose(drone_name, x, y, z)
+
+
     def _boundary_model_file_path(
         self,
         name: str,
