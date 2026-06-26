@@ -1,7 +1,7 @@
 """SimAgent — one body + one policy + a role label.
 
 A :class:`SimAgent` is the unit the
-:class:`~drone_gym.sim_agent_manager.SimAgentManager` manages. It delegates
+:class:`~drone_gym.sim_manager.SimManager` manages. It delegates
 physical movement to its :class:`~drone_gym.agents.bodies.AgentBody` and
 decision-making to its :class:`~drone_gym.agents.policies.BasePolicy`, exposing
 a uniform lifecycle so the manager never has to care whether an agent is a real

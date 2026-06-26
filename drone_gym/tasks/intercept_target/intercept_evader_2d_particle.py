@@ -5,7 +5,7 @@ import time
 import threading
 from typing import Dict, List, Any, Literal
 from drone_gym.drone_environment import DroneEnvironment
-from drone_gym.sim_agent_manager import SimAgentManager
+from drone_gym.sim_manager import get_default_sim_manager
 from drone_gym.agents.ticker import AgentTicker
 import matplotlib.pyplot as plt
 import io
@@ -21,7 +21,7 @@ class InterceptEvader2DParticle(DroneEnvironment):
     cornered. Modelling the target as a particle keeps capture collision-safe:
     "catch" is a distance threshold, never a real drone-on-drone impact.
 
-    The target is pulled from a SimAgentManager as a ``particle_evader`` agent,
+    The target is pulled from a SimManager as a ``particle_evader`` agent,
     so only the learner is a real Crazyflie — launch with the single-agent
     script (e.g. sitl_singleagent.sh -m crazyflie -x 0 -y 0).
 
@@ -77,9 +77,11 @@ class InterceptEvader2DParticle(DroneEnvironment):
         self.boundary_penalise = False
         self.exited_testing_boundary = False
 
-        # The fleeing target is a particle agent pulled from the manager. The
-        # FleePolicy (the expert) runs it away from the learner each step.
-        self.agent_manager = SimAgentManager(use_simulator)
+        # The fleeing target is a particle agent pulled from the manager. We use
+        # the shared default SimManager — the same one DroneSim uses for its own
+        # markers/boundary — so a single manager owns everything in the sim.
+        # The FleePolicy (the expert) runs the target away from the learner each step.
+        self.agent_manager = get_default_sim_manager()
         self.target_agent = self.agent_manager.create_agent(
             "particle_evader", role="evader",
             max_velocity=self.target_max_velocity, fixed_z=self.fixed_z,
@@ -101,9 +103,8 @@ class InterceptEvader2DParticle(DroneEnvironment):
         # Evaluation mode tracking — counts episodes the learner caught the target
         self.successful_episodes_count = 0
 
-    # ------------------------------------------------------------------
+    
     # Target tracking
-    # ------------------------------------------------------------------
 
     def _sync_target(self):
         """Copy the target agent's position/velocity into local tracking."""
@@ -121,13 +122,8 @@ class InterceptEvader2DParticle(DroneEnvironment):
         # Fallback: opposite corner from the learner
         return [-np.sign(learner_pos[0]) * limit, -np.sign(learner_pos[1]) * limit, self.fixed_z]
 
-    # ------------------------------------------------------------------
+
     # Dead / stuck learner recovery (unattended-training safety)
-    #
-    # Earlier runs were corrupted when the learner froze (EKF blow-up / sim
-    # death): its position stopped changing and every later episode scored ~-800.
-    # We detect that and auto-restart the drone instead of training on garbage.
-    # ------------------------------------------------------------------
 
     STUCK_POSITION_TOLERANCE = 1e-4   # positions within this count as identical
     STUCK_THRESHOLD_STEPS = 6         # identical positions in a row before "stuck"
@@ -214,10 +210,8 @@ class InterceptEvader2DParticle(DroneEnvironment):
         print("[InterceptEvader2DParticle] WARNING: drone did not confirm takeoff after restart")
         self._consecutive_restart_failures += 1
         return False
-
-    # ------------------------------------------------------------------
+    
     # DroneEnvironment overrides
-    # ------------------------------------------------------------------
 
     def reset(self, training: bool = True):
         """Reset the learner (via parent) and teleport the fleeing target to a fresh spawn."""

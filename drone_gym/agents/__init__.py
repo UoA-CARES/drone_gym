@@ -1,7 +1,7 @@
 """Multi-agent / expert-agent support for drone_gym tasks.
 
 A task adds non-learning agents (expert pursuers, moving targets, obstacles,
-other crazyflies) through :class:`~drone_gym.sim_agent_manager.SimAgentManager`,
+other crazyflies) through :class:`~drone_gym.sim_manager.SimManager`,
 which owns these agents and drives their reset/step/close lifecycle.
 
 The pieces:

@@ -5,7 +5,7 @@ something advances them. An :class:`AgentTicker` runs a background thread that
 calls ``tick(dt)`` on each software-integrated agent at a fixed rate, giving
 smooth motion and continuous Gazebo marker updates instead of one jump per step.
 
-This is deliberately separate from :class:`~drone_gym.sim_agent_manager.SimAgentManager`
+This is deliberately separate from :class:`~drone_gym.sim_manager.SimManager`
 (which stays a pure factory): a task that wants smooth particles creates its own
 ticker over the agents it pulled, and owns its lifecycle::
 
