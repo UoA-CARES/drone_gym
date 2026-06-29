@@ -167,7 +167,7 @@ class DroneEnvironment(ABC):
         time.sleep(self.step_time)
 
         new_pos = self.drone.get_position()
-        current_state = self._generate_state_dict(current_pos)
+        current_state = self._generate_state_dict(new_pos)
 
         # Track position for episode trajectory
         self.episode_positions.append(new_pos)

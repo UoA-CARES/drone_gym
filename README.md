@@ -87,7 +87,7 @@ Refer to the instructions under Hardware Setup. When running RL tasks, include t
 To run the simulation, go to `CrazySim/crazyflie-firmware`.
 Then run:
 ```bash
-bash tools/crazyflie-simulation/simulator_files/gazebo/launch/sitl_singleagent.sh -m crazyflie -x 0 -y 0; exec bash
+bash tools/crazyflie-simulation/simulator_files/gazebo/launch/sitl_multiagent_square.sh -m crazyflie -n <num_vehicles>; exec bash
 ```
 
 Refer to Running RL Tasks for how to execute training runs. The simulator will need to be shutdown and restarted after each training run.

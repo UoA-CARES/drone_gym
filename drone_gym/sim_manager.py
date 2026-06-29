@@ -1,9 +1,9 @@
+import math
 import os
 import subprocess
 import tempfile
 import threading
 import time
-from typing import Dict, Optional, Tuple
 from dataclasses import dataclass, field
 
 @dataclass
@@ -15,8 +15,8 @@ class MarkerVisualSettings:
     retried/updated. 
     """
     radius: float = 0.02
-    rgba: Tuple[float, float, float, float] = (1.0, 0.0, 0.0, 0.6)
-    specular: Tuple[float, float, float, float] = (0.1, 0.1, 0.1, 1.0)
+    rgba: tuple[float, float, float, float] = (1.0, 0.0, 0.0, 0.6)
+    specular: tuple[float, float, float, float] = (0.1, 0.1, 0.1, 1.0)
     pose_tolerance: float = 0.005
     retry_backoff: float = 1.0
 
@@ -34,8 +34,8 @@ class MarkerState:
     """
     spawned: bool = False
     last_attempt_time: float = 0.0
-    last_pose: Optional[Tuple[float, float, float]] = None
-    model_file: Optional[str] = None
+    last_pose: tuple[float, float, float] | None = None
+    model_file: str | None = None
     lock: threading.Lock = field(default_factory=threading.Lock)
 
 class SimManager:
@@ -67,7 +67,7 @@ class SimManager:
         boundary_line_thickness: float = 0.02,
         boundary_visual_height: float = 0.8,
         gz_timeout: float = 1.5,
-    ):
+    ) -> None:
         self.world_name = world_name
 
         # Target marker settings/state
@@ -79,7 +79,7 @@ class SimManager:
             retry_backoff=marker_retry_backoff,
         )
 
-        self._marker_states: Dict[str, MarkerState] = {}
+        self._marker_states: dict[str, MarkerState] = {}
         self._marker_states_lock = threading.Lock()
 
         # Boundary visual settings/state
@@ -88,7 +88,7 @@ class SimManager:
         self.boundary_retry_backoff = boundary_retry_backoff
         self.boundary_line_thickness = boundary_line_thickness
         self.boundary_visual_height = boundary_visual_height
-        self._last_boundary_signature = None
+        self._last_boundary_signature: tuple[float, float] | None = None
         self._last_boundary_attempt_time = 0.0
         self._boundary_lock = threading.Lock()
 
@@ -134,7 +134,7 @@ class SimManager:
         x: float,
         y: float,
         z: float,
-        marker_name: Optional[str] = None,
+        marker_name: str | None = None,
     ) -> None:
         """
         Spawn or update a named Gazebo visual marker for a task target.
@@ -251,7 +251,7 @@ class SimManager:
 
         return ok
     
-    def remove_visual_marker(self, marker_name: Optional[str] = None) -> bool:
+    def remove_visual_marker(self, marker_name: str | None = None) -> bool:
         """
         Remove a visual target marker from Gazebo and clear its cached state.
         """
@@ -280,7 +280,7 @@ class SimManager:
         reqtype: str,
         reptype: str,
         req: str,
-    ) -> Tuple[bool, str]:
+    ) -> tuple[bool, str]:
         """
         Call a Gazebo transport service using the gz CLI.
         """
@@ -374,7 +374,7 @@ class SimManager:
         marker_state = self._get_marker_state(marker_name)
 
         if marker_state.model_file is None:
-            marker_state.model_file = self._target_marker_model_file_path(marker_name)
+            marker_state.model_file = self._get_target_marker_model_file_path(marker_name)
 
         self._write_target_marker_model_file(
             marker_name=marker_name,
@@ -399,8 +399,55 @@ class SimManager:
 
         return ok
 
-    def _set_entity_pose(self, entity_name: str, x: float, y: float, z: float) -> bool:
-        req = f'name: "{entity_name}", position: {{x: {x}, y: {y}, z: {z}}}'
+    def _set_entity_pose(
+        self, 
+        entity_name: str,
+        x: float, y: float, z: float,
+        orientation: tuple[float, float, float] | None = None,
+    ) -> bool:
+        """
+        Set an entity's world position and optionally its orientation.
+
+        Args:
+            entity_name: Gazebo entity name.
+            x: World x position in metres.
+            y: World y position in metres.
+            z: World z position in metres.
+            orientation: Optional (roll, pitch, yaw) tuple in radians.
+                When None, only position is changed and the current
+                orientation is preserved.
+        """
+        req_parts = [
+            f'name: "{entity_name}"',
+            (
+                "position: {"
+                f"x: {float(x)}, "
+                f"y: {float(y)}, "
+                f"z: {float(z)}"
+                "}"
+            ),
+        ]        
+        
+        if orientation is not None:
+ 
+            roll, pitch, yaw = orientation
+
+            qx, qy, qz, qw = self._rpy_to_quaternion(
+                roll=float(roll),
+                pitch=float(pitch),
+                yaw=float(yaw),
+            )
+
+            req_parts.append(
+                "orientation: {"
+                f"x: {qx}, "
+                f"y: {qy}, "
+                f"z: {qz}, "
+                f"w: {qw}"
+                "}"
+            )
+
+        req = ", ".join(req_parts)
 
         ok, _ = self._run_gz_service(
             service=f"/world/{self.world_name}/set_pose",
@@ -410,6 +457,22 @@ class SimManager:
         )
 
         return ok
+
+    def set_drone_pose(
+        self, 
+        drone_id: str, 
+        x: float, y: float, z: float,
+        orientation: tuple[float, float, float] | None = None,
+        ) -> bool:
+        """
+        Set a Crazyflie model's position and optionally its orientation.
+
+        Args:
+            orientation: Optional (roll, pitch, yaw) in radians.
+                When None, the current orientation is preserved.
+        """
+        drone_name = f"crazyflie_{drone_id}"
+        return self._set_entity_pose(drone_name, x, y, z, orientation)
 
     def _boundary_model_file_path(
         self,
@@ -429,7 +492,7 @@ class SimManager:
         name: str,
         xy_limit: float,
         z_level: float,
-        rgba: Tuple[float, float, float, float],
+        rgba: tuple[float, float, float, float],
     ) -> str:
         model_file_path = self._boundary_model_file_path(name, xy_limit, z_level)
 
@@ -481,7 +544,7 @@ class SimManager:
         name: str,
         xy_limit: float,
         z_level: float,
-        rgba: Tuple[float, float, float, float],
+        rgba: tuple[float, float, float, float],
     ) -> bool:
         self.remove_entity(name)
 
@@ -510,8 +573,34 @@ class SimManager:
 
         return ok
 
+    @staticmethod
+    def _rpy_to_quaternion(
+        roll: float,
+        pitch: float,
+        yaw: float,
+    ) -> tuple[float, float, float, float]:
+        """
+        Convert roll, pitch and yaw in radians into a quaternion.
 
-_DEFAULT_SIM_MANAGER: Optional[SimManager] = None
+        Returns:
+            Quaternion in Gazebo's x, y, z, w order.
+        """
+        cr = math.cos(roll / 2.0)
+        sr = math.sin(roll / 2.0)
+        cp = math.cos(pitch / 2.0)
+        sp = math.sin(pitch / 2.0)
+        cy = math.cos(yaw / 2.0)
+        sy = math.sin(yaw / 2.0)
+
+        qx = sr * cp * cy - cr * sp * sy
+        qy = cr * sp * cy + sr * cp * sy
+        qz = cr * cp * sy - sr * sp * cy
+        qw = cr * cp * cy + sr * sp * sy
+
+        return qx, qy, qz, qw
+
+
+_DEFAULT_SIM_MANAGER: SimManager | None = None
 _DEFAULT_SIM_MANAGER_LOCK = threading.Lock()
 
 
