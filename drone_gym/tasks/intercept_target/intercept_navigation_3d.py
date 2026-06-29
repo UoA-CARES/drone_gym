@@ -45,7 +45,7 @@ class InterceptNavigation3D(DroneEnvironment):
 
     def __init__(self, use_simulator: Literal[0, 1], max_velocity: float = 0.25, step_time: float = 0.5,
                  exploration_steps: int = 1000, episode_length: int = 80,
-                 interceptor_max_velocity: float = 0.30):
+                 interceptor_max_velocity: float = 0.075):
 
         super().__init__(use_simulator, max_velocity, step_time)
         self.use_simulator = use_simulator
@@ -105,7 +105,7 @@ class InterceptNavigation3D(DroneEnvironment):
         self.min_goal_clearance = 0.6        # interceptor can't start camped on the goal
 
         self.interceptor_max_velocity = interceptor_max_velocity     # > max_velocity so capture is feasible
-        self.interceptor_max_velocity_z = 0.10       # gentle vertical cap for the pursuer too
+        self.interceptor_max_velocity_z = 0.030      # gentle vertical cap for the pursuer too
 
         # Brake margins: the per-step clamp zeroes a velocity component before the
         # actual boundary, leaving room for the drone to coast to a stop instead of
