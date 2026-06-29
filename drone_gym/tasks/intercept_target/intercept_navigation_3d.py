@@ -180,6 +180,11 @@ class InterceptNavigation3D(DroneEnvironment):
         # Evaluation mode tracking — counts episodes the runner reached the goal
         self.successful_episodes_count = 0
 
+        # EKF drift prevention: reset the Kalman estimator every N episodes so
+        # z-drift can't accumulate to the point where a drone falls mid-episode.
+        self._episode_count = 0
+        self._ekf_reset_interval = 15
+
     # ------------------------------------------------------------------
     # Interceptor expert policy — 3D pure pursuit toward the runner
     # ------------------------------------------------------------------
@@ -358,6 +363,19 @@ class InterceptNavigation3D(DroneEnvironment):
         except Exception:
             return False
 
+    def _proactive_ekf_reset(self, drone) -> None:
+        """Lightweight Kalman-filter reset — clears z-drift without a full reconnect.
+
+        Safe to call while the drone is airborne: the EKF briefly re-converges
+        (< 0.5 s in CrazySim) before the subsequent position-control move starts.
+        """
+        try:
+            if getattr(drone, "cf", None) is not None:
+                drone.cf.param.set_value("kalman.resetEstimation", "1")
+                time.sleep(0.4)
+        except Exception as exc:
+            print(f"[InterceptNavigation3D] EKF reset warning: {exc}")
+
     def _recover_interceptor_if_dead(self):
         """Re-initialise + take off the interceptor if it has died, before an episode."""
         if not self._interceptor_is_dead():
@@ -371,7 +389,8 @@ class InterceptNavigation3D(DroneEnvironment):
             # emergency, relaunches threads, re-inits the link + resets the EKF.
             if self._recover_drone(drone):
                 drone.take_off()
-                drone.is_flying_event.wait(timeout=15)
+                if not drone.is_flying_event.wait(timeout=15):
+                    print("[InterceptNavigation3D] WARNING: interceptor did not confirm takeoff after recovery")
         except Exception as exc:
             print(f"[InterceptNavigation3D] Interceptor recovery exception: {exc}")
 
@@ -671,6 +690,13 @@ class InterceptNavigation3D(DroneEnvironment):
             )
 
         # 3) Fly the interceptor to its spawn, then arm it for the episode.
+        self._episode_count += 1
+        if self._episode_count % self._ekf_reset_interval == 0:
+            print(f"[InterceptNavigation3D] Proactive EKF reset (episode {self._episode_count})")
+            interceptor_drone = getattr(self.interceptor.body, "drone", None)
+            if interceptor_drone is not None:
+                self._proactive_ekf_reset(interceptor_drone)
+
         self.interceptor.reset_policy({"runner_pos": runner_pos})
         self.interceptor.prepare_reset(interceptor_spawn)
         if not self.interceptor.await_reset(timeout=15.0):
