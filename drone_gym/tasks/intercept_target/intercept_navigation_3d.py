@@ -453,6 +453,9 @@ class InterceptNavigation3D(DroneEnvironment):
             return True
         if z < 0.1:
             return True
+        # EKF z-drift: drone is stuck well above the task ceiling after many resets
+        if z > self.z_max + 0.5:
+            return True
         return False
 
     def _drone_is_stuck(self, position: List[float]) -> bool:
@@ -630,6 +633,13 @@ class InterceptNavigation3D(DroneEnvironment):
 
         # Parent reset: takeoff, centre the runner at (0, 0, fixed_z), start velocity control.
         super().reset(training)
+
+        # Stop the velocity controller that the parent started — the runner should hold
+        # position quietly while we move the interceptor to its spawn below.  We'll
+        # restart it at the end of this reset so the episode begins cleanly.
+        if self.drone.velocity_controller_active:
+            self.drone.stop_velocity_control()
+        self.drone.set_velocity_vector(0, 0, 0)
 
         # If the parent's position-control move blew up the EKF, restart the runner.
         if self._drone_is_dead(self.drone.get_position()):
@@ -937,8 +947,8 @@ class InterceptNavigation3D(DroneEnvironment):
         return info
 
     def sample_action(self):
-        """Sample an action for the exploration phase — returns action in [0, 1] (3D)."""
-        return np.random.uniform(0, 1, size=(3,))
+        """Sample an action for the exploration phase — returns action in [-max_velocity, max_velocity] (3D)."""
+        return np.random.uniform(-self.max_velocity, self.max_velocity, size=(3,))
 
     def close(self):
         """Land the interceptor (via the manager) and the runner, and clear the goal marker."""
