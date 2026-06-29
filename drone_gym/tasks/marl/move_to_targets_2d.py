@@ -114,7 +114,7 @@ class MarlMoveToTargets2D(MarlDroneEnvironment):
 
         return vx, vy, vz
 
-    def _apply_task_action_filter(
+    def _apply_task_action_processing(
         self,
         agent: str,
         vx: float,

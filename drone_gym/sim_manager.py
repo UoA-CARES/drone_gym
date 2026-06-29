@@ -1,3 +1,4 @@
+import math
 import os
 import subprocess
 import tempfile
@@ -398,8 +399,55 @@ class SimManager:
 
         return ok
 
-    def _set_entity_pose(self, entity_name: str, x: float, y: float, z: float) -> bool:
-        req = f'name: "{entity_name}", position: {{x: {x}, y: {y}, z: {z}}}'
+    def _set_entity_pose(
+        self, 
+        entity_name: str,
+        x: float, y: float, z: float,
+        orientation: tuple[float, float, float] | None = None,
+    ) -> bool:
+        """
+        Set an entity's world position and optionally its orientation.
+
+        Args:
+            entity_name: Gazebo entity name.
+            x: World x position in metres.
+            y: World y position in metres.
+            z: World z position in metres.
+            orientation: Optional (roll, pitch, yaw) tuple in radians.
+                When None, only position is changed and the current
+                orientation is preserved.
+        """
+        req_parts = [
+            f'name: "{entity_name}"',
+            (
+                "position: {"
+                f"x: {float(x)}, "
+                f"y: {float(y)}, "
+                f"z: {float(z)}"
+                "}"
+            ),
+        ]        
+        
+        if orientation is not None:
+ 
+            roll, pitch, yaw = orientation
+
+            qx, qy, qz, qw = self._rpy_to_quaternion(
+                roll=float(roll),
+                pitch=float(pitch),
+                yaw=float(yaw),
+            )
+
+            req_parts.append(
+                "orientation: {"
+                f"x: {qx}, "
+                f"y: {qy}, "
+                f"z: {qz}, "
+                f"w: {qw}"
+                "}"
+            )
+
+        req = ", ".join(req_parts)
 
         ok, _ = self._run_gz_service(
             service=f"/world/{self.world_name}/set_pose",
@@ -410,11 +458,21 @@ class SimManager:
 
         return ok
 
-    def set_drone_pose(self, drone_id: str, x: float, y: float, z: float) -> bool:
-        # drone_id will be a string followed by 
-        drone_name = f"crazyflie_{drone_id}"
-        return self._set_entity_pose(drone_name, x, y, z)
+    def set_drone_pose(
+        self, 
+        drone_id: str, 
+        x: float, y: float, z: float,
+        orientation: tuple[float, float, float] | None = None,
+        ) -> bool:
+        """
+        Set a Crazyflie model's position and optionally its orientation.
 
+        Args:
+            orientation: Optional (roll, pitch, yaw) in radians.
+                When None, the current orientation is preserved.
+        """
+        drone_name = f"crazyflie_{drone_id}"
+        return self._set_entity_pose(drone_name, x, y, z, orientation)
 
     def _boundary_model_file_path(
         self,
@@ -514,6 +572,32 @@ class SimManager:
             return True
 
         return ok
+
+    @staticmethod
+    def _rpy_to_quaternion(
+        roll: float,
+        pitch: float,
+        yaw: float,
+    ) -> tuple[float, float, float, float]:
+        """
+        Convert roll, pitch and yaw in radians into a quaternion.
+
+        Returns:
+            Quaternion in Gazebo's x, y, z, w order.
+        """
+        cr = math.cos(roll / 2.0)
+        sr = math.sin(roll / 2.0)
+        cp = math.cos(pitch / 2.0)
+        sp = math.sin(pitch / 2.0)
+        cy = math.cos(yaw / 2.0)
+        sy = math.sin(yaw / 2.0)
+
+        qx = sr * cp * cy - cr * sp * sy
+        qy = cr * sp * cy + sr * cp * sy
+        qz = cr * cp * sy - sr * sp * cy
+        qw = cr * cp * cy + sr * sp * sy
+
+        return qx, qy, qz, qw
 
 
 _DEFAULT_SIM_MANAGER: SimManager | None = None

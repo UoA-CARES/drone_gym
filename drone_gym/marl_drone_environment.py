@@ -236,7 +236,7 @@ class MarlDroneEnvironment(ParallelEnv):
         for agent in self.agents:
             vx, vy, vz = self._denormalize_action(actions[agent])
 
-            vx, vy, vz, action_filter_info = self._apply_task_action_filter(
+            vx, vy, vz, action_filter_info = self._apply_task_action_processing(
                 agent=agent,
                 vx=vx,
                 vy=vy,
@@ -454,39 +454,34 @@ class MarlDroneEnvironment(ParallelEnv):
         for agent in self.possible_agents:
             drone = self.drones[agent]
 
-            if isinstance(drone, DroneSim):
-
-
-                if drone.emergency_event.is_set():
-                    drone.emergency_event.clear()
-                    time.sleep(0.5)
-                    drone.is_landed_event.wait(timeout=15)
-                    self.sim_manager.set_drone_pose(
-                        drone_id=self.possible_agents.index(agent), 
-                        x=self.reset_positions[agent][0],
-                        y=self.reset_positions[agent][1],
-                        z=0.02
-                    )
-                    time.sleep(0.5)
-
-                    if drone.safety_thread_active:
-                        drone.stop_boundary_monitoring()
-                        time.sleep(0.2)
-                        drone.start_boundary_monitoring()
-                else:
-                        self.sim_manager.set_drone_pose(
-                            drone_id=self.possible_agents.index(agent), 
-                            x=self.reset_positions[agent][0],
-                            y=self.reset_positions[agent][1],
-                            z=self.reset_positions[agent][2]
-                        )
-            
             if drone.velocity_controller_active:
                 drone.stop_velocity_control()
 
             time.sleep(0.5)
             self._reset_control_properties(agent)
             drone.set_velocity_vector(0, 0, 0)
+
+            if isinstance(drone, DroneSim):
+                drone.land()
+
+        for agent in self.possible_agents:
+            drone = self.drones[agent]
+            if isinstance(drone, DroneSim):
+                drone.is_landed_event.wait(timeout=10)
+
+                if drone.emergency_event.is_set():
+                    drone.emergency_event.clear()
+                    if drone.safety_thread_active:
+                        drone.stop_boundary_monitoring()
+                        time.sleep(0.2)
+                        drone.start_boundary_monitoring()
+
+                self.sim_manager.set_drone_pose(
+                    drone_id=self.possible_agents.index(agent), 
+                    x=self.reset_positions[agent][0],
+                    y=self.reset_positions[agent][1],
+                    z=0.02
+                )
 
         for agent in self.possible_agents:
             drone = self.drones[agent]
@@ -501,7 +496,10 @@ class MarlDroneEnvironment(ParallelEnv):
             drone = self.drones[agent]
 
             if not drone.is_flying_event.wait(timeout=15):
-                raise RuntimeError(f"[{agent}] Failed to confirm take-off during reset.")
+                if isinstance(drone, Drone):
+                    raise RuntimeError(f"[{agent}] Failed to confirm take-off during reset.")
+                else:
+                    print(f"[{agent}] Failed to confirm take-off during reset.")
 
         for agent in self.possible_agents:
             drone = self.drones[agent]
