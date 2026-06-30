@@ -1,3 +1,8 @@
+# External repos — never track as gitlinks
+CrazySim/
+cares_reinforcement_learning/
+gymnasium_envrionments/
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
