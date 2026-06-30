@@ -17,7 +17,8 @@ class DroneSetup:
             self,
             uri: str | None = None,
             agent_id: str = "Drone",
-            simulation: bool = False
+            simulation: bool = False,
+            boundaries: dict[str, float] | None = None
         ) -> None:
         # Drone Properties
 
@@ -83,7 +84,8 @@ class DroneSetup:
         self.velocity_last_error = {"x": 0.0, "y": 0.0, "z": 0.0}
         self.velocity_integral = {"x": 0.0, "y": 0.0, "z": 0.0}
         self.target_velocity = {"x": 0.0, "y": 0.0, "z": 0.0}
-        self.max_velocity = 0.40  # Maximum velocity in m/s
+        self.max_velocity = {"x": 0.40, "y": 0.40, "z": 0.40} # Maximum velocity in m/s
+        # overridden by environment and task max_vel when vel is set using set_velocity_vector and velocity controller is active
         self.position_deadband = (
             0.05  # Position error below which velocity will be zero (in meters)
             # Changed from 0.1 to 0.05 along with position control error
@@ -114,7 +116,7 @@ class DroneSetup:
         self.last_velocity_calculation_time = 0.0
 
         # Drone Safety
-        self.boundaries = {"x": 2.5, "y": 2.5, "z": 2.25}
+        self.boundaries = {"x": 2.5, "y": 2.5, "z_min": 0.1, "z_max": 3.0} if boundaries is None else boundaries
         self.safety_thread = None
         self.in_boundaries = True
         self.emergency_event = Event()
@@ -207,7 +209,7 @@ class DroneSetup:
 
                 x_in_bounds = self.boundaries["x"] >= abs(current_pos["x"])
                 y_in_bounds = self.boundaries["y"] >= abs(current_pos["y"])
-                z_in_bounds = self.boundaries["z"] >= abs(current_pos["z"])
+                z_in_bounds = self.boundaries["z_min"] <= current_pos["z"] <= self.boundaries["z_max"]
 
                 # Set in_boundaries status
                 in_bounds = x_in_bounds and y_in_bounds and z_in_bounds
@@ -269,7 +271,7 @@ class DroneSetup:
         if len(self.position_history) < 2:
             return
 
-        velocities = {"x": [], "y": []}
+        velocities = {"x": [], "y": [], "z": []}
 
         for i in range(1, len(self.position_history)):
             t_prev, pos_prev = self.position_history[i - 1]
@@ -278,13 +280,13 @@ class DroneSetup:
             dt = t_curr - t_prev
 
             if dt > 0:
-                for axis in ["x", "y"]:
+                for axis in ["x", "y", "z"]:
                     vel = (pos_curr[axis] - pos_prev[axis]) / dt
                     velocities[axis].append(vel)
 
         # Apply moving average filter
         with self.velocity_calculation_lock:
-            for axis in ["x", "y"]:
+            for axis in ["x", "y", "z"]:
                 if len(velocities[axis]) > 0:
                     raw_velocity = sum(velocities[axis]) / len(velocities[axis])
 
@@ -295,7 +297,7 @@ class DroneSetup:
                     )
 
     def get_calculated_velocity(self) -> dict[str, float]:
-        """Get the calculated velocity from position differentiation (x and y only)"""
+        """Get the calculated velocity from position differentiation (x, y, and z)"""
         with self.velocity_calculation_lock:
             return self.calculated_velocity.copy()
 
@@ -469,10 +471,9 @@ class DroneSetup:
                     vz = vel_vector.get("z", 0.0)
 
                     # Apply velocity limits for safety
-                    max_vel = self.max_velocity
-                    vx = max(-max_vel, min(max_vel, vx))
-                    vy = max(-max_vel, min(max_vel, vy))
-                    vz = max(-max_vel, min(max_vel, vz))
+                    vx = max(-self.max_velocity["x"], min(self.max_velocity["x"], vx))
+                    vy = max(-self.max_velocity["y"], min(self.max_velocity["y"], vy))
+                    vz = max(-self.max_velocity["z"], min(self.max_velocity["z"], vz))
 
                     if self.velocity_controller_active:
                         # Set target velocity for velocity controller
@@ -777,7 +778,7 @@ class DroneSetup:
             raw_velocity = p_term + d_term + i_term
             # Apply velocity limits
             velocity[axis] = max(
-                -self.max_velocity, min(self.max_velocity, raw_velocity)
+                -self.max_velocity_dict[axis], min(self.max_velocity_dict[axis], raw_velocity)
             )
             # Update last error for next iteration
             self.last_error[axis] = error[axis]
@@ -809,7 +810,7 @@ class DroneSetup:
 
             # Combine all terms
             raw_velocity = ff_term + p_term + d_term + i_term
-            corrected_velocity[axis] = max(-self.max_velocity, min(self.max_velocity, raw_velocity))
+            corrected_velocity[axis] = max(-self.max_velocity_dict[axis], min(self.max_velocity_dict[axis], raw_velocity))
 
             self.velocity_last_error[axis] = error
 
@@ -831,7 +832,7 @@ class DroneSetup:
         if not (
             abs(x) <= self.boundaries["x"]
             and abs(y) <= self.boundaries["y"]
-            and abs(z) <= self.boundaries["z"]
+            and self.boundaries["z_min"] <= z <= self.boundaries["z_max"]
         ):
             print(
                 f"[{self.agent_id}] WARNING: Target position {x}, {y}, {z} is outside safe boundaries. Command rejected."
