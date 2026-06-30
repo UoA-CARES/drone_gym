@@ -13,19 +13,30 @@ import warnings
 warnings.filterwarnings('ignore', message='Using legacy TYPE_HOVER_LEGACY')
 
 class DroneSim(DroneSetup):
+    """
+    Drone class for CrazySim (Gazebo simulation)
+
+    Args:
+        uri (str): The URI for the Crazyflie drone.
+        agent_id (str): Unique identifier for the drone instance.
+        simulation (bool): Flag indicating whether the drone is in simulation mode.
+        sim_manager (SimManager | None): Optional SimManager instance for managing simulation interactions. If not provided, a default SimManager will be used.
+        boundaries (dict[str, float] | None): Optional dictionary defining the safe operational boundaries for the drone. If not provided, default boundaries will be used. (e.g. {"x": 2.5, "y": 2.5, "z_min": 0.1, "z_max": 3.0})
+    """
     def __init__(
             self,
             uri: str = "udp://0.0.0.0:19850",
             agent_id: str = "Drone",
             simulation: bool = True,
             sim_manager: SimManager | None = None,
+            boundaries: dict[str, float] | None = None,
         ) -> None:
         # Drone Properties
         self.simulation = simulation
         self.agent_id = agent_id
         self.sim_manager = sim_manager or get_default_sim_manager()
 
-        super().__init__(uri=uri, agent_id=agent_id, simulation=simulation)
+        super().__init__(uri=uri, agent_id=agent_id, simulation=simulation, boundaries=boundaries)
 
     def set_visual_target_marker_position(
         self,

@@ -11,8 +11,21 @@ from cflib.utils.power_switch import PowerSwitch
 
 
 class Drone(DroneSetup):
-    def __init__(self, agent_id: str = "Drone") -> None:
-        super().__init__()
+    """
+    Drone class for Crazyflie 
+
+    Args:
+        agent_id (str): Unique identifier for the drone instance.
+        boundaries (dict[str, float] | None): Optional dictionary defining the safe operational boundaries for the drone. If not provided, default boundaries will be used. (e.g. {"x": 2.5, "y": 2.5, "z_min": 0.1, "z_max": 3.0})
+        uri (str | None): The URI for the Crazyflie drone.
+    """
+    def __init__(
+            self, 
+            agent_id: str = "Drone",
+            boundaries: dict[str, float] | None = None,
+            uri: str | None = None,
+        ) -> None:
+        super().__init__(boundaries=boundaries, agent_id=agent_id, uri=uri)
         # Drone Properties
         self.URI = uri_helper.uri_from_env(
             default="radio://0/100/2M/E7E7E7E7E7"
