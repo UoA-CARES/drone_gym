@@ -169,6 +169,17 @@ class InterceptNavigation3D(DroneEnvironment):
         )
         self._interceptor_airborne = False
 
+        # The interceptor repositions via a position-control move to a fresh spawn
+        # EVERY episode, which stresses its EKF. The drone's internal safety monitor
+        # hard-kills (emergency land + disarm) any drone whose |z| > 2.25 — a death
+        # the interceptor can't recover from cleanly. Give its internal boundary
+        # headroom so a transient EKF overshoot during re-convergence doesn't trip
+        # the destructive kill; the task's own out-of-bounds + collision-guard logic
+        # (z_max=1.5, capture_threshold) still governs episode outcomes.
+        interceptor_drone = getattr(self.interceptor.body, "drone", None)
+        if interceptor_drone is not None and hasattr(interceptor_drone, "boundaries"):
+            interceptor_drone.boundaries = {"x": 3.5, "y": 3.5, "z": 3.5}
+
         # --- Collision safety monitor ----------------------------------------
         # The RL step is 0.5 s, but a faster interceptor can close >0.25 m within
         # a single step — far enough to physically overlap before the step-boundary
@@ -696,12 +707,15 @@ class InterceptNavigation3D(DroneEnvironment):
             )
 
         # 3) Fly the interceptor to its spawn, then arm it for the episode.
+        # Reset its EKF before EVERY spawn move: the per-episode position-control
+        # move diverges the Kalman estimate over time, driving the interceptor to
+        # the ceiling until the drone's internal safety monitor emergency-lands it
+        # (an unrecoverable death). A fresh EKF before each move keeps the estimate
+        # tight so the move converges instead of running away.
         self._episode_count += 1
-        if self._episode_count % self._ekf_reset_interval == 0:
-            print(f"[InterceptNavigation3D] Proactive EKF reset (episode {self._episode_count})")
-            interceptor_drone = getattr(self.interceptor.body, "drone", None)
-            if interceptor_drone is not None:
-                self._proactive_ekf_reset(interceptor_drone)
+        interceptor_drone = getattr(self.interceptor.body, "drone", None)
+        if interceptor_drone is not None:
+            self._proactive_ekf_reset(interceptor_drone)
 
         self.interceptor.reset_policy({"runner_pos": runner_pos})
         self.interceptor.prepare_reset(interceptor_spawn)
