@@ -972,9 +972,24 @@ class InterceptNavigation3D(DroneEnvironment):
             info['success_count'] = self.successful_episodes_count
         return info
 
+    # ------------------------------------------------------------------
+    # Action space — keep SARL's denormalize as a no-op so the parent's
+    # single multiply-by-max_velocity is the only scaling that happens.
+    # Without this, SARL denormalizes [-1,1]→[-0.25,0.25] and the parent
+    # then multiplies by 0.25 again → 0.0625 m/s effective (4× too slow).
+    # ------------------------------------------------------------------
+
+    @property
+    def max_action_value(self):
+        return 1.0
+
+    @property
+    def min_action_value(self):
+        return -1.0
+
     def sample_action(self):
-        """Sample an action for the exploration phase — returns action in [-max_velocity, max_velocity] (3D)."""
-        return np.random.uniform(-self.max_velocity, self.max_velocity, size=(3,))
+        """Sample a normalized action in [-1, 1] — the parent will scale to m/s."""
+        return np.random.uniform(-1.0, 1.0, size=(3,))
 
     def close(self):
         """Land the interceptor and runner, then clear the goal marker."""
