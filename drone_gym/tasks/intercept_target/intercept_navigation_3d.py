@@ -161,7 +161,12 @@ class InterceptNavigation3D(DroneEnvironment):
             fixed_z=self.fixed_z,
         )
         interceptor_policy = CallablePolicy(fn=self._interceptor_pursuit)
-        self.interceptor = SimAgent(body=interceptor_body, policy=interceptor_policy)
+        self.interceptor = SimAgent(
+            agent_id=1,
+            body=interceptor_body,
+            policy=interceptor_policy,
+            role="interceptor",
+        )
         self._interceptor_airborne = False
 
         # --- Collision safety monitor ----------------------------------------
