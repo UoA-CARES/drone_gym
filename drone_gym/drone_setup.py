@@ -1,6 +1,7 @@
 import threading
 import queue
 import time
+import math
 from threading import Event
 from collections import deque
 from typing import Any
@@ -10,6 +11,10 @@ from cflib.crazyflie import Crazyflie
 from cflib.crazyflie.syncCrazyflie import SyncCrazyflie
 from cflib.positioning.motion_commander import MotionCommander
 from cflib.utils import uri_helper
+from drone_gym.utils.position_source import (
+    PositionSample,
+    PositionSource,
+)
 
 
 class DroneSetup:
@@ -18,7 +23,8 @@ class DroneSetup:
             uri: str | None = None,
             agent_id: str = "Drone",
             simulation: bool = False,
-            boundaries: dict[str, float] | None = None
+            boundaries: dict[str, float] | None = None,
+            position_source: PositionSource | None = None,
         ) -> None:
         # Drone Properties
 
@@ -102,6 +108,9 @@ class DroneSetup:
         self.mc: MotionCommander | None = None
         self.armed = False
 
+        # Drone position tracking
+        self.position_source = position_source
+        self.last_position_update_time: float | None = None
         # Vicon Integration
         self.position = {"x": 0.0, "y": 0.0, "z": 0.0}
         self.position_thread = None
@@ -266,16 +275,80 @@ class DroneSetup:
         """
         pass
 
+    def _handle_position_sample(
+        self,
+        sample: PositionSample,
+    ) -> None:
+        """
+        Validate and store a position received from the configured source.
+
+        All position sources publish through this function so that position
+        storage, history, readiness and velocity handling are source-independent.
+        """
+
+        coordinates = (sample.x, sample.y, sample.z)
+
+        if not all(math.isfinite(value) for value in coordinates):
+            source_name = (
+                self.position_source.name
+                if self.position_source is not None
+                else "unknown source"
+            )
+
+            print(
+                f"[{self.agent_id}] Ignoring invalid position sample "
+                f"from {source_name}: {coordinates}"
+            )
+            return
+
+        position = sample.as_dict()
+
+        with self.position_lock:
+            self.position = position
+
+            self.position_history.append(
+                (
+                    sample.timestamp,
+                    position.copy(),
+                )
+            )
+
+            self.last_position_update_time = sample.timestamp
+
+        if not self.position_ready_event.is_set():
+            self.position_ready_event.set()
+
+            source_name = (
+                self.position_source.name
+                if self.position_source is not None
+                else "position source"
+            )
+
+            print(
+                f"[{self.agent_id}] First valid position received "
+                f"from {source_name}: {position}"
+            )
+
+        if (
+            sample.timestamp - self.last_velocity_calculation_time
+            >= self.velocity_update_rate
+        ):
+            self._calculate_velocity()
+            self.last_velocity_calculation_time = sample.timestamp
+
     def _calculate_velocity(self) -> None:
         """Calculate velocity using moving average filter over position history with additional low-pass filtering"""
-        if len(self.position_history) < 2:
+
+        with self.position_lock:
+            position_history = list(self.position_history)
+        if len(position_history) < 2:
             return
 
         velocities = {"x": [], "y": [], "z": []}
 
-        for i in range(1, len(self.position_history)):
-            t_prev, pos_prev = self.position_history[i - 1]
-            t_curr, pos_curr = self.position_history[i]
+        for i in range(1, len(position_history)):
+            t_prev, pos_prev = position_history[i - 1]
+            t_curr, pos_curr = position_history[i]
 
             dt = t_curr - t_prev
 
@@ -1024,10 +1097,11 @@ class DroneSetup:
         with self.position_lock:
             self.position = {"x": 0.0, "y": 0.0, "z": 0.0}
             self.target_position = {"x": 0.0, "y": 0.0, "z": 0.0}
+            self.position_history.clear()
+            self.last_position_update_time = None
         # Velocity calculation
         with self.velocity_calculation_lock:
             self.calculated_velocity = {"x": 0.0, "y": 0.0, "z": 0.0}
-        self.position_history.clear()
         # PID
         self.last_error = {"x": 0.0, "y": 0.0, "z": 0.0}
         self.integral = {"x": 0.0, "y": 0.0, "z": 0.0}
