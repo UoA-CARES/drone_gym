@@ -153,7 +153,8 @@ class InterceptNavigation3D(DroneEnvironment):
         # not to SimManager.  SimManager is only responsible for Gazebo visuals.
         self.sim_manager = get_default_sim_manager()
         self.goal_marker_name = "rl_intercept_nav_goal"
-        interceptor_uri = f"udp://0.0.0.0:{self.sim_manager.allocate_port()}"
+        # Runner is on port 19850; interceptor is drone 2 from sitl_multiagent_square -n 2
+        interceptor_uri = "udp://0.0.0.0:19851"
         interceptor_body = CrazyflieBody(
             use_simulator=use_simulator,
             uri=interceptor_uri,
