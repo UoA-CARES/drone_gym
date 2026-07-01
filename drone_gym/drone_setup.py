@@ -218,7 +218,8 @@ class DroneSetup:
 
                 x_in_bounds = self.boundaries["x"] >= abs(current_pos["x"])
                 y_in_bounds = self.boundaries["y"] >= abs(current_pos["y"])
-                z_in_bounds = self.boundaries["z_min"] <= current_pos["z"] <= self.boundaries["z_max"]
+                # z_in_bounds = self.boundaries["z_min"] <= current_pos["z"] <= self.boundaries["z_max"]
+                z_in_bounds = current_pos["z"] <= self.boundaries["z_max"]
 
                 # Set in_boundaries status
                 in_bounds = x_in_bounds and y_in_bounds and z_in_bounds
@@ -851,7 +852,7 @@ class DroneSetup:
             raw_velocity = p_term + d_term + i_term
             # Apply velocity limits
             velocity[axis] = max(
-                -self.max_velocity_dict[axis], min(self.max_velocity_dict[axis], raw_velocity)
+                -self.max_velocity[axis], min(self.max_velocity[axis], raw_velocity)
             )
             # Update last error for next iteration
             self.last_error[axis] = error[axis]
@@ -883,7 +884,7 @@ class DroneSetup:
 
             # Combine all terms
             raw_velocity = ff_term + p_term + d_term + i_term
-            corrected_velocity[axis] = max(-self.max_velocity_dict[axis], min(self.max_velocity_dict[axis], raw_velocity))
+            corrected_velocity[axis] = max(-self.max_velocity[axis], min(self.max_velocity[axis], raw_velocity))
 
             self.velocity_last_error[axis] = error
 
@@ -905,7 +906,9 @@ class DroneSetup:
         if not (
             abs(x) <= self.boundaries["x"]
             and abs(y) <= self.boundaries["y"]
-            and self.boundaries["z_min"] <= z <= self.boundaries["z_max"]
+            # and self.boundaries["z_min"] <= z <= self.boundaries["z_max"]
+            and z <= self.boundaries["z_max"]
+
         ):
             print(
                 f"[{self.agent_id}] WARNING: Target position {x}, {y}, {z} is outside safe boundaries. Command rejected."
