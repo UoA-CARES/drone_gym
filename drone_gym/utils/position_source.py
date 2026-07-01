@@ -57,8 +57,12 @@ class PositionSource(ABC):
 
     @abstractmethod
     def start(self, callback: PositionCallback) -> None:
-        """Begin publishing valid position samples through callback."""
+        """
+        Start publishing valid position samples through callback.
 
+        This method must initiate any source-specific background work and return.
+        It must not remain blocked for the lifetime of the source.
+        """
     @abstractmethod
     def stop(self) -> None:
         """Stop publishing and release source-specific resources."""
