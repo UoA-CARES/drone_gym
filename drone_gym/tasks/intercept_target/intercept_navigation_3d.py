@@ -503,40 +503,24 @@ class InterceptNavigation3D(DroneEnvironment):
             self._safety_thread.join(timeout=1.0)
             self._safety_thread = None
 
-    def _containment_velocity(self, pos, max_v: float, max_vz: float):
-        """Inward velocity if `pos` is past a containment threshold, else None.
-
-        Steers a drifting/overshooting drone back toward the centre on whichever
-        axis has crossed the containment line, before it reaches the fatal
-        internal kill boundary.
-        """
-        vx = vy = vz = 0.0
-        engaged = False
-        if pos[0] > self.CONTAINMENT_XY:
-            vx, engaged = -max_v, True
-        elif pos[0] < -self.CONTAINMENT_XY:
-            vx, engaged = max_v, True
-        if pos[1] > self.CONTAINMENT_XY:
-            vy, engaged = -max_v, True
-        elif pos[1] < -self.CONTAINMENT_XY:
-            vy, engaged = max_v, True
-        if pos[2] > self.CONTAINMENT_Z_HIGH:
-            vz, engaged = -max_vz, True
-        elif pos[2] < self.CONTAINMENT_Z_LOW:
-            vz, engaged = max_vz, True
-        return (vx, vy, vz) if engaged else None
-
     def _safety_monitor_loop(self):
-        """Background guard: stop both drones on capture, and contain either drone
+        """Background guard: stop both drones on capture, and brake either drone
         that approaches the fatal boundary (3D).
 
         Runs much faster than the RL step so neither drone can blow past the 0.3 m
         capture distance — nor coast into the internal kill boundary — inside a
         single 0.5 s step. Priorities each tick:
           1. If within capture_threshold: stop both drones and latch the collision.
-          2. Otherwise, if a drone has crossed a containment line: command it back
-             toward centre so it never reaches the drone's internal emergency-land
+          2. Otherwise, if a drone has crossed a containment line: BRAKE it (zero
+             velocity) so it halts before the drone's internal emergency-land
              boundary (the "outside boundary crash").
+
+        Containment deliberately BRAKES rather than driving the drone back inward:
+        commanding an inward velocity from this background thread fights the RL /
+        pursuit velocity command and the sudden setpoint reversal topples the
+        Crazyflie in CrazySim. Zeroing velocity is the same proven-safe operation
+        the collision guard uses, and still halts the drone (~0.4 m short of the
+        kill boundary); the episode then ends out-of-bounds and reset recovers.
         """
         dt = 1.0 / self.SAFETY_MONITOR_HZ
         while self._safety_monitor_running:
@@ -553,18 +537,16 @@ class InterceptNavigation3D(DroneEnvironment):
                         print(f"[InterceptNavigation3D] COLLISION GUARD: drones within "
                               f"{separation:.2f} m (< {self.capture_threshold:.2f}) — both stopped")
                 elif not self._collision_event.is_set():
-                    # Containment — steer either drone back inside before the fatal kill.
-                    runner_push = self._containment_velocity(rp, self.max_velocity, self.max_velocity_z)
-                    if runner_push is not None:
+                    # Containment — brake (not reverse) any drone past the line.
+                    if self._position_past_containment(rp):
                         try:
-                            self.drone.set_velocity_vector(*runner_push)
+                            self.drone.set_velocity_vector(0, 0, 0)
                         except Exception:
                             pass
-                    interc_push = self._containment_velocity(
-                        ip, self.interceptor_max_velocity, self.interceptor_max_velocity_z)
-                    if interc_push is not None:
+                    if self._position_past_containment(ip):
                         try:
-                            self.interceptor.body.apply_velocity(*interc_push)
+                            self.interceptor.body.apply_velocity(0, 0, 0)
+                            self.interceptor.velocity = [0.0, 0.0, 0.0]
                         except Exception:
                             pass
             except Exception:
