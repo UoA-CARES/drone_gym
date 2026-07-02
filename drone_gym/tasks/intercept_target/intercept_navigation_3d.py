@@ -414,11 +414,68 @@ class InterceptNavigation3D(DroneEnvironment):
         except Exception as exc:
             print(f"[InterceptNavigation3D] Interceptor recovery exception: {exc}")
 
+    def _position_past_containment(self, pos) -> bool:
+        """True if `pos` has drifted past the containment lines (toward the kill)."""
+        return (abs(pos[0]) > self.CONTAINMENT_XY or
+                abs(pos[1]) > self.CONTAINMENT_XY or
+                pos[2] > self.CONTAINMENT_Z_HIGH or
+                pos[2] < self.CONTAINMENT_Z_LOW)
+
+    def _await_interceptor_reset_safely(self, spawn: List[float], timeout: float = 15.0) -> bool:
+        """Wait for the interceptor to reach its spawn, aborting + re-centering if it drifts.
+
+        The position-control move to spawn is the one interceptor motion not covered
+        by the per-step velocity clamp, so a diverging EKF can drive it toward the
+        fatal kill boundary during the move. Poll the reset event; if the drone
+        drifts past a containment line before arriving, abort the move, reset the
+        EKF, and retry from the same target. After a few failed attempts, hand off
+        to full recovery rather than looping into the kill.
+        """
+        deadline = time.time() + timeout
+        attempts = 0
+        max_attempts = 3
+        while time.time() < deadline:
+            if self.interceptor.await_reset(timeout=0.2):
+                return True
+            try:
+                pos = self.interceptor.body.get_position()
+            except Exception:
+                continue
+            if self._position_past_containment(pos):
+                attempts += 1
+                print(f"[InterceptNavigation3D] Interceptor drifting during spawn move "
+                      f"(pos={[round(p, 2) for p in pos]}) — aborting move + EKF reset "
+                      f"(attempt {attempts}/{max_attempts})")
+                drone = getattr(self.interceptor.body, "drone", None)
+                if drone is not None:
+                    try:
+                        drone.stop_position_control()
+                    except Exception:
+                        pass
+                    self._proactive_ekf_reset(drone)
+                if attempts >= max_attempts:
+                    print("[InterceptNavigation3D] Interceptor spawn move kept diverging — recovering")
+                    self._recover_interceptor_if_dead()
+                    return False
+                # Retry the move from the now EKF-reset state.
+                self.interceptor.prepare_reset(spawn)
+        return False
+
     # ------------------------------------------------------------------
     # Collision safety monitor — zeroes both drones within capture_threshold
     # ------------------------------------------------------------------
 
     SAFETY_MONITOR_HZ = 20.0  # how often the background monitor checks separation
+
+    # Containment thresholds — the guard steers a drone back inside once it
+    # crosses these. Set ABOVE normal operation (the step clamp keeps the runner
+    # inside ~xy 1.75 / z 1.35, and interceptor spawns sit within ±1.5 / 0.7-1.3)
+    # but well BELOW the drone's internal fatal kill boundary (xy 2.5, z 2.25;
+    # interceptor z 3.0). That gap is the runway the guard uses to correct a
+    # drifting/overshooting drone before the destructive emergency-land can fire.
+    CONTAINMENT_XY = 2.1
+    CONTAINMENT_Z_HIGH = 1.8
+    CONTAINMENT_Z_LOW = 0.25
 
     def _stop_both_drones(self):
         """Immediately command zero velocity to the runner and the interceptor."""
@@ -446,12 +503,40 @@ class InterceptNavigation3D(DroneEnvironment):
             self._safety_thread.join(timeout=1.0)
             self._safety_thread = None
 
-    def _safety_monitor_loop(self):
-        """Continuously stop both drones the instant they are within capture_threshold (3D).
+    def _containment_velocity(self, pos, max_v: float, max_vz: float):
+        """Inward velocity if `pos` is past a containment threshold, else None.
 
-        Runs much faster than the RL step so the two drones cannot blow past the
-        0.3 m safety distance inside a single 0.5 s step. Once a collision is
-        latched, it keeps re-zeroing both drones until reset clears the flag.
+        Steers a drifting/overshooting drone back toward the centre on whichever
+        axis has crossed the containment line, before it reaches the fatal
+        internal kill boundary.
+        """
+        vx = vy = vz = 0.0
+        engaged = False
+        if pos[0] > self.CONTAINMENT_XY:
+            vx, engaged = -max_v, True
+        elif pos[0] < -self.CONTAINMENT_XY:
+            vx, engaged = max_v, True
+        if pos[1] > self.CONTAINMENT_XY:
+            vy, engaged = -max_v, True
+        elif pos[1] < -self.CONTAINMENT_XY:
+            vy, engaged = max_v, True
+        if pos[2] > self.CONTAINMENT_Z_HIGH:
+            vz, engaged = -max_vz, True
+        elif pos[2] < self.CONTAINMENT_Z_LOW:
+            vz, engaged = max_vz, True
+        return (vx, vy, vz) if engaged else None
+
+    def _safety_monitor_loop(self):
+        """Background guard: stop both drones on capture, and contain either drone
+        that approaches the fatal boundary (3D).
+
+        Runs much faster than the RL step so neither drone can blow past the 0.3 m
+        capture distance — nor coast into the internal kill boundary — inside a
+        single 0.5 s step. Priorities each tick:
+          1. If within capture_threshold: stop both drones and latch the collision.
+          2. Otherwise, if a drone has crossed a containment line: command it back
+             toward centre so it never reaches the drone's internal emergency-land
+             boundary (the "outside boundary crash").
         """
         dt = 1.0 / self.SAFETY_MONITOR_HZ
         while self._safety_monitor_running:
@@ -467,6 +552,21 @@ class InterceptNavigation3D(DroneEnvironment):
                         self._collision_event.set()
                         print(f"[InterceptNavigation3D] COLLISION GUARD: drones within "
                               f"{separation:.2f} m (< {self.capture_threshold:.2f}) — both stopped")
+                elif not self._collision_event.is_set():
+                    # Containment — steer either drone back inside before the fatal kill.
+                    runner_push = self._containment_velocity(rp, self.max_velocity, self.max_velocity_z)
+                    if runner_push is not None:
+                        try:
+                            self.drone.set_velocity_vector(*runner_push)
+                        except Exception:
+                            pass
+                    interc_push = self._containment_velocity(
+                        ip, self.interceptor_max_velocity, self.interceptor_max_velocity_z)
+                    if interc_push is not None:
+                        try:
+                            self.interceptor.body.apply_velocity(*interc_push)
+                        except Exception:
+                            pass
             except Exception:
                 pass
             time.sleep(dt)
@@ -722,8 +822,8 @@ class InterceptNavigation3D(DroneEnvironment):
 
         self.interceptor.reset_policy({"runner_pos": runner_pos})
         self.interceptor.prepare_reset(interceptor_spawn)
-        if not self.interceptor.await_reset(timeout=15.0):
-            print("[InterceptNavigation3D] WARNING: interceptor timed out moving to spawn")
+        if not self._await_interceptor_reset_safely(interceptor_spawn, timeout=15.0):
+            print("[InterceptNavigation3D] WARNING: interceptor did not reach spawn cleanly")
         self.interceptor.start_episode()
         self.interceptor.refresh()
         self._sync_interceptor()
