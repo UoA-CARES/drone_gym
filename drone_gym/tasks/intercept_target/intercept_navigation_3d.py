@@ -173,12 +173,15 @@ class InterceptNavigation3D(DroneEnvironment):
         # EVERY episode, which stresses its EKF. The drone's internal safety monitor
         # hard-kills (emergency land + disarm) any drone whose |z| > 2.25 — a death
         # the interceptor can't recover from cleanly. Give its internal boundary
-        # headroom so a transient EKF overshoot during re-convergence doesn't trip
-        # the destructive kill; the task's own out-of-bounds + collision-guard logic
-        # (z_max=1.5, capture_threshold) still governs episode outcomes.
+        # VERTICAL headroom only, so a transient EKF z-overshoot during
+        # re-convergence doesn't trip the destructive kill. Keep xy at the drone
+        # default (2.5, i.e. 0.5 m past the arena wall for PID overshoot) so a
+        # lateral drift is still caught before the interceptor roams far outside
+        # the arena. The task's own out-of-bounds + collision-guard logic
+        # (xy_limit=2.0, z_max=1.5, capture_threshold) still governs episodes.
         interceptor_drone = getattr(self.interceptor.body, "drone", None)
         if interceptor_drone is not None and hasattr(interceptor_drone, "boundaries"):
-            interceptor_drone.boundaries = {"x": 3.5, "y": 3.5, "z": 3.5}
+            interceptor_drone.boundaries = {"x": 2.5, "y": 2.5, "z": 3.0}
 
         # --- Collision safety monitor ----------------------------------------
         # The RL step is 0.5 s, but a faster interceptor can close >0.25 m within
