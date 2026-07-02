@@ -194,6 +194,19 @@ class InterceptNavigation3D(DroneEnvironment):
         self._safety_monitor_running = False
         self._safety_thread = None
 
+        # --- Action smoothing (topple prevention) ---------------------------
+        # The velocity controller applies commanded velocity INSTANTLY (its slew
+        # limiter is unwired and max_velocity_change_rate=100 ≈ no limit). SAC is a
+        # maximum-entropy policy, so it outputs high-variance actions that swing
+        # violently between steps (e.g. +0.25 → −0.25 m/s in xy); applying such an
+        # instantaneous velocity reversal pitches the Crazyflie over and flips it in
+        # CrazySim. TD3's near-deterministic actions are smooth and never hit this.
+        # We slew-limit the commanded action per step so every velocity change is
+        # gentle — a full reversal ramps over a few steps instead of toppling.
+        # Lower this if topples persist; raise it for more agility. Range [0, 2].
+        self.max_action_delta = 0.4
+        self._prev_applied_action = [0.0, 0.0, 0.0]
+
         # Distance tracking for reward calculation
         self.previous_goal_distance = self.max_distance
 
@@ -815,6 +828,7 @@ class InterceptNavigation3D(DroneEnvironment):
         self.reached_goal = False
         self.done = False
         self.previous_goal_distance = self._distance_to_target(runner_pos)
+        self._prev_applied_action = [0.0, 0.0, 0.0]  # runner starts the episode at rest
 
         time.sleep(0.5)  # final settle so both drones are stable before stepping
         self.drone.start_velocity_control()
@@ -894,7 +908,17 @@ class InterceptNavigation3D(DroneEnvironment):
         elif predicted_z < z_lo and clamped_action[2] < 0:
             clamped_action[2] = 0.0
 
-        result = super().step(clamped_action)
+        # Slew-rate limit: cap how far the commanded action can move from the last
+        # applied action, so no single velocity change is violent enough to topple
+        # the drone (SAC's high-entropy actions otherwise swing hard step-to-step).
+        limited_action = list(clamped_action)
+        for i in range(3):
+            delta = clamped_action[i] - self._prev_applied_action[i]
+            delta = max(-self.max_action_delta, min(self.max_action_delta, delta))
+            limited_action[i] = self._prev_applied_action[i] + delta
+        self._prev_applied_action = list(limited_action)
+
+        result = super().step(limited_action)
 
         # Refresh interceptor tracking after the step (it has flown for step_time).
         self.interceptor.refresh()
