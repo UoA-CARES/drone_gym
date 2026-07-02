@@ -397,10 +397,14 @@ class InterceptNavigation3D(DroneEnvironment):
             return False
 
     def _proactive_ekf_reset(self, drone) -> None:
-        """Lightweight Kalman-filter reset — clears z-drift without a full reconnect.
+        """Kalman-filter reset. DANGEROUS while airborne — DO NOT call in flight.
 
-        Safe to call while the drone is airborne: the EKF briefly re-converges
-        (< 0.5 s in CrazySim) before the subsequent position-control move starts.
+        Resetting the EKF mid-air makes the estimator emit a brief burst of garbage
+        state, and the onboard controller responds with a thrust spike that
+        "launches" the drone to the ceiling and out of the arena before it stalls
+        and falls. EKF resets must happen on the ground, via the recovery path
+        (_recover_drone re-inits the link and resets the filter safely). This helper
+        is retained only for that ground-level use.
         """
         try:
             if getattr(drone, "cf", None) is not None:
@@ -440,9 +444,11 @@ class InterceptNavigation3D(DroneEnvironment):
         The position-control move to spawn is the one interceptor motion not covered
         by the per-step velocity clamp, so a diverging EKF can drive it toward the
         fatal kill boundary during the move. Poll the reset event; if the drone
-        drifts past a containment line before arriving, abort the move, reset the
-        EKF, and retry from the same target. After a few failed attempts, hand off
-        to full recovery rather than looping into the kill.
+        drifts past a containment line before arriving, abort the move and let it
+        settle, then retry from the same target. We do NOT reset the EKF in the air
+        here — an airborne Kalman reset triggers the thrust-spike "launch". After a
+        few failed attempts, hand off to ground recovery (which resets the EKF
+        safely) rather than looping into the kill.
         """
         deadline = time.time() + timeout
         attempts = 0
@@ -457,20 +463,20 @@ class InterceptNavigation3D(DroneEnvironment):
             if self._position_past_containment(pos):
                 attempts += 1
                 print(f"[InterceptNavigation3D] Interceptor drifting during spawn move "
-                      f"(pos={[round(p, 2) for p in pos]}) — aborting move + EKF reset "
+                      f"(pos={[round(p, 2) for p in pos]}) — aborting move + letting it settle "
                       f"(attempt {attempts}/{max_attempts})")
                 drone = getattr(self.interceptor.body, "drone", None)
                 if drone is not None:
                     try:
                         drone.stop_position_control()
+                        drone.set_velocity_vector(0, 0, 0)
                     except Exception:
                         pass
-                    self._proactive_ekf_reset(drone)
                 if attempts >= max_attempts:
-                    print("[InterceptNavigation3D] Interceptor spawn move kept diverging — recovering")
+                    print("[InterceptNavigation3D] Interceptor spawn move kept diverging — ground recovery")
                     self._recover_interceptor_if_dead()
                     return False
-                # Retry the move from the now EKF-reset state.
+                time.sleep(0.3)  # let it settle in place before retrying the move
                 self.interceptor.prepare_reset(spawn)
         return False
 
@@ -805,15 +811,13 @@ class InterceptNavigation3D(DroneEnvironment):
             )
 
         # 3) Fly the interceptor to its spawn, then arm it for the episode.
-        # Reset its EKF before EVERY spawn move: the per-episode position-control
-        # move diverges the Kalman estimate over time, driving the interceptor to
-        # the ceiling until the drone's internal safety monitor emergency-lands it
-        # (an unrecoverable death). A fresh EKF before each move keeps the estimate
-        # tight so the move converges instead of running away.
+        # We deliberately do NOT reset the interceptor's EKF here. Resetting the
+        # Kalman filter while the drone is airborne makes the estimator emit a brief
+        # burst of garbage state, and the onboard controller reacts with a thrust
+        # spike — the drone "launches" to the ceiling, leaves the arena, then stalls
+        # and falls. (This was the cause of the sudden launch-into-the-air crashes.)
+        # EKF resets now happen only on the ground, via the recovery path.
         self._episode_count += 1
-        interceptor_drone = getattr(self.interceptor.body, "drone", None)
-        if interceptor_drone is not None:
-            self._proactive_ekf_reset(interceptor_drone)
 
         self.interceptor.reset_policy({"runner_pos": runner_pos})
         self.interceptor.prepare_reset(interceptor_spawn)
