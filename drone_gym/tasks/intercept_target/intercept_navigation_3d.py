@@ -54,9 +54,12 @@ class InterceptNavigation3D(DroneEnvironment):
         self.use_simulator = use_simulator
 
         # Gentle vertical speed cap — CrazySim's z-velocity control is twitchy and
-        # moving up/down fast destabilises the Crazyflie (shoots to the ceiling,
-        # then crashes). Keep vertical motion slow so the task stays 3D but stable.
-        self.max_velocity_z = 0.10
+        # moving up/down fast destabilises the estimator, which makes the firmware
+        # command a thrust spike that LAUNCHES the drone to the ceiling (a crash we
+        # can't stop from here, since it bypasses our velocity setpoint). Keeping
+        # vertical motion very slow keeps the vertical estimator well-conditioned so
+        # that spike almost never builds — the task stays 3D but much more stable.
+        self.max_velocity_z = 0.03
 
         # RL training parameters
         self.episode_length = episode_length
@@ -69,12 +72,15 @@ class InterceptNavigation3D(DroneEnvironment):
         # 2.0 is the value the stable sibling tasks use — larger boxes mean longer
         # position-control moves on reset, which is exactly what blows up the EKF.
         self.xy_limit = 2.0
-        self.z_min = 0.5
-        self.z_max = 1.5
+        # Tight z-band around the 1.0 m reset height. A narrow vertical corridor
+        # means the runner only ever makes small vertical moves, keeping CrazySim's
+        # vertical estimator well-conditioned so the thrust-spike launch can't build.
+        self.z_min = 0.8
+        self.z_max = 1.2
         self.fixed_z = 1.0                  # runner reset altitude (centre of the z band)
         self.spawn_margin = 0.5             # keep spawns clear of the xy wall (PID overshoot safety)
         self.goal_margin = 0.3              # keep the goal clear of the xy wall
-        self.z_margin = 0.2                 # keep goal/interceptor spawn off the z floor/ceiling
+        self.z_margin = 0.1                 # keep goal/interceptor spawn off the z floor/ceiling (tight band)
         self.out_of_bounds_tolerance = 0.05  # small grace for PID overshoot at the wall
 
         # The runner always spawns at the centre (0, 0, fixed_z) — diversity comes
@@ -103,7 +109,7 @@ class InterceptNavigation3D(DroneEnvironment):
         #   * interceptor camped on the goal            -> runner has no chance
         self.intercept_frac = (0.45, 0.65)   # where along the runner->goal path the contest is set up
         self.fairness_jitter = 0.15          # ±15% randomness on the fair lateral distance
-        self.interceptor_z_jitter = 0.3      # vertical variety for the interceptor spawn
+        self.interceptor_z_jitter = 0.1      # vertical variety for the interceptor spawn (tight band)
         self.min_runner_clearance = 1.0      # interceptor never starts in (near) capture range of the runner
         self.min_goal_clearance = 0.6        # interceptor can't start camped on the goal
 
@@ -114,7 +120,7 @@ class InterceptNavigation3D(DroneEnvironment):
         # actual boundary, leaving room for the drone to coast to a stop instead of
         # sailing through the wall/ceiling on momentum (the out-of-bounds loop).
         self.boundary_brake_margin = 0.25   # xy: start braking this far inside xy_limit
-        self.z_brake_margin = 0.15          # z: start braking this far inside the z band
+        self.z_brake_margin = 0.10          # z: start braking this far inside the z band
 
         self.capture_threshold = 0.30      # metres (3D) — interceptor "catches" the runner (no real collision)
         self.goal_threshold = 0.20         # metres (3D) — runner has reached the goal
