@@ -213,10 +213,17 @@ class InterceptNavigation3D(DroneEnvironment):
         # Evaluation mode tracking — counts episodes the runner reached the goal
         self.successful_episodes_count = 0
 
-        # EKF drift prevention: reset the Kalman estimator every N episodes so
-        # z-drift can't accumulate to the point where a drone falls mid-episode.
+        # EKF drift prevention. The runner takes off ONCE and flies continuously
+        # for the whole run — it never lands between episodes — so CrazySim's
+        # onboard estimator accumulates drift with nothing to reset it. Left
+        # unbounded, the drift eventually makes the altitude controller command a
+        # thrust spike that LAUNCHES the drone to the ceiling and out of bounds
+        # (the sudden mid-run crash + flat -100 reward). We can't reset the EKF in
+        # the air (that itself causes a launch), so every N episodes we land the
+        # runner, reset the filter on the ground, and take off again — capping the
+        # drift well below launch territory.
         self._episode_count = 0
-        self._ekf_reset_interval = 15
+        self._runner_ekf_reset_interval = 20
 
     # ------------------------------------------------------------------
     # Interceptor expert policy — 3D pure pursuit toward the runner
@@ -412,6 +419,27 @@ class InterceptNavigation3D(DroneEnvironment):
                 time.sleep(0.4)
         except Exception as exc:
             print(f"[InterceptNavigation3D] EKF reset warning: {exc}")
+
+    def _ground_ekf_reset_runner(self) -> None:
+        """Land the runner, reset its EKF on the ground, to bound accumulated drift.
+
+        The runner never lands during a run, so CrazySim's estimator drifts
+        unbounded until the altitude controller reacts with a thrust spike and
+        launches the drone. Resetting the filter airborne causes that same launch,
+        so we land first (the drone stays armed — land() doesn't disarm), reset on
+        the ground where it's safe, and let the subsequent super().reset() take it
+        off and re-centre with a fresh, drift-free estimate.
+        """
+        print(f"[InterceptNavigation3D] Ground EKF reset for runner (episode {self._episode_count})")
+        try:
+            if self.drone.velocity_controller_active:
+                self.drone.stop_velocity_control()
+            self.drone.set_velocity_vector(0, 0, 0)
+            self.drone.land()
+            self.drone.is_landed_event.wait(timeout=15)
+            self._proactive_ekf_reset(self.drone)  # safe: the drone is on the ground now
+        except Exception as exc:
+            print(f"[InterceptNavigation3D] Runner ground EKF reset warning: {exc}")
 
     def _recover_interceptor_if_dead(self):
         """Re-initialise + take off the interceptor if it has died, before an episode."""
@@ -771,6 +799,14 @@ class InterceptNavigation3D(DroneEnvironment):
         self._stop_safety_monitor()
         self._collision_event.clear()
 
+        # Periodically land the runner and reset its EKF ON THE GROUND to bound the
+        # drift that would otherwise build up over a continuous run and eventually
+        # launch it. Done before super().reset(), which then takes off + re-centres
+        # with a fresh estimate. (Airborne resets cause the launch, so never here.)
+        self._episode_count += 1
+        if self._episode_count % self._runner_ekf_reset_interval == 0:
+            self._ground_ekf_reset_runner()
+
         # Parent reset: takeoff, centre the runner at (0, 0, fixed_z), start velocity control.
         super().reset(training)
 
@@ -817,8 +853,6 @@ class InterceptNavigation3D(DroneEnvironment):
         # spike — the drone "launches" to the ceiling, leaves the arena, then stalls
         # and falls. (This was the cause of the sudden launch-into-the-air crashes.)
         # EKF resets now happen only on the ground, via the recovery path.
-        self._episode_count += 1
-
         self.interceptor.reset_policy({"runner_pos": runner_pos})
         self.interceptor.prepare_reset(interceptor_spawn)
         if not self._await_interceptor_reset_safely(interceptor_spawn, timeout=15.0):
