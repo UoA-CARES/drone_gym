@@ -208,9 +208,19 @@ class InterceptNavigation3D(DroneEnvironment):
         # instantaneous velocity reversal pitches the Crazyflie over and flips it in
         # CrazySim. TD3's near-deterministic actions are smooth and never hit this.
         # We slew-limit the commanded action per step so every velocity change is
-        # gentle — a full reversal ramps over a few steps instead of toppling.
-        # Lower this if topples persist; raise it for more agility. Range [0, 2].
-        self.max_action_delta = 0.4
+        # gentle — a full reversal ramps over several steps instead of toppling.
+        #
+        # This slew cap is ALSO a horizontal-acceleration cap, which is the real
+        # lever on the launch bug: to accelerate horizontally the quad must TILT,
+        # and a tilted drone corrupts its own downward altitude sensor (the ToF
+        # z/cos(tilt) model amplifies error), which is what triggers the firmware
+        # thrust-spike launch. Smaller per-step velocity change -> smaller tilt ->
+        # valid altitude estimate. The implied acceleration cap is
+        #   max_action_delta * max_velocity / step_time
+        #   = 0.2 * 0.25 / 0.5 = 0.10 m/s^2   (was 0.20 m/s^2 at 0.4)
+        # i.e. the drone now tilts about half as hard to change course.
+        # Lower this further to reduce tilt/launches more; raise for agility. [0, 2].
+        self.max_action_delta = 0.2
         self._prev_applied_action = [0.0, 0.0, 0.0]
 
         # Distance tracking for reward calculation
