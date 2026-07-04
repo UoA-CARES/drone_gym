@@ -229,17 +229,24 @@ class InterceptNavigation3D(DroneEnvironment):
         # Evaluation mode tracking — counts episodes the runner reached the goal
         self.successful_episodes_count = 0
 
-        # EKF drift prevention. The runner takes off ONCE and flies continuously
-        # for the whole run — it never lands between episodes — so CrazySim's
+        # EKF drift prevention. Neither drone lands between episodes, so CrazySim's
         # onboard estimator accumulates drift with nothing to reset it. Left
         # unbounded, the drift eventually makes the altitude controller command a
-        # thrust spike that LAUNCHES the drone to the ceiling and out of bounds
-        # (the sudden mid-run crash + flat -100 reward). We can't reset the EKF in
+        # thrust spike that LAUNCHES the drone past its internal z boundary — which
+        # trips the body's emergency-stop (land + DISARM + kill the control thread),
+        # the unrecoverable "the drone just died" crash. We can't reset the EKF in
         # the air (that itself causes a launch), so every N episodes we land the
-        # runner, reset the filter on the ground, and take off again — capping the
+        # drone, reset the filter on the ground, and take off again — capping the
         # drift well below launch territory.
+        #
+        # This MUST cover BOTH drones. The interceptor is actually the worse case:
+        # it repositions across the whole arena via position control every single
+        # episode (a bigger EKF stressor than the runner's short evasive moves) yet
+        # historically got no periodic reset at all — so it drifted fastest, spiked
+        # past its z=3.0 boundary, and took the emergency kill while the runner was
+        # still alive. Resetting only the runner is why "both drones die".
         self._episode_count = 0
-        self._runner_ekf_reset_interval = 20
+        self._ekf_reset_interval = 20
 
     # ------------------------------------------------------------------
     # Interceptor expert policy — 3D pure pursuit toward the runner
@@ -456,6 +463,33 @@ class InterceptNavigation3D(DroneEnvironment):
             self._proactive_ekf_reset(self.drone)  # safe: the drone is on the ground now
         except Exception as exc:
             print(f"[InterceptNavigation3D] Runner ground EKF reset warning: {exc}")
+
+    def _ground_ekf_reset_interceptor(self) -> None:
+        """Land the interceptor, reset its EKF on the ground, to bound accumulated drift.
+
+        Mirrors :meth:`_ground_ekf_reset_runner` for the second drone. The
+        interceptor never lands during a run yet repositions across the whole arena
+        via position control every episode, so its estimator drifts even faster than
+        the runner's until a thrust spike launches it past its internal z boundary
+        and the body's emergency-stop kills it. We land it (it stays armed — land()
+        does not disarm), reset the filter on the ground where it's safe, and let the
+        subsequent prepare_reset take it off + reposition with a fresh estimate.
+        """
+        d = getattr(self.interceptor.body, "drone", None)
+        if d is None:
+            return
+        print(f"[InterceptNavigation3D] Ground EKF reset for interceptor (episode {self._episode_count})")
+        try:
+            if getattr(d, "velocity_controller_active", False):
+                d.stop_velocity_control()
+            if getattr(d, "controller_active", False):
+                d.stop_position_control()
+            d.set_velocity_vector(0, 0, 0)
+            d.land()
+            d.is_landed_event.wait(timeout=15)
+            self._proactive_ekf_reset(d)  # safe: the interceptor is on the ground now
+        except Exception as exc:
+            print(f"[InterceptNavigation3D] Interceptor ground EKF reset warning: {exc}")
 
     def _recover_interceptor_if_dead(self):
         """Re-initialise + take off the interceptor if it has died, before an episode."""
@@ -820,7 +854,8 @@ class InterceptNavigation3D(DroneEnvironment):
         # launch it. Done before super().reset(), which then takes off + re-centres
         # with a fresh estimate. (Airborne resets cause the launch, so never here.)
         self._episode_count += 1
-        if self._episode_count % self._runner_ekf_reset_interval == 0:
+        self._ekf_reset_due = (self._episode_count % self._ekf_reset_interval == 0)
+        if self._ekf_reset_due:
             self._ground_ekf_reset_runner()
 
         # Parent reset: takeoff, centre the runner at (0, 0, fixed_z), start velocity control.
@@ -846,6 +881,16 @@ class InterceptNavigation3D(DroneEnvironment):
 
         # If the interceptor's EKF blew up (or it fell), re-initialise it before use.
         self._recover_interceptor_if_dead()
+
+        # Periodic ground EKF reset for the interceptor, on the SAME cadence as the
+        # runner. This is the fix for the interceptor dying while the runner lived:
+        # the interceptor drifts fastest (a full-arena position move every episode)
+        # and previously had no drift cap, so it launched past its z boundary and
+        # took the emergency kill. We land + reset it here, on the ground, before the
+        # prepare_reset below takes it off again to reposition with a fresh estimate.
+        # (Skipped on episode 1, when the interceptor was only just brought airborne.)
+        if getattr(self, "_ekf_reset_due", False) and self._interceptor_airborne:
+            self._ground_ekf_reset_interceptor()
 
         # 1) The runner stays where the parent reset left it — the centre (0, 0, fixed_z).
         #    No long-range position move on the learner (the EKF stressor).
@@ -981,7 +1026,13 @@ class InterceptNavigation3D(DroneEnvironment):
         # If the interceptor died this step, end the episode now so we don't keep
         # training against a fallen drone; the next reset re-initialises it.
         if self._interceptor_is_dead():
-            print("[InterceptNavigation3D] Interceptor died mid-episode — truncating")
+            try:
+                ipos = self.interceptor.body.get_position()
+            except Exception:
+                ipos = self.interceptor_position
+            print(f"[InterceptNavigation3D] Interceptor died mid-episode at "
+                  f"pos={[round(p, 2) for p in ipos]} (z={ipos[2]:.2f}) — truncating. "
+                  f"z>~2.0 here means a thrust-spike launch past its boundary.")
             self.truncate_next = True
 
         return result
