@@ -185,9 +185,12 @@ class InterceptNavigation3D(DroneEnvironment):
         # lateral drift is still caught before the interceptor roams far outside
         # the arena. The task's own out-of-bounds + collision-guard logic
         # (xy_limit=2.0, z_max=1.5, capture_threshold) still governs episodes.
+        # boundaries uses the post-#28 z_min/z_max schema (the boundary monitor now
+        # checks z_min <= z <= z_max, not abs(z) <= z). A bare "z" key here would
+        # KeyError in the interceptor's boundary thread.
         interceptor_drone = getattr(self.interceptor.body, "drone", None)
         if interceptor_drone is not None and hasattr(interceptor_drone, "boundaries"):
-            interceptor_drone.boundaries = {"x": 2.5, "y": 2.5, "z": 3.0}
+            interceptor_drone.boundaries = {"x": 2.5, "y": 2.5, "z_min": 0.1, "z_max": 3.0}
 
         # --- Collision safety monitor ----------------------------------------
         # The RL step is 0.5 s, but a faster interceptor can close >0.25 m within
