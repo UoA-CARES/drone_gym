@@ -1,6 +1,6 @@
 import queue
 import time
-from typing import Optional
+from typing import Any
 
 import cflib.crtp
 from cflib.crazyflie import Crazyflie
@@ -13,26 +13,37 @@ import warnings
 warnings.filterwarnings('ignore', message='Using legacy TYPE_HOVER_LEGACY')
 
 class DroneSim(DroneSetup):
+    """
+    Drone class for CrazySim (Gazebo simulation)
+
+    Args:
+        uri (str): The URI for the Crazyflie drone.
+        agent_id (str): Unique identifier for the drone instance.
+        simulation (bool): Flag indicating whether the drone is in simulation mode.
+        sim_manager (SimManager | None): Optional SimManager instance for managing simulation interactions. If not provided, a default SimManager will be used.
+        boundaries (dict[str, float] | None): Optional dictionary defining the safe operational boundaries for the drone. If not provided, default boundaries will be used. (e.g. {"x": 2.5, "y": 2.5, "z_min": 0.1, "z_max": 3.0})
+    """
     def __init__(
-            self, 
-            uri="udp://0.0.0.0:19850",
+            self,
+            uri: str = "udp://0.0.0.0:19850",
             agent_id: str = "Drone",
-            simulation=True,
-            sim_manager: Optional[SimManager] = None,
-        ):
+            simulation: bool = True,
+            sim_manager: SimManager | None = None,
+            boundaries: dict[str, float] | None = None,
+        ) -> None:
         # Drone Properties
         self.simulation = simulation
         self.agent_id = agent_id
         self.sim_manager = sim_manager or get_default_sim_manager()
 
-        super().__init__(uri=uri)
+        super().__init__(uri=uri, agent_id=agent_id, simulation=simulation, boundaries=boundaries)
 
     def set_visual_target_marker_position(
         self,
         x: float,
         y: float,
         z: float,
-        marker_name: Optional[str] = None,
+        marker_name: str | None = None,
     ) -> None:
         """
         Backwards-compatible wrapper.
@@ -63,7 +74,7 @@ class DroneSim(DroneSetup):
             z_level=z_level,
         )
 
-    def _update_position(self):
+    def _update_position(self) -> None:
         """Update position from Gazebo via state estimate logs"""
         print(f"[{self.agent_id}] Position tracking thread started")
         
@@ -94,7 +105,8 @@ class DroneSim(DroneSetup):
             self.last_velocity_calculation_time = time.time()
 
             # Keep thread alive for logging
-            while self.is_running() and not self.emergency_event.is_set():
+            # while self.is_running() and not self.emergency_event.is_set():
+            while self.is_running():
                 current_time = time.time()
                 
                 # Calculate velocity periodically
@@ -114,8 +126,9 @@ class DroneSim(DroneSetup):
                     position_log_config.delete()
                 except:
                     pass
+        print(f'[{self.agent_id} - Drone Sim] Position tracking thread ending')
 
-    def initialise_crazyflie(self):
+    def initialise_crazyflie(self) -> bool:
         """Initialise Crazyflie connection for CrazySim"""
         try:
             cflib.crtp.init_drivers()
@@ -170,7 +183,9 @@ class DroneSim(DroneSetup):
 
             self._setup_battery_logging()
             self._setup_velocity_logging()
-
+            self.cf.disconnected.add_callback(self._connection_lost)
+            self.cf.connection_lost.add_callback(self._connection_lost)
+    
             # Signal that hardware is ready
             self.hardware_ready_event.set()
             print(f"[{self.agent_id}] Hardware initialisation complete - ready to fly!")
@@ -180,7 +195,7 @@ class DroneSim(DroneSetup):
             print(f"[{self.agent_id}] Failed to initialize Crazyflie: {str(e)}")
             return False
 
-    def _position_callback(self, timestamp, data, logconf):
+    def _position_callback(self, timestamp: int, data: dict[str, Any], logconf: Any) -> None:
         """Callback for position data from Gazebo"""
         current_time = time.time()
         
@@ -196,7 +211,7 @@ class DroneSim(DroneSetup):
         self.position_history.append((current_time, current_pos))
 
 
-    def stop(self):
+    def stop(self) -> None:
         """
         Fully stop the drone and optionally prepare for a clean restart.
 
@@ -205,7 +220,7 @@ class DroneSim(DroneSetup):
         """
         print(f"[{self.agent_id}] Stopping...")
         self.set_running(False)
-        self.controller_active = False
+        self.position_controller_active = False
         self.velocity_controller_active = False
         
         # Clear queue
@@ -220,6 +235,47 @@ class DroneSim(DroneSetup):
         self._join_all_threads()
         self._reset_shared_state()
         self._final_cleanup()
+
+    def _execute_emergency_stop(self):
+        """
+        Simulation-specific emergency stop / hard-boundary response.
+
+        This overrides DroneSetup._execute_emergency_stop().
+
+        For physical drones, the inherited behaviour lands, disarms, exits the
+        command thread, and calls stop(). That is safe for real hardware but 
+        causes issues in simulation.
+        """
+        current_position = self.get_position()
+        if not self.emergency_event.is_set():
+            self.emergency_event.set()
+            print(
+            f"[{self.agent_id}] SIM HARD BOUNDARY VIOLATION. "
+            f"Position={current_position}, limits={self.boundaries}. "
+            )
+
+        if self.mc:
+            print(f"[{self.agent_id}] Initiating simulated emergency landing...")
+            self.mc.land()
+            self.is_landed_event.set()
+            self.is_flying_event.clear()
+            time.sleep(1)
+        print(f"[{self.agent_id} - DRONE SIM] Drone landed due to boundary violation. Current position: {self.get_position()}")
+
+        # Cancel any currently commanded motion.
+        try:
+            self.set_velocity_vector(0.0, 0.0, 0.0)
+        except Exception as exc:
+            print(f"[{self.agent_id}] Failed to send zero velocity after boundary violation: {exc}")
+
+        # Disable high-level controllers so they do not keep pushing the drone.
+        self.position_controller_active = False
+        self.velocity_controller_active = False
+
+    def _connection_lost(self, link_uri):
+        print(f"\n[{self.agent_id}] CRITICAL: Connection no longer works!")
+        print(f"[{self.agent_id}] Reason: Simulation crashed or link was severed.")
+        self.emergency_event.set()
 
 if __name__ == "__main__":
     drone = DroneSim()
