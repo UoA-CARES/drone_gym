@@ -1,6 +1,7 @@
 import threading
 import queue
 import time
+import math
 from threading import Event
 from collections import deque
 from typing import Any
@@ -10,6 +11,10 @@ from cflib.crazyflie import Crazyflie
 from cflib.crazyflie.syncCrazyflie import SyncCrazyflie
 from cflib.positioning.motion_commander import MotionCommander
 from cflib.utils import uri_helper
+from drone_gym.utils.position_source import (
+    PositionSample,
+    PositionSource,
+)
 
 
 class DroneSetup:
@@ -18,7 +23,8 @@ class DroneSetup:
             uri: str | None = None,
             agent_id: str = "Drone",
             simulation: bool = False,
-            boundaries: dict[str, float] | None = None
+            boundaries: dict[str, float] | None = None,
+            position_source: PositionSource | None = None,
         ) -> None:
         # Drone Properties
 
@@ -102,6 +108,11 @@ class DroneSetup:
         self.mc: MotionCommander | None = None
         self.armed = False
 
+        # Drone position tracking
+        self.position_source = position_source
+        self.last_position_update_time: float | None = None
+        self._position_source_started = False
+        self._position_source_lock = threading.Lock()
         # Vicon Integration
         self.position = {"x": 0.0, "y": 0.0, "z": 0.0}
         self.position_thread = None
@@ -151,11 +162,16 @@ class DroneSetup:
             self.set_running(False)
             return
 
-        print(f"[{self.agent_id}] Hardware ready, starting position thread...")
+        print(f"[{self.agent_id}] Hardware ready, starting position tracking...")
 
-        # Start position tracking thread
-        self.position_thread = threading.Thread(target=self._update_position)
-        self.position_thread.start()
+        # Start position tracking after hardware is ready
+        if not self._start_position_tracking():
+            print(
+                f"[{self.agent_id}] ERROR: Position tracking failed to start"
+            )
+            self.set_running(False)
+            self.command_queue.put("exit")
+            return
 
         # Wait for position system to stabilize
         if not self.position_ready_event.wait(timeout=10):
@@ -209,7 +225,8 @@ class DroneSetup:
 
                 x_in_bounds = self.boundaries["x"] >= abs(current_pos["x"])
                 y_in_bounds = self.boundaries["y"] >= abs(current_pos["y"])
-                z_in_bounds = self.boundaries["z_min"] <= current_pos["z"] <= self.boundaries["z_max"]
+                # z_in_bounds = self.boundaries["z_min"] <= current_pos["z"] <= self.boundaries["z_max"]
+                z_in_bounds = current_pos["z"] <= self.boundaries["z_max"]
 
                 # Set in_boundaries status
                 in_bounds = x_in_bounds and y_in_bounds and z_in_bounds
@@ -266,16 +283,165 @@ class DroneSetup:
         """
         pass
 
+    def _handle_position_sample(
+        self,
+        sample: PositionSample,
+    ) -> None:
+        """
+        Validate and store a position received from the configured source.
+
+        All position sources publish through this function so that position
+        storage, history, readiness and velocity handling are source-independent.
+        """
+
+        coordinates = (sample.x, sample.y, sample.z)
+
+        if not all(math.isfinite(value) for value in coordinates):
+            source_name = (
+                self.position_source.name
+                if self.position_source is not None
+                else "unknown source"
+            )
+
+            print(
+                f"[{self.agent_id}] Ignoring invalid position sample "
+                f"from {source_name}: {coordinates}"
+            )
+            return
+
+        position = sample.as_dict()
+
+        with self.position_lock:
+            self.position = position
+
+            self.position_history.append(
+                (
+                    sample.timestamp,
+                    position.copy(),
+                )
+            )
+
+            self.last_position_update_time = sample.timestamp
+
+        if not self.position_ready_event.is_set():
+            self.position_ready_event.set()
+
+            source_name = (
+                self.position_source.name
+                if self.position_source is not None
+                else "position source"
+            )
+
+            print(
+                f"[{self.agent_id}] First valid position received "
+                f"from {source_name}: {position}"
+            )
+
+        if (
+            sample.timestamp - self.last_velocity_calculation_time
+            >= self.velocity_update_rate
+        ):
+            self._calculate_velocity()
+            self.last_velocity_calculation_time = sample.timestamp
+
+    def _start_position_tracking(self) -> bool:
+        """
+        Start the configured position source.
+
+        If no PositionSource has been supplied, temporarily fall back to the
+        existing subclass _update_position() implementation.
+        """
+
+        self.position_ready_event.clear()
+        self.last_position_update_time = None
+        self.last_velocity_calculation_time = 0.0
+
+        if self.position_source is None:
+            print(
+                f"[{self.agent_id}] No PositionSource configured. "
+                "Using legacy _update_position() implementation."
+            )
+
+            self.position_thread = threading.Thread(
+                target=self._update_position,
+                name=f"{self.agent_id}-legacy-position",
+            )
+            self.position_thread.start()
+            return True
+
+        with self._position_source_lock:
+            if self._position_source_started:
+                print(
+                    f"[{self.agent_id}] Position source "
+                    f"{self.position_source.name} is already running"
+                )
+                return True
+
+            try:
+                print(
+                    f"[{self.agent_id}] Starting position source: "
+                    f"{self.position_source.name}"
+                )
+
+                self.position_source.start(
+                    callback=self._handle_position_sample,
+                )
+
+                self._position_source_started = True
+                return True
+
+            except Exception as exc:
+                print(
+                    f"[{self.agent_id}] Failed to start position source "
+                    f"{self.position_source.name}: {exc}"
+                )
+                return False
+        
+    def _stop_position_tracking(self) -> None:
+        """
+        Stop the configured PositionSource.
+
+        Legacy _update_position() threads are stopped through self.running and
+        joined by _join_all_threads().
+        """
+
+        if self.position_source is None:
+            return
+
+        with self._position_source_lock:
+            if not self._position_source_started:
+                return
+
+            try:
+                print(
+                    f"[{self.agent_id}] Stopping position source: "
+                    f"{self.position_source.name}"
+                )
+
+                self.position_source.stop()
+
+            except Exception as exc:
+                print(
+                    f"[{self.agent_id}] Error stopping position source "
+                    f"{self.position_source.name}: {exc}"
+                )
+
+            finally:
+                self._position_source_started = False
+
     def _calculate_velocity(self) -> None:
         """Calculate velocity using moving average filter over position history with additional low-pass filtering"""
-        if len(self.position_history) < 2:
+
+        with self.position_lock:
+            position_history = list(self.position_history)
+        if len(position_history) < 2:
             return
 
         velocities = {"x": [], "y": [], "z": []}
 
-        for i in range(1, len(self.position_history)):
-            t_prev, pos_prev = self.position_history[i - 1]
-            t_curr, pos_curr = self.position_history[i]
+        for i in range(1, len(position_history)):
+            t_prev, pos_prev = position_history[i - 1]
+            t_curr, pos_curr = position_history[i]
 
             dt = t_curr - t_prev
 
@@ -778,7 +944,7 @@ class DroneSetup:
             raw_velocity = p_term + d_term + i_term
             # Apply velocity limits
             velocity[axis] = max(
-                -self.max_velocity_dict[axis], min(self.max_velocity_dict[axis], raw_velocity)
+                -self.max_velocity[axis], min(self.max_velocity[axis], raw_velocity)
             )
             # Update last error for next iteration
             self.last_error[axis] = error[axis]
@@ -810,7 +976,7 @@ class DroneSetup:
 
             # Combine all terms
             raw_velocity = ff_term + p_term + d_term + i_term
-            corrected_velocity[axis] = max(-self.max_velocity_dict[axis], min(self.max_velocity_dict[axis], raw_velocity))
+            corrected_velocity[axis] = max(-self.max_velocity[axis], min(self.max_velocity[axis], raw_velocity))
 
             self.velocity_last_error[axis] = error
 
@@ -832,7 +998,9 @@ class DroneSetup:
         if not (
             abs(x) <= self.boundaries["x"]
             and abs(y) <= self.boundaries["y"]
-            and self.boundaries["z_min"] <= z <= self.boundaries["z_max"]
+            # and self.boundaries["z_min"] <= z <= self.boundaries["z_max"]
+            and z <= self.boundaries["z_max"]
+
         ):
             print(
                 f"[{self.agent_id}] WARNING: Target position {x}, {y}, {z} is outside safe boundaries. Command rejected."
@@ -987,9 +1155,15 @@ class DroneSetup:
 
     def _signal_stop_to_all_threads(self) -> None:
         """Set all shutdown flags so every thread leaves its loop ASAP."""
+
         self.set_running(False)
+
         self.position_controller_active = False
         self.velocity_controller_active = False
+        self.safety_thread_active = False
+
+        self._stop_position_tracking()
+
         # Purge the command queue so no stale commands run after restart
         while not self.command_queue.empty():
             try:
@@ -1024,10 +1198,11 @@ class DroneSetup:
         with self.position_lock:
             self.position = {"x": 0.0, "y": 0.0, "z": 0.0}
             self.target_position = {"x": 0.0, "y": 0.0, "z": 0.0}
+            self.position_history.clear()
+            self.last_position_update_time = None
         # Velocity calculation
         with self.velocity_calculation_lock:
             self.calculated_velocity = {"x": 0.0, "y": 0.0, "z": 0.0}
-        self.position_history.clear()
         # PID
         self.last_error = {"x": 0.0, "y": 0.0, "z": 0.0}
         self.integral = {"x": 0.0, "y": 0.0, "z": 0.0}

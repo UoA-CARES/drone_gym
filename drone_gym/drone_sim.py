@@ -1,14 +1,17 @@
 import queue
 import time
-from typing import Any
 
 import cflib.crtp
 from cflib.crazyflie import Crazyflie
-from cflib.crazyflie.log import LogConfig
+
 from cflib.crazyflie.syncCrazyflie import SyncCrazyflie
 from drone_gym.drone_setup import DroneSetup
 from drone_gym.sim_manager import SimManager, get_default_sim_manager
 import warnings
+from drone_gym.utils.crazyflie_log_position_source import (
+    CrazyflieLogPositionSource,
+)
+from drone_gym.utils.position_source import PositionSource
 
 warnings.filterwarnings('ignore', message='Using legacy TYPE_HOVER_LEGACY')
 
@@ -22,6 +25,7 @@ class DroneSim(DroneSetup):
         simulation (bool): Flag indicating whether the drone is in simulation mode.
         sim_manager (SimManager | None): Optional SimManager instance for managing simulation interactions. If not provided, a default SimManager will be used.
         boundaries (dict[str, float] | None): Optional dictionary defining the safe operational boundaries for the drone. If not provided, default boundaries will be used. (e.g. {"x": 2.5, "y": 2.5, "z_min": 0.1, "z_max": 3.0})
+        position_source (PositionSource | None): Optional PositionSource instance for providing position data. If not provided, a default CrazyflieLogPositionSource will be used.
     """
     def __init__(
             self,
@@ -30,13 +34,26 @@ class DroneSim(DroneSetup):
             simulation: bool = True,
             sim_manager: SimManager | None = None,
             boundaries: dict[str, float] | None = None,
+            position_source: PositionSource | None = None,
         ) -> None:
         # Drone Properties
         self.simulation = simulation
         self.agent_id = agent_id
         self.sim_manager = sim_manager or get_default_sim_manager()
+        if position_source is None:
+            position_source = CrazyflieLogPositionSource(
+                crazyflie_getter=lambda: self.cf,
+                period_ms=50,
+                label=self.agent_id,
+            )
 
-        super().__init__(uri=uri, agent_id=agent_id, simulation=simulation, boundaries=boundaries)
+        super().__init__(
+            uri=uri, 
+            agent_id=agent_id, 
+            simulation=simulation, 
+            boundaries=boundaries, 
+            position_source=position_source
+        )
 
     def set_visual_target_marker_position(
         self,
@@ -73,60 +90,6 @@ class DroneSim(DroneSetup):
             xy_limit=drone_xy_limit,
             z_level=z_level,
         )
-
-    def _update_position(self) -> None:
-        """Update position from Gazebo via state estimate logs"""
-        print(f"[{self.agent_id}] Position tracking thread started")
-        
-        # Wait for CF to be ready
-        timeout = time.time() + 10
-        while self.cf is None and time.time() < timeout:
-            time.sleep(0.1)
-        
-        if self.cf is None:
-            print(f"[{self.agent_id}] ERROR: Crazyflie not initialized")
-            return
-
-        try:
-            # Setup position logging from state estimate
-            position_log_config = LogConfig(name="Position", period_in_ms=50)
-            position_log_config.add_variable("stateEstimate.x", "float")
-            position_log_config.add_variable("stateEstimate.y", "float")
-            position_log_config.add_variable("stateEstimate.z", "float")
-
-            self.cf.log.add_config(position_log_config)
-            position_log_config.data_received_cb.add_callback(self._position_callback)
-            position_log_config.start()
-            print(f"[{self.agent_id}] Position logging started")
-
-            # Wait for first position
-            time.sleep(2)
-            self.position_ready_event.set()
-            self.last_velocity_calculation_time = time.time()
-
-            # Keep thread alive for logging
-            # while self.is_running() and not self.emergency_event.is_set():
-            while self.is_running():
-                current_time = time.time()
-                
-                # Calculate velocity periodically
-                if (current_time - self.last_velocity_calculation_time) >= self.velocity_update_rate:
-                    if len(self.position_history) >= 2:
-                        self._calculate_velocity()
-                    self.last_velocity_calculation_time = current_time
-                
-                time.sleep(0.05)
-
-        except Exception as e:
-            print(f"[{self.agent_id}] Error in position thread: {str(e)}")
-        finally:
-            if 'position_log_config' in locals():
-                try:
-                    position_log_config.stop()
-                    position_log_config.delete()
-                except:
-                    pass
-        print(f'[{self.agent_id} - Drone Sim] Position tracking thread ending')
 
     def initialise_crazyflie(self) -> bool:
         """Initialise Crazyflie connection for CrazySim"""
@@ -194,22 +157,6 @@ class DroneSim(DroneSetup):
         except Exception as e:
             print(f"[{self.agent_id}] Failed to initialize Crazyflie: {str(e)}")
             return False
-
-    def _position_callback(self, timestamp: int, data: dict[str, Any], logconf: Any) -> None:
-        """Callback for position data from Gazebo"""
-        current_time = time.time()
-        
-        with self.position_lock:
-            self.position = {
-                "x": data["stateEstimate.x"],
-                "y": data["stateEstimate.y"],
-                "z": data["stateEstimate.z"],
-            }
-            current_pos = self.position.copy()
-        
-        # Store for velocity calculation
-        self.position_history.append((current_time, current_pos))
-
 
     def stop(self) -> None:
         """
