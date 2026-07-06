@@ -262,12 +262,21 @@ class InterceptNavigation3D(DroneEnvironment):
         boundary are zeroed so it slides along walls/ceiling instead of ramming
         them. ``context['runner_pos']`` is supplied by the task each step.
         """
-        runner = context["runner_pos"]
         pos = state.position
+        soft = self.xy_limit - 0.3
 
-        dx = runner[0] - pos[0]
-        dy = runner[1] - pos[1]
-        dz = runner[2] - pos[2]
+        # Clamp the pursued point into the arena: a runner that has escaped the
+        # boundary (or a blown-up runner estimate) must never pull the
+        # interceptor's aim-point outside it — chase the nearest in-bounds point
+        # instead, so the interceptor is never *aimed* at the wall.
+        runner = context["runner_pos"]
+        rx = float(np.clip(runner[0], -soft, soft))
+        ry = float(np.clip(runner[1], -soft, soft))
+        rz = float(np.clip(runner[2], self.z_min, self.z_max))
+
+        dx = rx - pos[0]
+        dy = ry - pos[1]
+        dz = rz - pos[2]
         dist = math.sqrt(dx * dx + dy * dy + dz * dz)
 
         if dist < 1e-6:
@@ -277,7 +286,6 @@ class InterceptNavigation3D(DroneEnvironment):
         vx, vy, vz = scale * dx, scale * dy, scale * dz
         vz = float(np.clip(vz, -self.interceptor_max_velocity_z, self.interceptor_max_velocity_z))
 
-        soft = self.xy_limit - 0.3
         if (pos[0] <= -soft and vx < 0) or (pos[0] >= soft and vx > 0):
             vx = 0.0
         if (pos[1] <= -soft and vy < 0) or (pos[1] >= soft and vy > 0):
@@ -529,6 +537,16 @@ class InterceptNavigation3D(DroneEnvironment):
         if drone is None:
             return
         print("[InterceptNavigation3D] Interceptor appears dead — recovering it")
+        # Never recover airborne: _recover_drone's re-init resets the EKF, and an
+        # airborne EKF reset is the thrust-spike launch. A drift past the death
+        # line leaves the interceptor flying, so land it first (best-effort — a
+        # dead link just falls through to the recovery below).
+        try:
+            if drone.is_flying_event.is_set():
+                drone.land()
+                drone.is_landed_event.wait(timeout=10)
+        except Exception:
+            pass
         try:
             # Same survivable-recovery path as the runner: clears the latched
             # emergency, relaunches threads, re-inits the link + resets the EKF.
@@ -619,6 +637,22 @@ class InterceptNavigation3D(DroneEnvironment):
         except Exception:
             pass
 
+    def _freeze_interceptor(self):
+        """Zero the interceptor's velocity setpoint (setpoints persist until replaced).
+
+        Must be called before any long runner-handling window (reset, restart,
+        ground EKF reset): otherwise the interceptor keeps flying on its stale
+        pursuit command — typically toward the wall the runner just died beyond —
+        for the whole window (up to 60 s for a restart) and coasts past its own
+        internal boundary into the emergency kill. This is the "interceptor
+        follows the dead runner and dies too" failure.
+        """
+        try:
+            self.interceptor.body.apply_velocity(0.0, 0.0, 0.0)
+            self.interceptor.velocity = [0.0, 0.0, 0.0]
+        except Exception:
+            pass
+
     def _start_safety_monitor(self):
         self._collision_event.clear()
         if self._safety_monitor_running:
@@ -653,46 +687,59 @@ class InterceptNavigation3D(DroneEnvironment):
         kill boundary); the episode then ends out-of-bounds and reset recovers.
         """
         dt = 1.0 / self.SAFETY_MONITOR_HZ
+
+        # A drone that is (re)initialising — e.g. mid-recovery, before its
+        # position system is up — reports exactly (0,0,0). Treating that as a
+        # real position makes the guard "see" a ~0 m separation and latch a
+        # BOGUS capture, which cascades into spurious truncations and a
+        # two-drone restart storm.
+        def _placeholder(p):
+            return p[0] == 0.0 and p[1] == 0.0 and p[2] == 0.0
+
         while self._safety_monitor_running:
+            # Read each drone independently: one drone being mid-recovery
+            # (placeholder position or a raising link) must NOT disable the
+            # containment brake for the OTHER drone — that gap is exactly how
+            # the interceptor used to sail out after its stale pursuit command
+            # while the runner was being recovered.
+            rp = ip = None
             try:
                 rp = self.drone.get_position()
+            except Exception:
+                pass
+            try:
                 ip = self.interceptor.body.get_position()
+            except Exception:
+                pass
+            rp_ok = rp is not None and not _placeholder(rp)
+            ip_ok = ip is not None and not _placeholder(ip)
 
-                # Skip placeholder/invalid readings. A drone that is (re)initialising
-                # — e.g. mid-recovery, before its position system is up — reports
-                # exactly (0,0,0). Treating that as a real position makes the guard
-                # "see" a ~0 m separation and latch a BOGUS capture, which cascades
-                # into spurious truncations and a two-drone restart storm.
-                def _placeholder(p):
-                    return p[0] == 0.0 and p[1] == 0.0 and p[2] == 0.0
-                if _placeholder(rp) or _placeholder(ip):
-                    time.sleep(dt)
-                    continue
-
+            captured = False
+            if rp_ok and ip_ok:
                 separation = math.sqrt((rp[0] - ip[0]) ** 2 + (rp[1] - ip[1]) ** 2 + (rp[2] - ip[2]) ** 2)
-
                 if separation < self.capture_threshold:
+                    captured = True
                     self._stop_both_drones()
                     if not self._collision_event.is_set():
                         self.caught = True
                         self._collision_event.set()
                         print(f"[InterceptNavigation3D] COLLISION GUARD: drones within "
                               f"{separation:.2f} m (< {self.capture_threshold:.2f}) — both stopped")
-                elif not self._collision_event.is_set():
-                    # Containment — brake (not reverse) any drone past the line.
-                    if self._position_past_containment(rp):
-                        try:
-                            self.drone.set_velocity_vector(0, 0, 0)
-                        except Exception:
-                            pass
-                    if self._position_past_containment(ip):
-                        try:
-                            self.interceptor.body.apply_velocity(0, 0, 0)
-                            self.interceptor.velocity = [0.0, 0.0, 0.0]
-                        except Exception:
-                            pass
-            except Exception:
-                pass
+
+            if not captured and not self._collision_event.is_set():
+                # Containment — brake (not reverse) any drone past the line,
+                # each judged on its own (valid) reading only.
+                if rp_ok and self._position_past_containment(rp):
+                    try:
+                        self.drone.set_velocity_vector(0, 0, 0)
+                    except Exception:
+                        pass
+                if ip_ok and self._position_past_containment(ip):
+                    try:
+                        self.interceptor.body.apply_velocity(0, 0, 0)
+                        self.interceptor.velocity = [0.0, 0.0, 0.0]
+                    except Exception:
+                        pass
             time.sleep(dt)
 
     # ------------------------------------------------------------------
@@ -720,6 +767,24 @@ class InterceptNavigation3D(DroneEnvironment):
         if z > self.z_max + 0.5:
             return True
         return False
+
+    def _runner_is_dead(self) -> bool:
+        """Runner-specific death check: position heuristics OR a latched emergency.
+
+        The sim emergency stop latches emergency_event WITHOUT disarming, so a
+        boundary-killed runner can be re-launched by the parent reset's take_off
+        and hover at its crash site while every control loop (all gated on
+        emergency_event) refuses commands — a "zombie" whose position (e.g.
+        x=2.6, z=1.0) looks perfectly alive to the position heuristics. The
+        latched flag is the one unambiguous signature of that state, and
+        restart() -> _recover_drone clears it. (Interceptor detection stays
+        position-only: its recovery path sees transient emergency blips from
+        reconnects, which the runner — recovered synchronously from the env
+        thread — does not.)
+        """
+        if self.drone.emergency_event.is_set():
+            return True
+        return self._drone_is_dead(self.drone.get_position())
 
     def _drone_is_stuck(self, position: List[float]) -> bool:
         """Detect a frozen drone reporting the same position every step."""
@@ -848,6 +913,17 @@ class InterceptNavigation3D(DroneEnvironment):
 
         def _do_restart():
             try:
+                # Never recover airborne: _recover_drone's re-init resets the EKF,
+                # and an airborne EKF reset is the thrust-spike launch. A zombie
+                # runner (latched emergency) may well be hovering — the parent
+                # reset re-launches it because the sim emergency stop never
+                # disarms. Land first (best-effort; a dead link falls through).
+                if self.drone.is_flying_event.is_set():
+                    try:
+                        self.drone.land()
+                        self.drone.is_landed_event.wait(timeout=10)
+                    except Exception:
+                        pass
                 # _recover_drone clears the latched emergency_event and relaunches
                 # the drone's worker threads (which re-init the link + reset the
                 # EKF), making a blow-up survivable instead of permanently fatal.
@@ -894,11 +970,29 @@ class InterceptNavigation3D(DroneEnvironment):
         self._stop_safety_monitor()
         self._collision_event.clear()
 
+        # Hold the interceptor for the whole reset: with the guard paused, its
+        # last pursuit setpoint would otherwise keep flying it (typically toward
+        # the wall a dying runner just crossed) for however long the runner
+        # handling below takes.
+        self._freeze_interceptor()
+
+        self._episode_count += 1
+
+        # Recover a dead runner BEFORE the parent reset. super().reset() on a
+        # zombie (latched emergency) burns ~30 s re-launching a drone whose
+        # control loops refuse every command, times out, and never re-centres
+        # it — so the runner starts every episode out of bounds and each one
+        # dies after a single step. Recovering first lets the parent reset
+        # re-centre a healthy drone. (Skipped on the first reset, when the
+        # pre-takeoff placeholder (0,0,0) position would read as dead.)
+        if self._episode_count > 1 and self._runner_is_dead():
+            print("[InterceptNavigation3D] Runner dead at reset entry — recovering before parent reset")
+            self.restart()
+
         # Periodically land the runner and reset its EKF ON THE GROUND to bound the
         # drift that would otherwise build up over a continuous run and eventually
         # launch it. Done before super().reset(), which then takes off + re-centres
         # with a fresh estimate. (Airborne resets cause the launch, so never here.)
-        self._episode_count += 1
         self._ekf_reset_due = (self._episode_count % self._ekf_reset_interval == 0)
         if self._ekf_reset_due:
             self._ground_ekf_reset_runner()
@@ -913,9 +1007,22 @@ class InterceptNavigation3D(DroneEnvironment):
             self.drone.stop_velocity_control()
         self.drone.set_velocity_vector(0, 0, 0)
 
-        if self._drone_is_dead(self.drone.get_position()):
-            print("[InterceptNavigation3D] EKF blow-up detected after parent reset — restarting runner")
+        # Verify the re-centre actually happened. This catches every failure
+        # mode regardless of which heuristic missed it: a dead/zombie runner, an
+        # EKF blow-up, or a position move that silently timed out all leave the
+        # runner far from the spawn. Recover, then retry the parent reset ONCE
+        # so the episode starts with a healthy, centred drone.
+        pos = self.drone.get_position()
+        off_center = math.dist(pos, self.runner_spawn) > 0.8
+        if self._runner_is_dead() or off_center:
+            print(f"[InterceptNavigation3D] Runner unhealthy after parent reset "
+                  f"(pos={[round(p, 2) for p in pos]}, off_center={off_center}) — "
+                  f"restarting + re-centering")
             self.restart()
+            super().reset(training)
+            if self.drone.velocity_controller_active:
+                self.drone.stop_velocity_control()
+            self.drone.set_velocity_vector(0, 0, 0)
 
         # On the first reset, make sure the interceptor is airborne before we fly it.
         if not self._interceptor_airborne:
@@ -1009,9 +1116,15 @@ class InterceptNavigation3D(DroneEnvironment):
             return result
 
         runner_pos = self.drone.get_position()
-        if self._drone_is_dead(runner_pos) or self._drone_is_stuck(runner_pos):
-            reason = "dead" if self._drone_is_dead(runner_pos) else "stuck"
+        runner_dead = self._runner_is_dead()
+        if runner_dead or self._drone_is_stuck(runner_pos):
+            reason = "dead" if runner_dead else "stuck"
             print(f"[InterceptNavigation3D] Runner appears {reason} (pos={runner_pos}) — restarting")
+            # Hold the interceptor first: restart() can block for up to 60 s,
+            # during which its stale pursuit setpoint would keep flying it. The
+            # guard's containment brake only catches it past the 2.1 m line;
+            # freezing now keeps it inside the arena for the whole restart.
+            self._freeze_interceptor()
             self.restart()
             self._reset_stuck_tracker()
             self.truncate_next = True
