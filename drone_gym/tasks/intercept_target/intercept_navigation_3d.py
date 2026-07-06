@@ -190,7 +190,7 @@ class InterceptNavigation3D(DroneEnvironment):
         # KeyError in the interceptor's boundary thread.
         interceptor_drone = getattr(self.interceptor.body, "drone", None)
         if interceptor_drone is not None and hasattr(interceptor_drone, "boundaries"):
-            interceptor_drone.boundaries = {"x": 2.5, "y": 2.5, "z_min": 0.1, "z_max": 3.0}
+            interceptor_drone.boundaries = {"x": 4, "y": 4, "z_min": -0.5, "z_max": 3.0}
 
         # --- Collision safety monitor ----------------------------------------
         # The RL step is 0.5 s, but a faster interceptor can close >0.25 m within
@@ -421,13 +421,35 @@ class InterceptNavigation3D(DroneEnvironment):
         during the same step_time sleep the runner moves in.
         """
         self.interceptor.act({"runner_pos": runner_pos})
+        
+    INTERCEPTOR_DEAD_XY = 2.4
 
     def _interceptor_is_dead(self) -> bool:
-        """Detect an interceptor whose EKF blew up or that has fallen."""
+        """Detect an interceptor whose EKF blew up, that has fallen, or that has
+        drifted clean out of the arena.
+
+        Detection is POSITION-based only, deliberately. We do NOT key off the
+        drone's emergency_event: that flag is set by transient connection
+        blips during a recovery/reconnect, and reacting to it triggers yet another
+        recovery — a feedback loop that turns one death into an unrecoverable
+        restart storm across both drones. A real out-of-arena divergence shows up
+        as a bad POSITION, which is unambiguous and self-clearing once recovery
+        repositions the drone.
+
+        Guard against the (0,0,0) placeholder a drone reports mid-recovery: it is
+        NOT a real position.
+        """
         try:
-            return self._drone_is_dead(self.interceptor.body.get_position())
+            pos = self.interceptor.body.get_position()
         except Exception:
             return False
+        if pos[0] == 0.0 and pos[1] == 0.0 and pos[2] == 0.0:
+            return False  # placeholder during (re)init — not a real reading
+        if self._drone_is_dead(pos):
+            return True
+        if abs(pos[0]) > self.INTERCEPTOR_DEAD_XY or abs(pos[1]) > self.INTERCEPTOR_DEAD_XY:
+            return True
+        return False
 
     def _proactive_ekf_reset(self, drone) -> None:
         """Kalman-filter reset. DANGEROUS while airborne — DO NOT call in flight.
@@ -494,9 +516,14 @@ class InterceptNavigation3D(DroneEnvironment):
         except Exception as exc:
             print(f"[InterceptNavigation3D] Interceptor ground EKF reset warning: {exc}")
 
-    def _recover_interceptor_if_dead(self):
-        """Re-initialise + take off the interceptor if it has died, before an episode."""
-        if not self._interceptor_is_dead():
+    def _recover_interceptor_if_dead(self, force: bool = False):
+        """Re-initialise + take off the interceptor if it has died, before an episode.
+
+        force=True skips the death heuristics and recovers unconditionally 
+        used when the caller already has proof the interceptor is unusable (e.g.
+        the spawn-reposition move kept diverging past containment).
+        """
+        if not force and not self._interceptor_is_dead():
             return
         drone = getattr(self.interceptor.body, "drone", None)
         if drone is None:
@@ -555,7 +582,10 @@ class InterceptNavigation3D(DroneEnvironment):
                         pass
                 if attempts >= max_attempts:
                     print("[InterceptNavigation3D] Interceptor spawn move kept diverging — ground recovery")
-                    self._recover_interceptor_if_dead()
+                    # Force it: the move diverging past containment IS the proof it
+                    # needs re-init, even if a jumped EKF estimate happens not to
+                    # trip the position/emergency death checks.
+                    self._recover_interceptor_if_dead(force=True)
                     return False
                 time.sleep(0.3)  # let it settle in place before retrying the move
                 self.interceptor.prepare_reset(spawn)
@@ -627,6 +657,18 @@ class InterceptNavigation3D(DroneEnvironment):
             try:
                 rp = self.drone.get_position()
                 ip = self.interceptor.body.get_position()
+
+                # Skip placeholder/invalid readings. A drone that is (re)initialising
+                # — e.g. mid-recovery, before its position system is up — reports
+                # exactly (0,0,0). Treating that as a real position makes the guard
+                # "see" a ~0 m separation and latch a BOGUS capture, which cascades
+                # into spurious truncations and a two-drone restart storm.
+                def _placeholder(p):
+                    return p[0] == 0.0 and p[1] == 0.0 and p[2] == 0.0
+                if _placeholder(rp) or _placeholder(ip):
+                    time.sleep(dt)
+                    continue
+
                 separation = math.sqrt((rp[0] - ip[0]) ** 2 + (rp[1] - ip[1]) ** 2 + (rp[2] - ip[2]) ** 2)
 
                 if separation < self.capture_threshold:
@@ -871,7 +913,6 @@ class InterceptNavigation3D(DroneEnvironment):
             self.drone.stop_velocity_control()
         self.drone.set_velocity_vector(0, 0, 0)
 
-        # If the parent's position-control move blew up the EKF, restart the runner.
         if self._drone_is_dead(self.drone.get_position()):
             print("[InterceptNavigation3D] EKF blow-up detected after parent reset — restarting runner")
             self.restart()
@@ -967,7 +1008,6 @@ class InterceptNavigation3D(DroneEnvironment):
             self._sync_interceptor()
             return result
 
-        # Detect a dead/frozen runner and recover before stepping.
         runner_pos = self.drone.get_position()
         if self._drone_is_dead(runner_pos) or self._drone_is_stuck(runner_pos):
             reason = "dead" if self._drone_is_dead(runner_pos) else "stuck"

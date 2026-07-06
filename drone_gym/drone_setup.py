@@ -120,7 +120,7 @@ class DroneSetup:
         self.last_velocity_calculation_time = 0.0
 
         # Drone Safety
-        self.boundaries = {"x": 2.5, "y": 2.5, "z_min": 0.1, "z_max": 3.0} if boundaries is None else boundaries
+        self.boundaries = {"x": 2.5, "y": 2.5, "z_min": -0.5, "z_max": 3.0} if boundaries is None else boundaries
         self.safety_thread = None
         self.in_boundaries = True
         self.emergency_event = Event()
