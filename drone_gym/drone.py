@@ -3,7 +3,7 @@ import time
 from drone_gym.drone_setup import DroneSetup
 from drone_gym.utils.vicon_connection_class import ViconInterface as vi
 from drone_gym.utils.position_source import PositionSource
-from drone_gym.utils.vicon_connection_class import (
+from drone_gym.utils.vicon_position_source import (
     ViconPositionSource,
 )
 
