@@ -2,6 +2,10 @@ import threading
 import time
 from drone_gym.drone_setup import DroneSetup
 from drone_gym.utils.vicon_connection_class import ViconInterface as vi
+from drone_gym.utils.position_source import PositionSource
+from drone_gym.utils.vicon_connection_class import (
+    ViconPositionSource,
+)
 
 import cflib.crtp
 from cflib.crazyflie import Crazyflie
@@ -24,8 +28,37 @@ class Drone(DroneSetup):
             agent_id: str = "Drone",
             boundaries: dict[str, float] | None = None,
             uri: str | None = None,
+            position_source: PositionSource | None = None,
         ) -> None:
-        super().__init__(boundaries=boundaries, agent_id=agent_id, uri=uri)
+        # Use either legacy_vicon or source_vicon
+        # source_vicon is the new implementation that abstracts position source 
+        self.position_tracking_mode: str = "legacy_vicon"
+
+        if self.position_tracking_mode == "legacy_vicon":
+            position_source = None
+            self.vicon = vi()
+        elif self.position_tracking_mode == "source_vicon":
+            self.vicon = None
+            if position_source is None:
+                position_source = ViconPositionSource(
+                    object_name=f"Crzayme_{agent_id}",
+                    label=agent_id,
+                )
+        else:
+            raise ValueError(
+                f"Invalid position_tracking_mode: {self.position_tracking_mode}. "
+                "Must be either 'legacy_vicon' or 'source_vicon'."
+            )
+
+        # Vicon Integration
+        self.drone_name = f"Crzayme_{agent_id}"
+
+        super().__init__(
+            boundaries=boundaries, 
+            agent_id=agent_id, 
+            uri=uri, 
+            position_source=position_source
+        )
         # Drone Properties
         self.URI = uri_helper.uri_from_env(
             default="radio://0/100/2M/E7E7E7E7E7"
@@ -34,10 +67,6 @@ class Drone(DroneSetup):
         self.ps = PowerSwitch(
             "radio://0/100/2M/E7E7E7E7E7"
         )  # changed radio channel in 22/9
-
-        # Vicon Integration
-        self.drone_name = f"Crzayme_{agent_id}"
-        self.vicon = vi()
 
         self.agent_id = agent_id
 
@@ -54,18 +83,23 @@ class Drone(DroneSetup):
 
             # Wait for first valid position reading before signaling ready
             position_ready = False
-            ready_timeout = time.time() + 6  # 6 second timeout for first position
-            self.last_velocity_calculation_time = time.time()
+            ready_timeout = time.monotonic() + 6  # 6 second timeout for first position
+            self.last_velocity_calculation_time = time.monotonic()
 
             while self.is_running() and not self.emergency_event.is_set():
                 try:
                     position_array = self.vicon.getPos(self.drone_name)
 
-                    while(position_array is None):
-                        print("Waiting for vicon position...")
+                    if position_array is None:
+                        print(
+                            f"[{self.agent_id}] Waiting for Vicon position "
+                            f"for {self.drone_name!r}..."
+                        )
+                        time.sleep(self.position_update_rate)
+                        continue
 
                     if position_array is not None:
-                        current_time = time.time()
+                        current_time = time.monotonic()
 
                         with self.position_lock:
                             self.position = {
@@ -93,7 +127,7 @@ class Drone(DroneSetup):
                     else:
                         print(f"[{self.agent_id}] Drone position is not being updated")
                         # If timeout reached without position, signal anyway to prevent deadlock
-                        if not position_ready and time.time() > ready_timeout:
+                        if not position_ready and time.monotonic() > ready_timeout:
                             print(
                                 f"[{self.agent_id}] WARNING: Position timeout - signaling ready anyway"
                             )
@@ -199,6 +233,12 @@ class Drone(DroneSetup):
 
     def _close_vicon(self) -> None:
         """Tell the Vicon interface to stop its background thread."""
+        if self.vicon is None:
+            print(f"[{self.agent_id}] Exiting close_vicon() - vicon object is None, no action needed")
+            return
+        if self.position_tracking_mode != "legacy_vicon":
+            print(f"[{self.agent_id}] Exiting close_vicon() - not in legacy_vicon mode, no action needed")
+            return
         try:
             self.vicon.run_interface = False
             # Give Vicon a moment to shut down its socket

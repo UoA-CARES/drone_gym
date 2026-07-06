@@ -169,6 +169,9 @@ class DroneSetup:
             print(
                 f"[{self.agent_id}] ERROR: Position tracking failed to start"
             )
+            self.set_running(False)
+            self.command_queue.put("exit")
+            return
 
         # Wait for position system to stabilize
         if not self.position_ready_event.wait(timeout=10):
@@ -1160,7 +1163,7 @@ class DroneSetup:
         self.safety_thread_active = False
 
         self._stop_position_tracking()
-        
+
         # Purge the command queue so no stale commands run after restart
         while not self.command_queue.empty():
             try:
