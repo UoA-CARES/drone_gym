@@ -38,6 +38,46 @@ class MarkerState:
     model_file: str | None = None
     lock: threading.Lock = field(default_factory=threading.Lock)
 
+@dataclass
+class SimLaunchConfig:
+    """
+    Configuration for launching and managing the CrazySim/Gazebo simulator process.
+
+    Args:
+        firmware_dir: Path to the CrazySim Crazyflie firmware directory. This is
+            used as the working directory when running the launch script. Defaults to
+            "CrazySim/crazyflie-firmware".
+        launch_script: Relative path to the CrazySim/Gazebo launch script from
+            inside firmware_dir. Defaults to
+            "tools/crazyflie-simulation/simulator_files/gazebo/launch/sitl_multiagent_square.sh".
+        model: Name of the robot model to launch. Defaults to "crazyflie".
+        num_agents: Number of simulated Crazyflie agents to launch. Defaults to 1.
+        startup_timeout: Maximum time, in seconds, to wait for the simulator to
+            become responsive after launching. Defaults to 60.0.
+        shutdown_timeout: Maximum time, in seconds, to wait for the simulator
+            process to shut down cleanly before forcing termination. Defaults to
+            10.0.
+        restart_delay: Time, in seconds, to wait between stopping and restarting
+            the simulator. Defaults to 3.0.
+        log_file: Path to the file where simulator stdout and stderr output should
+            be written. Defaults to "logs/crazysim.log".
+    """
+
+    firmware_dir: str = "CrazySim/crazyflie-firmware"
+    launch_script: str = (
+        "tools/crazyflie-simulation/simulator_files/gazebo/launch/"
+        "sitl_multiagent_square.sh"
+    )
+
+    model: str = "crazyflie"
+    num_agents: int = 1
+
+    startup_timeout: float = 60.0
+    shutdown_timeout: float = 10.0
+    restart_delay: float = 3.0
+
+    log_file: str = "logs/crazysim.log"
+
 class SimManager:
     """
     World-level simulation manager for Gazebo/CrazySim.
@@ -57,6 +97,7 @@ class SimManager:
     def __init__(
         self,
         world_name: str = "crazysim_default",
+        sim_launch_config: SimLaunchConfig | None = None,
         enable_target_marker: bool = True,
         enable_boundary_lines: bool = True,
         marker_name: str = "rl_target_marker",
@@ -68,7 +109,13 @@ class SimManager:
         boundary_visual_height: float = 0.8,
         gz_timeout: float = 1.5,
     ) -> None:
+
+        # Gazebo launch configuration
         self.world_name = world_name
+        self.sim_launch_config = sim_launch_config
+        self.sim_process: subprocess.Popen | None = None
+        self._sim_process_lock = threading.Lock()
+        self._sim_log_handle = None
 
         # Target marker settings/state
         self.enable_target_marker = enable_target_marker
