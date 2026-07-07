@@ -142,6 +142,89 @@ class SimManager:
         # Gazebo command settings
         self.gz_timeout = gz_timeout
 
+    def start_sim(self) -> bool:
+        """
+        Start the CrazySim/Gazebo simulator process if it is not already running.
+
+        Returns:
+            True if the simulator process is running or was launched successfully.
+            False if the simulator could not be launched.
+        """
+        if self.sim_launch_config is None:
+            raise RuntimeError(
+                "Cannot start simulator because sim_launch_config was not provided."
+            )
+
+        with self._sim_process_lock:
+            if self.is_sim_process_alive():
+                print("[SIM MANAGER] Simulator process is already running.")
+                return True
+
+            firmware_dir = self.sim_launch_config.firmware_dir
+            if not os.path.isdir(firmware_dir):
+                print(
+                    "[SIM MANAGER] Cannot start simulator. "
+                    f"Firmware directory does not exist: {firmware_dir}"
+                )
+                return False
+
+            launch_script_path = os.path.join(
+                firmware_dir,
+                self.sim_launch_config.launch_script,
+            )
+            if not os.path.isfile(launch_script_path):
+                print(
+                    "[SIM MANAGER] Cannot start simulator. "
+                    f"Launch script does not exist: {launch_script_path}"
+                )
+                return False
+
+            os.makedirs(os.path.dirname(self.sim_launch_config.log_file), exist_ok=True)
+
+            cmd =[
+                "bash",
+                self.sim_launch_config.launch_script,
+                "-m",
+                self.sim_launch_config.model,
+                "-n",
+                str(self.sim_launch_config.num_agents),
+            ]
+
+            try:
+                self._sim_log_handle = open(self.sim_launch_config.log_file, "a", encoding="utf-8")
+
+                print("[SIM MANAGER] Starting CrazySim/Gazebo...")
+                print(f"[SIM MANAGER] Command: {' '.join(cmd)}")
+                print(f"[SIM MANAGER] Working directory: {firmware_dir}")
+                print(f"[SIM MANAGER] Log file: {self.sim_launch_config.log_file}")
+
+                self.sim_process = subprocess.Popen(
+                    cmd,
+                    cwd=firmware_dir,
+                    stdout=self._sim_log_handle,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                    start_new_session=True,
+                )
+
+            except OSError as exc:
+                print(f"[SIM MANAGER] Failed to start simulator: {exc}")
+
+                if self._sim_log_handle is not None:
+                    self._sim_log_handle.close()
+                    self._sim_log_handle = None
+
+                self.sim_process = None
+                return False
+
+            return True
+
+    def is_sim_process_alive(self) -> bool:
+        """
+        Return True if SimManager has launched a simulator process and it is still running.
+        """
+        return self.sim_process is not None and self.sim_process.poll() is None
+
     def _safe_file_name(self, name: str) -> str:
         """
         Convert a Gazebo entity name into a safe file-name.
