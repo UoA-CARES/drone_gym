@@ -1,6 +1,7 @@
 import math
 import os
 import subprocess
+import signal
 import tempfile
 import threading
 import time
@@ -58,7 +59,7 @@ class SimLaunchConfig:
             process to shut down cleanly before forcing termination. Defaults to
             10.0.
         restart_delay: Time, in seconds, to wait between stopping and restarting
-            the simulator. Defaults to 3.0.
+            the simulator. Defaults to 8.0.
         log_file: Path to the file where simulator stdout and stderr output should
             be written. Defaults to "logs/crazysim.log".
     """
@@ -74,7 +75,7 @@ class SimLaunchConfig:
 
     startup_timeout: float = 60.0
     shutdown_timeout: float = 10.0
-    restart_delay: float = 3.0
+    restart_delay: float = 8.0
 
     log_file: str = "logs/crazysim.log"
 
@@ -179,7 +180,10 @@ class SimManager:
                 )
                 return False
 
-            os.makedirs(os.path.dirname(self.sim_launch_config.log_file), exist_ok=True)
+            log_dir = os.path.dirname(self.sim_launch_config.log_file)
+
+            if log_dir:
+                os.makedirs(log_dir, exist_ok=True)
 
             cmd =[
                 "bash",
@@ -209,11 +213,7 @@ class SimManager:
 
             except OSError as exc:
                 print(f"[SIM MANAGER] Failed to start simulator: {exc}")
-
-                if self._sim_log_handle is not None:
-                    self._sim_log_handle.close()
-                    self._sim_log_handle = None
-
+                self._close_sim_log_handle()
                 self.sim_process = None
                 return False
 
@@ -224,6 +224,87 @@ class SimManager:
         Return True if SimManager has launched a simulator process and it is still running.
         """
         return self.sim_process is not None and self.sim_process.poll() is None
+    
+    def _close_sim_log_handle(self) -> None:
+        """
+        Close the simulator log file handle if it is open.
+        """
+        if self._sim_log_handle is not None:
+            self._sim_log_handle.close()
+            self._sim_log_handle = None
+
+    def stop_sim(self) -> None:
+        """
+        Stop the CrazySim/Gazebo simulator process launched by SimManager.
+
+        The simulator is launched with start_new_session=True, so this method first
+        tries to terminate the whole process group. If the simulator does not stop
+        within shutdown_timeout, the process group is force-killed.
+        """
+        with self._sim_process_lock:
+            if self.sim_process is None:
+                print("[SIM MANAGER] No simulator process to stop.")
+                self._close_sim_log_handle()
+                return
+
+            process = self.sim_process
+
+            if process.poll() is not None:
+                print(
+                    "[SIM MANAGER] Simulator process has already stopped "
+                    f"with return code {process.returncode}."
+                )
+                self.sim_process = None
+                self._close_sim_log_handle()
+                return
+
+            shutdown_timeout = 10.0
+            if self.sim_launch_config is not None:
+                shutdown_timeout = self.sim_launch_config.shutdown_timeout
+
+            print("[SIM MANAGER] Stopping CrazySim/Gazebo...")
+
+            try:
+                os.killpg(os.getpgid(process.pid), signal.SIGTERM)
+                process.wait(timeout=shutdown_timeout)
+                print("[SIM MANAGER] Simulator stopped cleanly.")
+
+            except subprocess.TimeoutExpired:
+                print(
+                    "[SIM MANAGER] Simulator did not stop within "
+                    f"{shutdown_timeout} seconds. Force killing..."
+                )
+
+                try:
+                    os.killpg(os.getpgid(process.pid), signal.SIGKILL)
+                    process.wait(timeout=5.0)
+                    print("[SIM MANAGER] Simulator force killed.")
+
+                except OSError as exc:
+                    print(f"[SIM MANAGER] Failed to force kill simulator: {exc}")
+
+            except ProcessLookupError:
+                print("[SIM MANAGER] Simulator process was already gone.")
+
+            except OSError as exc:
+                print(
+                    "[SIM MANAGER] Failed to stop simulator process group. "
+                    f"Trying direct process termination. Error: {exc}"
+                )
+
+                try:
+                    process.terminate()
+                    process.wait(timeout=shutdown_timeout)
+                    print("[SIM MANAGER] Simulator stopped using direct termination.")
+
+                except subprocess.TimeoutExpired:
+                    print("[SIM MANAGER] Direct termination timed out. Force killing process.")
+                    process.kill()
+                    process.wait(timeout=5.0)
+
+            finally:
+                self.sim_process = None
+                self._close_sim_log_handle()
 
     def _safe_file_name(self, name: str) -> str:
         """
