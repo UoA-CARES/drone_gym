@@ -1,5 +1,6 @@
 import math
 import os
+import re
 import subprocess
 import signal
 import tempfile
@@ -108,7 +109,7 @@ class SimManager:
         marker_pose_tolerance: float = 0.005,
         boundary_line_thickness: float = 0.02,
         boundary_visual_height: float = 0.8,
-        gz_timeout: float = 1.5,
+        gz_timeout: float = 5.0,
     ) -> None:
 
         # Gazebo launch configuration
@@ -148,7 +149,7 @@ class SimManager:
         Start the CrazySim/Gazebo simulator process if it is not already running.
 
         Returns:
-            True if the simulator process is running or was launched successfully.
+            True if the simulator process is running and ready.
             False if the simulator could not be launched.
         """
         if self.sim_launch_config is None:
@@ -217,7 +218,135 @@ class SimManager:
                 self.sim_process = None
                 return False
 
-            return True
+        if not self.wait_until_sim_ready():
+            print("[SIM MANAGER] Simulator startup failed. Stopping partial startup...")
+            self.stop_sim()
+            return False
+
+        return True
+        
+    def _count_sitl_processes(self) -> int:
+        """
+        Return the number of running Crazyflie SITL cf2 processes.
+
+        This is used as a startup readiness check to verify that the launch script
+        has started the expected simulated drone firmware processes.
+        """
+        try:
+            result = subprocess.run(
+                ["pgrep", "-fc", r"sitl_make/build/cf2"],
+                capture_output=True,
+                text=True,
+                timeout=1.0,
+            )
+        except (subprocess.SubprocessError, FileNotFoundError):
+            return 0
+
+        if result.returncode not in (0, 1):
+            return 0
+
+        try:
+            return int(result.stdout.strip() or "0")
+        except ValueError:
+            return 0
+
+    def _expected_drone_model_names(self) -> list[str]:
+        """
+        Return the Gazebo model names expected for the configured number of drones.
+        """
+        if self.sim_launch_config is None:
+            return []
+
+        return [
+            f"crazyflie_{drone_id}"
+            for drone_id in range(self.sim_launch_config.num_agents)
+        ]
+
+    def _get_drone_entity_name(self, drone_id: str | int) -> str:
+        """
+        Return the Gazebo model name for a Crazyflie drone.
+
+        Accepts:
+            - numeric IDs, such as 0 or "0"
+            - MARL agent IDs, such as "drone_0"
+            - Gazebo model names, such as "crazyflie_0"
+        """
+        drone_id_str = str(drone_id)
+
+        if drone_id_str.startswith("crazyflie_"):
+            return drone_id_str
+
+        if drone_id_str.startswith("drone_"):
+            drone_id_str = drone_id_str.removeprefix("drone_")
+
+        return f"crazyflie_{drone_id_str}"
+        
+    def _sitl_processes_ready(self) -> bool:
+        """
+        Return True if the expected number of SITL drone processes are running.
+        """
+        if self.sim_launch_config is None:
+            return False
+
+        return self._count_sitl_processes() >= self.sim_launch_config.num_agents
+
+    def are_drones_spawned(self, timeout: float | None = None) -> bool:
+        """
+        Return True if all configured Crazyflie drone models are present in Gazebo.
+        """
+        if self.sim_launch_config is None:
+            raise RuntimeError(
+                "Cannot check spawned drones because sim_launch_config was not provided."
+            )
+
+        pose_info = self._get_world_pose_info(timeout=timeout)
+
+        if not pose_info:
+            return False
+
+        entity_poses = self._parse_entity_poses_from_pose_info(pose_info)
+
+        expected_drone_names = self._expected_drone_model_names()
+
+        return all(drone_name in entity_poses for drone_name in expected_drone_names)
+
+    def wait_until_sim_ready(self) -> bool:
+        """
+        Wait until CrazySim/Gazebo has completed enough startup to be usable:
+            - the managed launch process is still alive
+            - the expected number of SITL cf2 drone processes are running
+            - the expected Crazyflie models are spawned in Gazebo
+
+        Returns:
+            True if the simulator becomes ready before startup_timeout.
+            False otherwise.
+        """
+        if self.sim_launch_config is None:
+            raise RuntimeError(
+                "Cannot wait for simulator readiness because sim_launch_config was not provided."
+            )
+
+        print("[SIM MANAGER] Waiting for CrazySim/Gazebo to become ready...")
+
+        deadline = time.monotonic() + self.sim_launch_config.startup_timeout
+
+        while time.monotonic() < deadline:
+            if not self.is_sim_process_alive():
+                print("[SIM MANAGER] Simulator launch process exited during startup.")
+                return False
+
+            if self._sitl_processes_ready() and self.are_drones_spawned(timeout=2.0):
+                print("[SIM MANAGER] CrazySim/Gazebo is ready.")
+                return True
+
+            time.sleep(0.5)
+
+        print(
+            "[SIM MANAGER] Timed out waiting for CrazySim/Gazebo to become ready. "
+            f"Expected {self.sim_launch_config.num_agents} SITL processes, "
+            f"found {self._count_sitl_processes()}."
+        )
+        return False
 
     def is_sim_process_alive(self) -> bool:
         """
@@ -305,6 +434,34 @@ class SimManager:
             finally:
                 self.sim_process = None
                 self._close_sim_log_handle()
+
+    def restart_sim(self) -> bool:
+        """
+        Restart the CrazySim/Gazebo simulator process.
+
+        This stops the currently managed simulator process, waits for restart_delay,
+        clears simulator visual state cached by SimManager, and starts a new simulator
+        process.
+
+        Returns:
+            True if the simulator process was launched successfully after the restart,
+            False otherwise.
+        """
+        if self.sim_launch_config is None:
+            raise RuntimeError(
+                "Cannot restart simulator because sim_launch_config was not provided."
+            )
+
+        print("[SIM MANAGER] Restarting CrazySim/Gazebo...")
+
+        self.stop_sim()
+
+        if self.sim_launch_config.restart_delay > 0.0:
+            time.sleep(self.sim_launch_config.restart_delay)
+
+        self.reset_visual_state()
+
+        return self.start_sim()
 
     def _safe_file_name(self, name: str) -> str:
         """
@@ -540,6 +697,61 @@ class SimManager:
         # Some Gazebo service responses do not include explicit data: true/false.
         # If there was no return-code failure and no explicit error, treat it as ok.
         return True, output
+    
+    def _run_gz_topic(
+        self,
+        topic: str,
+        timeout: float | None = None,
+    ) -> tuple[bool, str]:
+        """
+        Echo one Gazebo topic and return the output.
+        """
+        effective_timeout = timeout if timeout is not None else self.gz_timeout
+
+        cmd = [
+            "gz",
+            "topic",
+            "-e",
+            "-t",
+            topic,
+        ]
+
+        try:
+            result = subprocess.run(
+                cmd,
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=effective_timeout,
+            )
+
+        except subprocess.TimeoutExpired as exc:
+            stdout = exc.stdout or ""
+            stderr = exc.stderr or ""
+
+            if isinstance(stdout, bytes):
+                stdout = stdout.decode(errors="replace")
+
+            if isinstance(stderr, bytes):
+                stderr = stderr.decode(errors="replace")
+
+            output = stdout + stderr
+            return bool(output), output
+
+        except FileNotFoundError:
+            return False, ""
+
+        output = (result.stdout or "") + (result.stderr or "")
+
+        if result.returncode != 0 and not output:
+            return False, output
+
+        output_lower = output.lower()
+
+        if "[err]" in output_lower:
+            return False, output
+
+        return bool(output), output
 
     def _write_target_marker_model_file(
         self,
@@ -610,6 +822,112 @@ class SimManager:
 
         return ok
 
+    def _get_world_pose_info(self, timeout: float | None = None) -> str:
+        """
+        Return Gazebo pose info text for the current world.
+        """
+        topic = f"/world/{self.world_name}/pose/info"
+
+        ok, output = self._run_gz_topic(
+            topic=topic,
+            timeout=timeout,
+        )
+
+        if not ok:
+            return ""
+
+        return output
+
+    def _parse_entity_poses_from_pose_info(
+        self,
+        pose_info: str,
+    ) -> dict[str, tuple[float, float, float]]:
+        """
+        Parse Gazebo pose info text into entity positions.
+
+        Returns:
+            Dictionary mapping entity names to (x, y, z) world positions.
+        """
+        poses: dict[str, tuple[float, float, float]] = {}
+
+        pose_blocks = re.finditer(
+            r"pose\s*{(?P<block>.*?)(?=\npose\s*{|\Z)",
+            pose_info,
+            re.DOTALL,
+        )
+
+        for pose_block in pose_blocks:
+            block = pose_block.group("block")
+
+            name_match = re.search(r'name:\s*"([^"]+)"', block)
+            position_match = re.search(
+                r"position\s*{\s*"
+                r"x:\s*([-+0-9.eE]+)\s*"
+                r"y:\s*([-+0-9.eE]+)\s*"
+                r"z:\s*([-+0-9.eE]+)",
+                block,
+                re.DOTALL,
+            )
+
+            if name_match is None or position_match is None:
+                continue
+
+            entity_name = name_match.group(1)
+
+            try:
+                poses[entity_name] = (
+                    float(position_match.group(1)),
+                    float(position_match.group(2)),
+                    float(position_match.group(3)),
+                )
+            except ValueError:
+                continue
+
+        return poses
+    
+    def get_entity_pose(
+        self,
+        entity_name: str,
+        timeout: float | None = None,
+    ) -> tuple[float, float, float] | None:
+        """
+        Return an entity's current Gazebo world position.
+
+        Args:
+            entity_name: Gazebo entity/model name.
+            timeout: Optional timeout in seconds for reading Gazebo pose info.
+
+        Returns:
+            (x, y, z) position in metres if the entity is found, otherwise None.
+        """
+        pose_info = self._get_world_pose_info(timeout=timeout)
+
+        if not pose_info:
+            return None
+
+        entity_poses = self._parse_entity_poses_from_pose_info(pose_info)
+
+        return entity_poses.get(entity_name)
+    
+    def get_drone_pose(
+        self,
+        drone_id: str | int,
+        timeout: float | None = None,
+    ) -> tuple[float, float, float] | None:
+        """
+        Return a Crazyflie model's current Gazebo world position.
+
+        Args:
+            drone_id: Drone ID for corresponding Gazebo entity name.
+            timeout: Optional timeout in seconds for reading Gazebo pose info.
+
+        Returns:
+            (x, y, z) position in metres if the drone model is found, otherwise None.
+        """
+        drone_name = self._get_drone_entity_name(drone_id)
+        return self.get_entity_pose(drone_name, timeout=timeout)
+
+
     def _set_entity_pose(
         self, 
         entity_name: str,
@@ -679,10 +997,14 @@ class SimManager:
         Set a Crazyflie model's position and optionally its orientation.
 
         Args:
+            drone_id: Drone ID for corresponding Gazebo entity name.
+            x: World x position in metres.
+            y: World y position in metres.
+            z: World z position in metres.
             orientation: Optional (roll, pitch, yaw) in radians.
                 When None, the current orientation is preserved.
         """
-        drone_name = f"crazyflie_{drone_id}"
+        drone_name = self._get_drone_entity_name(drone_id)
         return self._set_entity_pose(drone_name, x, y, z, orientation)
 
     def _boundary_model_file_path(
