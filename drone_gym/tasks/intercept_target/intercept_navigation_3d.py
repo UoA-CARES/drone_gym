@@ -445,7 +445,7 @@ class InterceptNavigation3D(DroneEnvironment):
             return True
         return False
 
-    def _proactive_ekf_reset(self, drone) -> None:
+    def _proactive_ekf_reset(self, drone, position: List[float] | None = None) -> None:
         """Kalman-filter reset. DANGEROUS while airborne — DO NOT call in flight.
 
         Resetting the EKF mid-air makes the estimator emit a brief burst of garbage
@@ -454,11 +454,27 @@ class InterceptNavigation3D(DroneEnvironment):
         and falls. EKF resets must happen on the ground, via the recovery path
         (_recover_drone re-inits the link and resets the filter safely). This helper
         is retained only for that ground-level use.
+
+        When ``position`` is given, the filter is seeded with it (via the
+        kalman.initialX/Y/Z firmware params) before the reset, so the estimate
+        STARTS at the drone's new true position instead of having to converge
+        onto it from sensor data — this is how we "tell" a just-teleported
+        drone where it now is. (Velocity needs no seeding: the reset zeroes the
+        velocity state, and a landed drone's true velocity IS zero.)
         """
         try:
-            if getattr(drone, "cf", None) is not None:
-                drone.cf.param.set_value("kalman.resetEstimation", "1")
-                time.sleep(0.4)
+            if getattr(drone, "cf", None) is None:
+                return
+            if position is not None:
+                try:
+                    drone.cf.param.set_value("kalman.initialX", f"{float(position[0])}")
+                    drone.cf.param.set_value("kalman.initialY", f"{float(position[1])}")
+                    drone.cf.param.set_value("kalman.initialZ", f"{float(position[2])}")
+                except Exception as exc:
+                    print(f"[InterceptNavigation3D] EKF position seed warning "
+                          f"(continuing with plain reset): {exc}")
+            drone.cf.param.set_value("kalman.resetEstimation", "1")
+            time.sleep(0.4)
         except Exception as exc:
             print(f"[InterceptNavigation3D] EKF reset warning: {exc}")
 
@@ -544,17 +560,28 @@ class InterceptNavigation3D(DroneEnvironment):
         time.sleep(0.3)  # let physics settle the models onto the floor
 
         # 3) Fresh estimator at the new true position, while safely grounded.
+        #    The reset is seeded with the teleported pose (kalman.initialX/Y/Z)
+        #    so the estimate starts exactly where the drone now is. Latched-
+        #    emergency drones get the full link recovery instead (unseeded —
+        #    its re-init resets the filter and the estimate then converges
+        #    from sensor data, same as the pre-teleport behaviour).
         if self.drone.emergency_event.is_set():
             print("[InterceptNavigation3D] Runner emergency latched — ground recovery at spawn")
             self.restart()  # timeout-guarded link recovery (take-off at the end is harmless here)
         else:
-            self._proactive_ekf_reset(self.drone)
+            self._proactive_ekf_reset(
+                self.drone,
+                position=[self.runner_spawn[0], self.runner_spawn[1], self.GROUND_Z],
+            )
         if interceptor_drone is not None:
             if interceptor_drone.emergency_event.is_set():
                 print("[InterceptNavigation3D] Interceptor emergency latched — ground recovery at spawn")
                 self._recover_interceptor_if_dead(force=True)
             else:
-                self._proactive_ekf_reset(interceptor_drone)
+                self._proactive_ekf_reset(
+                    interceptor_drone,
+                    position=[interceptor_spawn[0], interceptor_spawn[1], self.GROUND_Z],
+                )
         time.sleep(0.5)  # give the estimators a beat to converge at the spawns
 
     def _recover_interceptor_if_dead(self, force: bool = False):
