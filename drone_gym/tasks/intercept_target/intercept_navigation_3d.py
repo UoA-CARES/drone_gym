@@ -173,7 +173,6 @@ class InterceptNavigation3D(DroneEnvironment):
             policy=interceptor_policy,
             role="interceptor",
         )
-        self._interceptor_airborne = False
 
         # The interceptor repositions via a position-control move to a fresh spawn
         # EVERY episode, which stresses its EKF. The drone's internal safety monitor
@@ -232,24 +231,11 @@ class InterceptNavigation3D(DroneEnvironment):
         # Evaluation mode tracking — counts episodes the runner reached the goal
         self.successful_episodes_count = 0
 
-        # EKF drift prevention. Neither drone lands between episodes, so CrazySim's
-        # onboard estimator accumulates drift with nothing to reset it. Left
-        # unbounded, the drift eventually makes the altitude controller command a
-        # thrust spike that LAUNCHES the drone past its internal z boundary — which
-        # trips the body's emergency-stop (land + DISARM + kill the control thread),
-        # the unrecoverable "the drone just died" crash. We can't reset the EKF in
-        # the air (that itself causes a launch), so every N episodes we land the
-        # drone, reset the filter on the ground, and take off again — capping the
-        # drift well below launch territory.
-        #
-        # This MUST cover BOTH drones. The interceptor is actually the worse case:
-        # it repositions across the whole arena via position control every single
-        # episode (a bigger EKF stressor than the runner's short evasive moves) yet
-        # historically got no periodic reset at all — so it drifted fastest, spiked
-        # past its z=3.0 boundary, and took the emergency kill while the runner was
-        # still alive. Resetting only the runner is why "both drones die".
+        # Episode counter (used by reset-time health checks and logging). EKF
+        # drift no longer needs an every-N-episodes cap: the teleport reset
+        # lands both drones and re-seeds their estimators on the ground EVERY
+        # episode, so drift can never accumulate past a single episode.
         self._episode_count = 0
-        self._ekf_reset_interval = 20
 
     # ------------------------------------------------------------------
     # Interceptor expert policy — 3D pure pursuit toward the runner
@@ -476,53 +462,100 @@ class InterceptNavigation3D(DroneEnvironment):
         except Exception as exc:
             print(f"[InterceptNavigation3D] EKF reset warning: {exc}")
 
-    def _ground_ekf_reset_runner(self) -> None:
-        """Land the runner, reset its EKF on the ground, to bound accumulated drift.
+    # ------------------------------------------------------------------
+    # Teleport reset — land, move the MODELS to their spawns, take off fresh
+    # ------------------------------------------------------------------
 
-        The runner never lands during a run, so CrazySim's estimator drifts
-        unbounded until the altitude controller reacts with a thrust spike and
-        launches the drone. Resetting the filter airborne causes that same launch,
-        so we land first (the drone stays armed — land() doesn't disarm), reset on
-        the ground where it's safe, and let the subsequent super().reset() take it
-        off and re-centre with a fresh, drift-free estimate.
-        """
-        print(f"[InterceptNavigation3D] Ground EKF reset for runner (episode {self._episode_count})")
+    # Gazebo model ids: sitl_multiagent spawns crazyflie_{i} bound to udp port
+    # 19850+i (the same convention the MARL environment's teleport uses), so
+    # the runner (19850) is model 0 and the interceptor (19851) is model 1.
+    RUNNER_GAZEBO_ID = 0
+    INTERCEPTOR_GAZEBO_ID = 1
+    GROUND_Z = 0.02  # resting height for a ground teleport
+
+    def _land_for_teleport(self, drone) -> None:
+        """Best-effort: stop controllers and land one drone so its motors are
+        idle for the teleport. A dead link just falls through — the teleport
+        doesn't need the drone's cooperation, only Gazebo's."""
         try:
-            if self.drone.velocity_controller_active:
-                self.drone.stop_velocity_control()
-            self.drone.set_velocity_vector(0, 0, 0)
-            self.drone.land()
-            self.drone.is_landed_event.wait(timeout=15)
-            self._proactive_ekf_reset(self.drone)  # safe: the drone is on the ground now
+            if getattr(drone, "velocity_controller_active", False):
+                drone.stop_velocity_control()
+            if getattr(drone, "position_controller_active", False):
+                drone.stop_position_control()
+            drone.set_velocity_vector(0, 0, 0)
+            drone.land()
         except Exception as exc:
-            print(f"[InterceptNavigation3D] Runner ground EKF reset warning: {exc}")
+            print(f"[InterceptNavigation3D] Land-for-teleport warning "
+                  f"({getattr(drone, 'agent_id', '?')}): {exc}")
 
-    def _ground_ekf_reset_interceptor(self) -> None:
-        """Land the interceptor, reset its EKF on the ground, to bound accumulated drift.
+    def _teleport_reset_both(self, interceptor_spawn: List[float]) -> None:
+        """Land both drones, TELEPORT their Gazebo models to the new spawns on
+        the floor, and re-seed the estimators on the ground.
 
-        Mirrors :meth:`_ground_ekf_reset_runner` for the second drone. The
-        interceptor never lands during a run yet repositions across the whole arena
-        via position control every episode, so its estimator drifts even faster than
-        the runner's until a thrust spike launches it past its internal z boundary
-        and the body's emergency-stop kills it. We land it (it stays armed — land()
-        does not disarm), reset the filter on the ground where it's safe, and let the
-        subsequent prepare_reset take it off + reposition with a fresh estimate.
+        This is the dead-drone fix: nobody flies home between episodes. The old
+        reset repositioned the interceptor across the whole arena via position
+        control (the #1 EKF stressor) and needed a crashed drone to fly back
+        from wherever it died — impossible for a dead one. Instead the episode
+        simply *starts* with each model at its spawn:
+
+          1. land both drones together (motors idle — teleporting a model out
+             from under a flying controller looks like a massive position
+             error, the same crash family as the airborne EKF reset),
+          2. set_pose each model to its spawn xy on the floor, LEVEL — which
+             also rights a toppled drone, previously an unrecoverable state,
+          3. reset each EKF on the ground (the safe reset) so the estimator
+             converges at the spawn, not the crash site; a drone with a
+             latched emergency gets the full link recovery instead, which
+             re-inits + resets its filter as part of bring-up.
+
+        Take-off happens afterwards: the parent reset lifts the runner and
+        prepare_reset lifts the interceptor — both now vertical-only moves.
+        If a teleport service call fails, the drones are simply left where
+        they landed and those same moves degrade to the old fly-to-spawn
+        behaviour.
         """
-        d = getattr(self.interceptor.body, "drone", None)
-        if d is None:
-            return
-        print(f"[InterceptNavigation3D] Ground EKF reset for interceptor (episode {self._episode_count})")
-        try:
-            if getattr(d, "velocity_controller_active", False):
-                d.stop_velocity_control()
-            if getattr(d, "controller_active", False):
-                d.stop_position_control()
-            d.set_velocity_vector(0, 0, 0)
-            d.land()
-            d.is_landed_event.wait(timeout=15)
-            self._proactive_ekf_reset(d)  # safe: the interceptor is on the ground now
-        except Exception as exc:
-            print(f"[InterceptNavigation3D] Interceptor ground EKF reset warning: {exc}")
+        interceptor_drone = getattr(self.interceptor.body, "drone", None)
+
+        # 1) Land both together (parallel descent), then wait for both.
+        self._land_for_teleport(self.drone)
+        if interceptor_drone is not None:
+            self._land_for_teleport(interceptor_drone)
+        for d in (self.drone, interceptor_drone):
+            if d is None:
+                continue
+            try:
+                if not d.is_landed_event.wait(timeout=15):
+                    print(f"[InterceptNavigation3D] WARNING: {getattr(d, 'agent_id', '?')} "
+                          f"did not confirm landing before teleport")
+            except Exception:
+                pass
+
+        # 2) Teleport the models to their spawns, flat on the floor.
+        if not self.sim_manager.set_drone_pose(
+                self.RUNNER_GAZEBO_ID,
+                self.runner_spawn[0], self.runner_spawn[1], self.GROUND_Z,
+                orientation=(0.0, 0.0, 0.0)):
+            print("[InterceptNavigation3D] WARNING: runner ground teleport failed")
+        if not self.sim_manager.set_drone_pose(
+                self.INTERCEPTOR_GAZEBO_ID,
+                interceptor_spawn[0], interceptor_spawn[1], self.GROUND_Z,
+                orientation=(0.0, 0.0, 0.0)):
+            print("[InterceptNavigation3D] WARNING: interceptor ground teleport failed")
+        time.sleep(0.3)  # let physics settle the models onto the floor
+
+        # 3) Fresh estimator at the new true position, while safely grounded.
+        if self.drone.emergency_event.is_set():
+            print("[InterceptNavigation3D] Runner emergency latched — ground recovery at spawn")
+            self.restart()  # timeout-guarded link recovery (take-off at the end is harmless here)
+        else:
+            self._proactive_ekf_reset(self.drone)
+        if interceptor_drone is not None:
+            if interceptor_drone.emergency_event.is_set():
+                print("[InterceptNavigation3D] Interceptor emergency latched — ground recovery at spawn")
+                self._recover_interceptor_if_dead(force=True)
+            else:
+                self._proactive_ekf_reset(interceptor_drone)
+        time.sleep(0.5)  # give the estimators a beat to converge at the spawns
 
     def _recover_interceptor_if_dead(self, force: bool = False):
         """Re-initialise + take off the interceptor if it has died, before an episode.
@@ -958,7 +991,14 @@ class InterceptNavigation3D(DroneEnvironment):
     # ------------------------------------------------------------------
 
     def reset(self, training: bool = True):
-        """Keep the runner centred, place a fresh 3D goal, and seed the interceptor."""
+        """Teleport both drones to fresh spawns (sim) and start a new episode.
+
+        Sim resets never fly anyone home: both drones land, their MODELS are
+        teleported to the new spawn points on the ground, estimators re-seed
+        there, and take-off is the only flight before the episode begins. On
+        real hardware (no teleport available) this falls back to the old
+        fly-to-spawn reset.
+        """
 
         if not training and not self._is_evaluating:
             self.successful_episodes_count = 0
@@ -978,26 +1018,27 @@ class InterceptNavigation3D(DroneEnvironment):
 
         self._episode_count += 1
 
-        # Recover a dead runner BEFORE the parent reset. super().reset() on a
-        # zombie (latched emergency) burns ~30 s re-launching a drone whose
-        # control loops refuse every command, times out, and never re-centres
-        # it — so the runner starts every episode out of bounds and each one
-        # dies after a single step. Recovering first lets the parent reset
-        # re-centre a healthy drone. (Skipped on the first reset, when the
-        # pre-takeoff placeholder (0,0,0) position would read as dead.)
-        if self._episode_count > 1 and self._runner_is_dead():
+        # Sample the new geometry up front — the runner always starts at
+        # runner_spawn, so nothing here depends on live drone positions.
+        self.goal_position = self._sample_goal(self.runner_spawn)
+        interceptor_spawn = self._sample_interceptor_spawn(self.runner_spawn, self.goal_position)
+
+        if self.use_simulator:
+            # Land + teleport both models to their spawns + ground EKF reset.
+            # Dead / toppled / boundary-killed drones are recovered here by
+            # construction — no flight back from a crash site is ever needed.
+            self._teleport_reset_both(interceptor_spawn)
+        elif self._episode_count > 1 and self._runner_is_dead():
+            # Real hardware: no teleport available. Recover a dead runner
+            # BEFORE the parent reset — super().reset() on a zombie (latched
+            # emergency) burns ~30 s re-launching a drone whose control loops
+            # refuse every command, times out, and never re-centres it.
             print("[InterceptNavigation3D] Runner dead at reset entry — recovering before parent reset")
             self.restart()
 
-        # Periodically land the runner and reset its EKF ON THE GROUND to bound the
-        # drift that would otherwise build up over a continuous run and eventually
-        # launch it. Done before super().reset(), which then takes off + re-centres
-        # with a fresh estimate. (Airborne resets cause the launch, so never here.)
-        self._ekf_reset_due = (self._episode_count % self._ekf_reset_interval == 0)
-        if self._ekf_reset_due:
-            self._ground_ekf_reset_runner()
-
-        # Parent reset: takeoff, centre the runner at (0, 0, fixed_z), start velocity control.
+        # Parent reset: takeoff, centre the runner at (0, 0, fixed_z), start
+        # velocity control. After a teleport the runner is already at the spawn
+        # xy, so this is a short vertical-only climb — not a cross-arena move.
         super().reset(training)
 
         # Stop the velocity controller that the parent started — the runner should hold
@@ -1024,32 +1065,13 @@ class InterceptNavigation3D(DroneEnvironment):
                 self.drone.stop_velocity_control()
             self.drone.set_velocity_vector(0, 0, 0)
 
-        # On the first reset, make sure the interceptor is airborne before we fly it.
-        if not self._interceptor_airborne:
-            self.interceptor.ensure_airborne()
-            self.interceptor.await_airborne(timeout=15.0)
-            self._interceptor_airborne = True
+        # Real hardware only: recover the interceptor if it died. (In sim the
+        # teleport reset above already handled every dead-interceptor case.)
+        if not self.use_simulator:
+            self._recover_interceptor_if_dead()
 
-        # If the interceptor's EKF blew up (or it fell), re-initialise it before use.
-        self._recover_interceptor_if_dead()
-
-        # Periodic ground EKF reset for the interceptor, on the SAME cadence as the
-        # runner. This is the fix for the interceptor dying while the runner lived:
-        # the interceptor drifts fastest (a full-arena position move every episode)
-        # and previously had no drift cap, so it launched past its z boundary and
-        # took the emergency kill. We land + reset it here, on the ground, before the
-        # prepare_reset below takes it off again to reposition with a fresh estimate.
-        # (Skipped on episode 1, when the interceptor was only just brought airborne.)
-        if getattr(self, "_ekf_reset_due", False) and self._interceptor_airborne:
-            self._ground_ekf_reset_interceptor()
-
-        # 1) The runner stays where the parent reset left it — the centre (0, 0, fixed_z).
-        #    No long-range position move on the learner (the EKF stressor).
+        # The runner stays where the parent reset left it — the centre (0, 0, fixed_z).
         runner_pos = self.drone.get_position()
-
-        # 2) Sample the goal (far from the runner) and the interceptor spawn (on the path).
-        self.goal_position = self._sample_goal(runner_pos)
-        interceptor_spawn = self._sample_interceptor_spawn(runner_pos, self.goal_position)
 
         # Draw the goal marker in Gazebo.
         if self.use_simulator:
@@ -1058,13 +1080,11 @@ class InterceptNavigation3D(DroneEnvironment):
                 marker_name=self.goal_marker_name,
             )
 
-        # 3) Fly the interceptor to its spawn, then arm it for the episode.
-        # We deliberately do NOT reset the interceptor's EKF here. Resetting the
-        # Kalman filter while the drone is airborne makes the estimator emit a brief
-        # burst of garbage state, and the onboard controller reacts with a thrust
-        # spike — the drone "launches" to the ceiling, leaves the arena, then stalls
-        # and falls. (This was the cause of the sudden launch-into-the-air crashes.)
-        # EKF resets now happen only on the ground, via the recovery path.
+        # Bring the interceptor up at its spawn and arm it for the episode.
+        # prepare_reset takes off a grounded drone and position-controls it to
+        # the spawn — after the teleport that's a vertical-only climb from the
+        # right xy already, with a freshly ground-reset estimator. We never
+        # reset the EKF airborne (that's the thrust-spike launch).
         self.interceptor.reset_policy({"runner_pos": runner_pos})
         self.interceptor.prepare_reset(interceptor_spawn)
         if not self._await_interceptor_reset_safely(interceptor_spawn, timeout=15.0):
