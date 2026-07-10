@@ -1396,6 +1396,23 @@ class InterceptNavigation3D(DroneEnvironment):
         # with the per-episode spawn altitude.
         return not self._is_out_of_task_bounds(self.drone.get_position())
 
+    def _update_visual_boundaries(self):
+        """Draw the Gazebo boundary overlay at a FIXED height.
+
+        The base version derives the draw height from reset_position[2], which
+        now varies per episode — a changing height changes SimManager's cached
+        boundary signature, making it remove + respawn the wall model on EVERY
+        reset. Gazebo removes entities asynchronously, so the immediate
+        re-create can race the deferred delete and leave no walls for the whole
+        episode. A constant height restores the original spawn-once behaviour.
+        """
+        if not hasattr(self.drone, "set_visual_boundary_lines"):
+            return
+        self.drone.set_visual_boundary_lines(
+            drone_xy_limit=float(self.boundary[0]),
+            z_level=float(self.fixed_z),
+        )
+
     def _check_if_truncated(self, current_state: Dict[str, Any]) -> bool:
         if self.steps >= self.episode_length:
             if self.need_to_change_battery():
