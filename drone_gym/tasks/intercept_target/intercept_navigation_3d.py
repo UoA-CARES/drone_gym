@@ -72,23 +72,31 @@ class InterceptNavigation3D(DroneEnvironment):
         # 2.0 is the value the stable sibling tasks use — larger boxes mean longer
         # position-control moves on reset, which is exactly what blows up the EKF.
         self.xy_limit = 2.0
-        # Tight z-band around the 1.0 m reset height. A narrow vertical corridor
-        # means the runner only ever makes small vertical moves, keeping CrazySim's
-        # vertical estimator well-conditioned so the thrust-spike launch can't build.
-        self.z_min = 0.8
-        self.z_max = 1.2
-        self.fixed_z = 1.0                  # runner reset altitude (centre of the z band)
+        # z-band around the 1.0 m reset height. Vertical stability comes from the
+        # max_velocity_z cap above (slow climbs keep CrazySim's vertical estimator
+        # well-conditioned), so the band can be wide enough for real 3D variety —
+        # it still ends well short of the containment lines (0.25 / 1.8) and the
+        # firmware kill boundary (|z| 2.25).
+        self.z_min = 0.6
+        self.z_max = 1.4
+        self.fixed_z = 1.0                  # centre of the z band (default altitude)
+        # Runner spawn altitude — resampled every episode. Kept a notch inside the
+        # z band so the worst-case vertical gap to a goal (~0.5 m) stays closable
+        # at max_velocity_z within an 80-step episode (0.5 / (0.03 * 0.5) ≈ 34 steps).
+        self.runner_spawn_z_range = (0.8, 1.2)
         self.spawn_margin = 0.5             # keep spawns clear of the xy wall (PID overshoot safety)
         self.goal_margin = 0.3              # keep the goal clear of the xy wall
         self.z_margin = 0.1                 # keep goal/interceptor spawn off the z floor/ceiling (tight band)
         self.out_of_bounds_tolerance = 0.05  # small grace for PID overshoot at the wall
 
-        # The runner always spawns at the centre (0, 0, fixed_z) — diversity comes
-        # from the random goal + interceptor placement, NOT from moving the runner.
-        # This is the proven-stable pattern from intercept_evader / evade_pursuers:
-        # a long-range reset move on the learner stresses CrazySim's EKF and makes
-        # the drone tumble and fall. The runner still travels a real distance every
-        # episode — to the goal — which is the whole point of the task.
+        # The runner always spawns at the xy centre (0, 0) — lateral diversity
+        # comes from the random goal + interceptor placement, NOT from moving the
+        # runner. This is the proven-stable pattern from intercept_evader /
+        # evade_pursuers: a long-range lateral reset move on the learner stresses
+        # CrazySim's EKF and makes the drone tumble and fall. The spawn ALTITUDE
+        # is resampled each episode (see runner_spawn_z_range): that only changes
+        # the length of the slow, PID-controlled vertical climb out of the ground
+        # teleport, which the max_velocity_z cap keeps gentle.
         self.runner_spawn = [0.0, 0.0, self.fixed_z]
 
         # FAIRNESS — goal placement. The goal must be far enough that a faster
@@ -109,7 +117,7 @@ class InterceptNavigation3D(DroneEnvironment):
         #   * interceptor camped on the goal            -> runner has no chance
         self.intercept_frac = (0.45, 0.65)   # where along the runner->goal path the contest is set up
         self.fairness_jitter = 0.15          # ±15% randomness on the fair lateral distance
-        self.interceptor_z_jitter = 0.1      # vertical variety for the interceptor spawn (tight band)
+        self.interceptor_z_jitter = 0.25     # vertical variety for the interceptor spawn
         self.min_runner_clearance = 1.0      # interceptor never starts in (near) capture range of the runner
         self.min_goal_clearance = 0.6        # interceptor can't start camped on the goal
 
@@ -183,7 +191,7 @@ class InterceptNavigation3D(DroneEnvironment):
         # default (2.5, i.e. 0.5 m past the arena wall for PID overshoot) so a
         # lateral drift is still caught before the interceptor roams far outside
         # the arena. The task's own out-of-bounds + collision-guard logic
-        # (xy_limit=2.0, z_max=1.5, capture_threshold) still governs episodes.
+        # (xy_limit=2.0, z_max=1.4, capture_threshold) still governs episodes.
         # boundaries uses the post-#28 z_min/z_max schema (the boundary monitor now
         # checks z_min <= z <= z_max, not abs(z) <= z). A bare "z" key here would
         # KeyError in the interceptor's boundary thread.
@@ -677,7 +685,7 @@ class InterceptNavigation3D(DroneEnvironment):
 
     # Containment thresholds — the guard steers a drone back inside once it
     # crosses these. Set ABOVE normal operation (the step clamp keeps the runner
-    # inside ~xy 1.75 / z 1.35, and interceptor spawns sit within ±1.5 / 0.7-1.3)
+    # inside ~xy 1.75 / z 0.7-1.3, and interceptor spawns sit within ±1.5 / 0.7-1.3)
     # but well BELOW the drone's internal fatal kill boundary (xy 2.5, z 2.25;
     # interceptor z 3.0). That gap is the runway the guard uses to correct a
     # drifting/overshooting drone before the destructive emergency-land can fire.
@@ -1045,6 +1053,13 @@ class InterceptNavigation3D(DroneEnvironment):
 
         self._episode_count += 1
 
+        # Vertical variety: resample the runner's spawn altitude each episode.
+        # xy stays pinned at the centre (long lateral reset moves are the #1 EKF
+        # stressor); the fresh z only changes the length of the slow vertical
+        # climb after take-off. The parent reset targets reset_position.
+        self.runner_spawn[2] = float(np.random.uniform(*self.runner_spawn_z_range))
+        self.reset_position = list(self.runner_spawn)
+
         # Sample the new geometry up front — the runner always starts at
         # runner_spawn, so nothing here depends on live drone positions.
         self.goal_position = self._sample_goal(self.runner_spawn)
@@ -1063,7 +1078,7 @@ class InterceptNavigation3D(DroneEnvironment):
             print("[InterceptNavigation3D] Runner dead at reset entry — recovering before parent reset")
             self.restart()
 
-        # Parent reset: takeoff, centre the runner at (0, 0, fixed_z), start
+        # Parent reset: takeoff, move the runner to (0, 0, spawn z), start
         # velocity control. After a teleport the runner is already at the spawn
         # xy, so this is a short vertical-only climb — not a cross-arena move.
         super().reset(training)
@@ -1376,7 +1391,10 @@ class InterceptNavigation3D(DroneEnvironment):
         return False
 
     def is_in_testing_zone(self):
-        return self.is_in_boundaries()
+        # Judge against the task's own 3D bounds — the base is_in_boundaries
+        # derives its height range from reset_position[2], which now varies
+        # with the per-episode spawn altitude.
+        return not self._is_out_of_task_bounds(self.drone.get_position())
 
     def _check_if_truncated(self, current_state: Dict[str, Any]) -> bool:
         if self.steps >= self.episode_length:

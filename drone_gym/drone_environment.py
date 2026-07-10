@@ -108,9 +108,8 @@ class DroneEnvironment(ABC):
         # Ensure drone is flying before setting target position
         self.drone.is_flying_event.wait(timeout=15)
 
-        # Set reset target position only once (lazy initialization)
-        # self._ensure_reset_target_set()
-        self.drone.set_target_position(0, 0, 1)
+        # Move to the task's reset position (defaults to [0, 0, 1])
+        self.drone.set_target_position(*self.reset_position)
         time.sleep(0.1)  # Allow target position to be set
         self.drone.start_position_control()
 
