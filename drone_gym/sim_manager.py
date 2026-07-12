@@ -160,6 +160,7 @@ class SimManager:
         with self._sim_process_lock:
             if self.is_sim_process_alive():
                 print("[SIM MANAGER] Simulator process is already running.")
+                print("[DEBUG - SimManager] StartSim returns true because process is already running")
                 return True
 
             firmware_dir = self.sim_launch_config.firmware_dir
@@ -210,7 +211,9 @@ class SimManager:
                     stderr=subprocess.STDOUT,
                     text=True,
                     start_new_session=True,
+                    env=self._get_sim_process_env()
                 )
+                print(f"[SIM MANAGER] Launch PID: {self.sim_process.pid}")
 
             except OSError as exc:
                 print(f"[SIM MANAGER] Failed to start simulator: {exc}")
@@ -223,8 +226,25 @@ class SimManager:
             self.stop_sim()
             return False
 
+        print("[DEBUG - SimManager] StartSim returns true at end of function")
         return True
         
+    def _get_sim_process_env(self) -> dict[str, str]:
+        """
+        Return a cleaned environment for launching CrazySim/Gazebo.
+
+        CARES RL or imported Python packages such as OpenCV can set Qt plugin paths
+        that break Gazebo's Qt GUI. The simulator should use the system Gazebo/Qt
+        environment, not Python package Qt plugins.
+        """
+        env = os.environ.copy()
+
+        # Prevent OpenCV/cv2's bundled Qt plugins from being used by Gazebo.
+        env.pop("QT_PLUGIN_PATH", None)
+        env.pop("QT_QPA_PLATFORM_PLUGIN_PATH", None)
+
+        return env
+
     def _count_sitl_processes(self) -> int:
         """
         Return the number of running Crazyflie SITL cf2 processes.
@@ -287,8 +307,9 @@ class SimManager:
         """
         if self.sim_launch_config is None:
             return False
-
-        return self._count_sitl_processes() >= self.sim_launch_config.num_agents
+        count = self._count_sitl_processes()
+        print("[DEBUG - SimManager] Checking SITL processes: ", count)
+        return count >= self.sim_launch_config.num_agents
 
     def are_drones_spawned(self, timeout: float | None = None) -> bool:
         """
@@ -307,6 +328,13 @@ class SimManager:
         entity_poses = self._parse_entity_poses_from_pose_info(pose_info)
 
         expected_drone_names = self._expected_drone_model_names()
+        print("[DEBUG - SimManager] Expected drone names: ", expected_drone_names)
+        # print the coords of the drones found
+        for drone_name in expected_drone_names:
+            if drone_name in entity_poses:
+                print(f"[DEBUG - SimManager] Found {drone_name} at {entity_poses[drone_name]}")
+            else:
+                print(f"[DEBUG - SimManager] {drone_name} not found in Gazebo.")
 
         return all(drone_name in entity_poses for drone_name in expected_drone_names)
 
@@ -335,10 +363,23 @@ class SimManager:
                 print("[SIM MANAGER] Simulator launch process exited during startup.")
                 return False
 
-            if self._sitl_processes_ready() and self.are_drones_spawned(timeout=2.0):
+            sitl_count = self._count_sitl_processes()
+            sitl_ready = sitl_count >= self.sim_launch_config.num_agents
+            drones_spawned = self.are_drones_spawned(timeout=2.0)
+            launch_alive = self.is_sim_process_alive()
+            print(
+                "[SIM MANAGER] Readiness check: "
+                f"launch_alive={launch_alive}, "
+                f"sitl_count={sitl_count}, "
+                f"sitl_ready={sitl_ready}, "
+                f"drones_spawned={drones_spawned}"
+            )           
+            # if self._sitl_processes_ready() and self.are_drones_spawned(timeout=2.0):
+            #     print("[SIM MANAGER] CrazySim/Gazebo is ready.")
+            #     return True
+            if launch_alive and sitl_ready and drones_spawned:
                 print("[SIM MANAGER] CrazySim/Gazebo is ready.")
                 return True
-
             time.sleep(0.5)
 
         print(
