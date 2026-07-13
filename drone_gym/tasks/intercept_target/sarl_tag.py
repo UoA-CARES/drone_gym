@@ -15,7 +15,7 @@ import io
 import cv2
 
 
-class InterceptNavigation3D(DroneEnvironment):
+class SarlTag(DroneEnvironment):
     """3D navigate-to-goal-under-interception task (Variant A: expert interceptor).
 
     The learner is the **runner** (Drone 1): it spawns at the centre and must fly
@@ -166,7 +166,7 @@ class InterceptNavigation3D(DroneEnvironment):
         # Constructed directly here — agent lifecycle belongs to the environment,
         # not to SimManager.  SimManager is only responsible for Gazebo visuals.
         self.sim_manager = get_default_sim_manager()
-        self.goal_marker_name = "rl_intercept_nav_goal"
+        self.goal_marker_name = "rl_sarl_tag_goal"
         # Runner is on port 19850; interceptor is drone 2 from sitl_multiagent_square -n 2
         interceptor_uri = "udp://0.0.0.0:19851"
         interceptor_body = CrazyflieBody(
@@ -511,12 +511,12 @@ class InterceptNavigation3D(DroneEnvironment):
                     drone.cf.param.set_value("kalman.initialY", f"{float(position[1])}")
                     drone.cf.param.set_value("kalman.initialZ", f"{float(position[2])}")
                 except Exception as exc:
-                    print(f"[InterceptNavigation3D] EKF position seed warning "
+                    print(f"[SarlTag] EKF position seed warning "
                           f"(continuing with plain reset): {exc}")
             drone.cf.param.set_value("kalman.resetEstimation", "1")
             time.sleep(0.4)
         except Exception as exc:
-            print(f"[InterceptNavigation3D] EKF reset warning: {exc}")
+            print(f"[SarlTag] EKF reset warning: {exc}")
 
     # ------------------------------------------------------------------
     # Teleport reset — land, move the MODELS to their spawns, take off fresh
@@ -541,7 +541,7 @@ class InterceptNavigation3D(DroneEnvironment):
             drone.set_velocity_vector(0, 0, 0)
             drone.land()
         except Exception as exc:
-            print(f"[InterceptNavigation3D] Land-for-teleport warning "
+            print(f"[SarlTag] Land-for-teleport warning "
                   f"({getattr(drone, 'agent_id', '?')}): {exc}")
 
     def _teleport_reset_both(self, interceptor_spawn: List[float]) -> None:
@@ -581,7 +581,7 @@ class InterceptNavigation3D(DroneEnvironment):
                 continue
             try:
                 if not d.is_landed_event.wait(timeout=15):
-                    print(f"[InterceptNavigation3D] WARNING: {getattr(d, 'agent_id', '?')} "
+                    print(f"[SarlTag] WARNING: {getattr(d, 'agent_id', '?')} "
                           f"did not confirm landing before teleport")
             except Exception:
                 pass
@@ -591,12 +591,12 @@ class InterceptNavigation3D(DroneEnvironment):
                 self.RUNNER_GAZEBO_ID,
                 self.runner_spawn[0], self.runner_spawn[1], self.GROUND_Z,
                 orientation=(0.0, 0.0, 0.0)):
-            print("[InterceptNavigation3D] WARNING: runner ground teleport failed")
+            print("[SarlTag] WARNING: runner ground teleport failed")
         if not self.sim_manager.set_drone_pose(
                 self.INTERCEPTOR_GAZEBO_ID,
                 interceptor_spawn[0], interceptor_spawn[1], self.GROUND_Z,
                 orientation=(0.0, 0.0, 0.0)):
-            print("[InterceptNavigation3D] WARNING: interceptor ground teleport failed")
+            print("[SarlTag] WARNING: interceptor ground teleport failed")
         time.sleep(0.3)  # let physics settle the models onto the floor
 
         # 3) Fresh estimator at the new true position, while safely grounded.
@@ -606,7 +606,7 @@ class InterceptNavigation3D(DroneEnvironment):
         #    its re-init resets the filter and the estimate then converges
         #    from sensor data, same as the pre-teleport behaviour).
         if self.drone.emergency_event.is_set():
-            print("[InterceptNavigation3D] Runner emergency latched — ground recovery at spawn")
+            print("[SarlTag] Runner emergency latched — ground recovery at spawn")
             self.restart()  # timeout-guarded link recovery (take-off at the end is harmless here)
         else:
             self._proactive_ekf_reset(
@@ -615,7 +615,7 @@ class InterceptNavigation3D(DroneEnvironment):
             )
         if interceptor_drone is not None:
             if interceptor_drone.emergency_event.is_set():
-                print("[InterceptNavigation3D] Interceptor emergency latched — ground recovery at spawn")
+                print("[SarlTag] Interceptor emergency latched — ground recovery at spawn")
                 self._recover_interceptor_if_dead(force=True)
             else:
                 self._proactive_ekf_reset(
@@ -636,7 +636,7 @@ class InterceptNavigation3D(DroneEnvironment):
         drone = getattr(self.interceptor.body, "drone", None)
         if drone is None:
             return
-        print("[InterceptNavigation3D] Interceptor appears dead — recovering it")
+        print("[SarlTag] Interceptor appears dead — recovering it")
         # Never recover airborne: _recover_drone's re-init resets the EKF, and an
         # airborne EKF reset is the thrust-spike launch. A drift past the death
         # line leaves the interceptor flying, so land it first (best-effort — a
@@ -653,9 +653,9 @@ class InterceptNavigation3D(DroneEnvironment):
             if self._recover_drone(drone):
                 drone.take_off()
                 if not drone.is_flying_event.wait(timeout=15):
-                    print("[InterceptNavigation3D] WARNING: interceptor did not confirm takeoff after recovery")
+                    print("[SarlTag] WARNING: interceptor did not confirm takeoff after recovery")
         except Exception as exc:
-            print(f"[InterceptNavigation3D] Interceptor recovery exception: {exc}")
+            print(f"[SarlTag] Interceptor recovery exception: {exc}")
 
     def _position_past_containment(self, pos) -> bool:
         """True if `pos` has drifted past the containment lines (toward the kill)."""
@@ -688,7 +688,7 @@ class InterceptNavigation3D(DroneEnvironment):
                 continue
             if self._position_past_containment(pos):
                 attempts += 1
-                print(f"[InterceptNavigation3D] Interceptor drifting during spawn move "
+                print(f"[SarlTag] Interceptor drifting during spawn move "
                       f"(pos={[round(p, 2) for p in pos]}) — aborting move + letting it settle "
                       f"(attempt {attempts}/{max_attempts})")
                 drone = getattr(self.interceptor.body, "drone", None)
@@ -699,7 +699,7 @@ class InterceptNavigation3D(DroneEnvironment):
                     except Exception:
                         pass
                 if attempts >= max_attempts:
-                    print("[InterceptNavigation3D] Interceptor spawn move kept diverging — ground recovery")
+                    print("[SarlTag] Interceptor spawn move kept diverging — ground recovery")
                     # Force it: the move diverging past containment IS the proof it
                     # needs re-init, even if a jumped EKF estimate happens not to
                     # trip the position/emergency death checks.
@@ -823,7 +823,7 @@ class InterceptNavigation3D(DroneEnvironment):
                     if not self._collision_event.is_set():
                         self.caught = True
                         self._collision_event.set()
-                        print(f"[InterceptNavigation3D] COLLISION GUARD: drones within "
+                        print(f"[SarlTag] COLLISION GUARD: drones within "
                               f"{separation:.2f} m (< {self.capture_threshold:.2f}) — both stopped")
 
             if not captured and not self._collision_event.is_set():
@@ -931,22 +931,22 @@ class InterceptNavigation3D(DroneEnvironment):
         name = getattr(drone, "agent_id", "drone")
         old_thread = getattr(drone, "thread", None)
         if old_thread is threading.current_thread():
-            print(f"[InterceptNavigation3D] RECOVER {name}: refusing to run from the drone's own thread")
+            print(f"[SarlTag] RECOVER {name}: refusing to run from the drone's own thread")
             return False
 
-        print(f"[InterceptNavigation3D] RECOVER {name}: starting")
+        print(f"[SarlTag] RECOVER {name}: starting")
 
         # 1. Stop all loops and wake anything blocked on the command queue.
         try:
             drone._signal_stop_to_all_threads()
         except Exception as e:
-            print(f"[InterceptNavigation3D] RECOVER {name}: signal error: {e}")
+            print(f"[SarlTag] RECOVER {name}: signal error: {e}")
 
         # 2. CRITICAL: let the old _run thread fully exit before relaunching.
         if old_thread is not None and old_thread.is_alive():
             old_thread.join(timeout=25.0)
             if old_thread.is_alive():
-                print(f"[InterceptNavigation3D] RECOVER {name}: old control thread won't exit — aborting")
+                print(f"[SarlTag] RECOVER {name}: old control thread won't exit — aborting")
                 return False
 
         # 3. Join the remaining workers and reset shared state.
@@ -954,14 +954,14 @@ class InterceptNavigation3D(DroneEnvironment):
             try:
                 getattr(drone, fn)()
             except Exception as e:
-                print(f"[InterceptNavigation3D] RECOVER {name}: {fn} error: {e}")
+                print(f"[SarlTag] RECOVER {name}: {fn} error: {e}")
 
         # 4. Close the link explicitly so a re-open to the same URI can't hang.
         try:
             if getattr(drone, "scf", None) is not None:
                 drone.scf.close_link()
         except Exception as e:
-            print(f"[InterceptNavigation3D] RECOVER {name}: close_link error: {e}")
+            print(f"[SarlTag] RECOVER {name}: close_link error: {e}")
         drone.cf = None
         drone.scf = None
         drone.mc = None
@@ -984,11 +984,11 @@ class InterceptNavigation3D(DroneEnvironment):
         try:
             drone._start_threads_coordinated()
         except Exception as e:
-            print(f"[InterceptNavigation3D] RECOVER {name}: relaunch error: {e}")
+            print(f"[SarlTag] RECOVER {name}: relaunch error: {e}")
             return False
 
         recovered = drone.hardware_ready_event.wait(timeout=20)
-        print(f"[InterceptNavigation3D] RECOVER {name}: {'success' if recovered else 'FAILED'}")
+        print(f"[SarlTag] RECOVER {name}: {'success' if recovered else 'FAILED'}")
         return recovered
 
     def restart(self):
@@ -1002,11 +1002,11 @@ class InterceptNavigation3D(DroneEnvironment):
             self._consecutive_restart_failures = 0
 
         if self._consecutive_restart_failures >= self.MAX_CONSECUTIVE_RESTART_ATTEMPTS:
-            print("[InterceptNavigation3D] Skipping restart — too many consecutive "
+            print("[SarlTag] Skipping restart — too many consecutive "
                   "failures; the simulator may need a manual restart")
             return False
 
-        print("[InterceptNavigation3D] Auto-restarting runner (no user input required)")
+        print("[SarlTag] Auto-restarting runner (no user input required)")
 
         done_event = threading.Event()
         success_holder = [False]
@@ -1032,7 +1032,7 @@ class InterceptNavigation3D(DroneEnvironment):
                     if self.drone.is_flying_event.wait(timeout=15):
                         success_holder[0] = True
             except Exception as exc:
-                print(f"[InterceptNavigation3D] Restart exception: {exc}")
+                print(f"[SarlTag] Restart exception: {exc}")
             finally:
                 done_event.set()
 
@@ -1040,7 +1040,7 @@ class InterceptNavigation3D(DroneEnvironment):
         thread.start()
 
         if not done_event.wait(timeout=self.RESTART_TIMEOUT_SECONDS):
-            print(f"[InterceptNavigation3D] Restart timed out after "
+            print(f"[SarlTag] Restart timed out after "
                   f"{self.RESTART_TIMEOUT_SECONDS}s — abandoning attempt")
             self._consecutive_restart_failures += 1
             return False
@@ -1049,7 +1049,7 @@ class InterceptNavigation3D(DroneEnvironment):
             self._consecutive_restart_failures = 0
             return True
 
-        print("[InterceptNavigation3D] WARNING: runner did not confirm takeoff after restart")
+        print("[SarlTag] WARNING: runner did not confirm takeoff after restart")
         self._consecutive_restart_failures += 1
         return False
 
@@ -1107,7 +1107,7 @@ class InterceptNavigation3D(DroneEnvironment):
             # BEFORE the parent reset — super().reset() on a zombie (latched
             # emergency) burns ~30 s re-launching a drone whose control loops
             # refuse every command, times out, and never re-centres it.
-            print("[InterceptNavigation3D] Runner dead at reset entry — recovering before parent reset")
+            print("[SarlTag] Runner dead at reset entry — recovering before parent reset")
             self.restart()
 
         # Parent reset: takeoff, move the runner to (0, 0, spawn z), start
@@ -1130,7 +1130,7 @@ class InterceptNavigation3D(DroneEnvironment):
         pos = self.drone.get_position()
         off_center = math.dist(pos, self.runner_spawn) > 0.8
         if self._runner_is_dead() or off_center:
-            print(f"[InterceptNavigation3D] Runner unhealthy after parent reset "
+            print(f"[SarlTag] Runner unhealthy after parent reset "
                   f"(pos={[round(p, 2) for p in pos]}, off_center={off_center}) — "
                   f"restarting + re-centering")
             self.restart()
@@ -1162,7 +1162,7 @@ class InterceptNavigation3D(DroneEnvironment):
         self.interceptor.reset_policy({"runner_pos": runner_pos, "runner_vel": [0.0, 0.0, 0.0]})
         self.interceptor.prepare_reset(interceptor_spawn)
         if not self._await_interceptor_reset_safely(interceptor_spawn, timeout=15.0):
-            print("[InterceptNavigation3D] WARNING: interceptor did not reach spawn cleanly")
+            print("[SarlTag] WARNING: interceptor did not reach spawn cleanly")
         self.interceptor.start_episode()
         self.interceptor.refresh()
         self._sync_interceptor()
@@ -1213,7 +1213,7 @@ class InterceptNavigation3D(DroneEnvironment):
         runner_dead = self._runner_is_dead()
         if runner_dead or self._drone_is_stuck(runner_pos):
             reason = "dead" if runner_dead else "stuck"
-            print(f"[InterceptNavigation3D] Runner appears {reason} (pos={runner_pos}) — restarting")
+            print(f"[SarlTag] Runner appears {reason} (pos={runner_pos}) — restarting")
             # Hold the interceptor first: restart() can block for up to 60 s,
             # during which its stale pursuit setpoint would keep flying it. The
             # guard's containment brake only catches it past the 2.1 m line;
@@ -1280,7 +1280,7 @@ class InterceptNavigation3D(DroneEnvironment):
                 ipos = self.interceptor.body.get_position()
             except Exception:
                 ipos = self.interceptor_position
-            print(f"[InterceptNavigation3D] Interceptor died mid-episode at "
+            print(f"[SarlTag] Interceptor died mid-episode at "
                   f"pos={[round(p, 2) for p in ipos]} (z={ipos[2]:.2f}) — truncating. "
                   f"z>~2.0 here means a thrust-spike launch past its boundary.")
             self.truncate_next = True
@@ -1501,7 +1501,7 @@ class InterceptNavigation3D(DroneEnvironment):
         try:
             self.interceptor.body.close()
         except Exception as e:
-            print(f"[InterceptNavigation3D] Error closing interceptor: {e}")
+            print(f"[SarlTag] Error closing interceptor: {e}")
         if self.use_simulator:
             self.sim_manager.remove_visual_marker(self.goal_marker_name)
         super().close()
@@ -1587,7 +1587,7 @@ class InterceptNavigation3D(DroneEnvironment):
         ax2.tick_params(axis='both', labelsize=8)
 
         outcome = "Reached Goal" if self.reached_goal else ("Caught" if self.caught else "In Progress")
-        fig.suptitle(f'Intercept-Navigation 3D (Step {self.steps}) | {outcome}', fontsize=13, y=0.98)
+        fig.suptitle(f'SARL Tag (Step {self.steps}) | {outcome}', fontsize=13, y=0.98)
         plt.tight_layout(rect=[0, 0, 1, 0.96])
 
         buf = io.BytesIO()
