@@ -48,7 +48,7 @@ class InterceptNavigation3D(DroneEnvironment):
 
     def __init__(self, use_simulator: Literal[0, 1], max_velocity: float = 0.25, step_time: float = 0.5,
                  exploration_steps: int = 1000, episode_length: int = 80,
-                 interceptor_max_velocity: float = 0.075):
+                 interceptor_max_velocity: float = 0.125):
 
         super().__init__(use_simulator, max_velocity, step_time)
         self.use_simulator = use_simulator
