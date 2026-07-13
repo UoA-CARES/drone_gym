@@ -246,38 +246,65 @@ class InterceptNavigation3D(DroneEnvironment):
         self._episode_count = 0
 
     # ------------------------------------------------------------------
-    # Interceptor expert policy — 3D pure pursuit toward the runner
+    # Interceptor expert policy — 3D Proportional Navigation (PIP)
     # ------------------------------------------------------------------
 
     def _interceptor_pursuit(self, state, context) -> List[float]:
-        """3D pure pursuit: head straight at the runner at interceptor_max_velocity.
+        """3D Proportional Navigation via Predicted Intercept Point (PIP).
 
-        Velocity components that would drive the interceptor further past a soft
-        boundary are zeroed so it slides along walls/ceiling instead of ramming
-        them. ``context['runner_pos']`` is supplied by the task each step.
+        Pure pursuit always steers toward the evader's *current* position,
+        causing a tail-chase that converges slowly. Proportional Navigation
+        (PN) instead drives the line-of-sight angular rate to zero, placing
+        the pursuer on a collision course. For a constant-velocity evader
+        this is equivalent to steering toward the *Predicted Intercept Point*
+        (PIP): where pursuer and evader can arrive simultaneously given the
+        evader's current velocity [1, 2].
+
+        The PIP is solved by fixed-point iteration (2–4 steps suffice):
+            t_go^(0) = |r| / V_pursuer
+            pip^(k)  = runner_pos + runner_vel * t_go^(k)
+            t_go^(k+1) = |pip^(k) − pursuer_pos| / V_pursuer
+
+        References:
+          [1] Shneydor, N. A. (1998). Missile Guidance and Pursuit, Ch. 4.
+          [2] Weintraub, I., Pachter, M., & Garcia, E. (2020). An introduction
+              to pursuit-evasion differential games. Proc. American Control
+              Conference, pp. 1049–1066.
+          [3] Nahin, P. J. (2012). Chases and Escapes, Ch. 3. Princeton UP.
         """
-        pos = state.position
+        pos = np.array(state.position, dtype=float)
         soft = self.xy_limit - 0.3
 
-        # Clamp the pursued point into the arena: a runner that has escaped the
-        # boundary (or a blown-up runner estimate) must never pull the
-        # interceptor's aim-point outside it — chase the nearest in-bounds point
-        # instead, so the interceptor is never *aimed* at the wall.
+        # Clamp the evader's position into the arena: a boundary-escaped runner
+        # must never pull the aim-point outside it.
         runner = context["runner_pos"]
         rx = float(np.clip(runner[0], -soft, soft))
         ry = float(np.clip(runner[1], -soft, soft))
         rz = float(np.clip(runner[2], self.z_min, self.z_max))
+        target_pos = np.array([rx, ry, rz])
 
-        dx = rx - pos[0]
-        dy = ry - pos[1]
-        dz = rz - pos[2]
-        dist = math.sqrt(dx * dx + dy * dy + dz * dz)
+        runner_vel = np.array(context.get("runner_vel", [0.0, 0.0, 0.0]), dtype=float)
 
-        if dist < 1e-6:
+        # Iterative solve for the predicted intercept point.
+        pip = target_pos.copy()
+        for _ in range(4):
+            d = float(np.linalg.norm(pip - pos))
+            if d < 1e-6:
+                break
+            t_go = d / self.interceptor_max_velocity
+            pip = np.array([
+                float(np.clip(target_pos[0] + runner_vel[0] * t_go, -soft, soft)),
+                float(np.clip(target_pos[1] + runner_vel[1] * t_go, -soft, soft)),
+                float(np.clip(target_pos[2] + runner_vel[2] * t_go, self.z_min, self.z_max)),
+            ])
+
+        aim = pip - pos
+        aim_dist = float(np.linalg.norm(aim))
+        if aim_dist < 1e-6:
             return [0.0, 0.0, 0.0]
 
-        scale = self.interceptor_max_velocity / dist
-        vx, vy, vz = scale * dx, scale * dy, scale * dz
+        scale = self.interceptor_max_velocity / aim_dist
+        vx, vy, vz = scale * aim[0], scale * aim[1], scale * aim[2]
         vz = float(np.clip(vz, -self.interceptor_max_velocity_z, self.interceptor_max_velocity_z))
 
         if (pos[0] <= -soft and vx < 0) or (pos[0] >= soft and vx > 0):
@@ -417,12 +444,17 @@ class InterceptNavigation3D(DroneEnvironment):
         self.interceptor_velocity = list(self.interceptor.velocity)
 
     def _command_interceptor(self, runner_pos: List[float]):
-        """Run the expert pursuit policy and command the interceptor (non-blocking).
+        """Run the PN pursuit policy and command the interceptor (non-blocking).
 
         Called before super().step() so the interceptor flies toward the runner
         during the same step_time sleep the runner moves in.
         """
-        self.interceptor.act({"runner_pos": runner_pos})
+        runner_vel = [
+            self.drone.calculated_velocity.get("x", 0.0),
+            self.drone.calculated_velocity.get("y", 0.0),
+            self.drone.calculated_velocity.get("z", 0.0),
+        ]
+        self.interceptor.act({"runner_pos": runner_pos, "runner_vel": runner_vel})
         
     INTERCEPTOR_DEAD_XY = 2.4
 
@@ -1127,7 +1159,7 @@ class InterceptNavigation3D(DroneEnvironment):
         # the spawn — after the teleport that's a vertical-only climb from the
         # right xy already, with a freshly ground-reset estimator. We never
         # reset the EKF airborne (that's the thrust-spike launch).
-        self.interceptor.reset_policy({"runner_pos": runner_pos})
+        self.interceptor.reset_policy({"runner_pos": runner_pos, "runner_vel": [0.0, 0.0, 0.0]})
         self.interceptor.prepare_reset(interceptor_spawn)
         if not self._await_interceptor_reset_safely(interceptor_spawn, timeout=15.0):
             print("[InterceptNavigation3D] WARNING: interceptor did not reach spawn cleanly")
