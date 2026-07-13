@@ -92,6 +92,10 @@ class DroneSetup:
         self.target_velocity = {"x": 0.0, "y": 0.0, "z": 0.0}
         self.max_velocity = {"x": 0.40, "y": 0.40, "z": 0.40} # Maximum velocity in m/s
         # overridden by environment and task max_vel when vel is set using set_velocity_vector and velocity controller is active
+        # Alias: the position-control PID (_calculate_pid_velocity / _calculate_velocity_pid)
+        # references self.max_velocity_dict, which the per-axis refactor never defined.
+        # Point it at the same dict so position control doesn't AttributeError on reset.
+        self.max_velocity_dict = self.max_velocity
         self.position_deadband = (
             0.05  # Position error below which velocity will be zero (in meters)
             # Changed from 0.1 to 0.05 along with position control error
@@ -127,7 +131,7 @@ class DroneSetup:
         self.last_velocity_calculation_time = 0.0
 
         # Drone Safety
-        self.boundaries = {"x": 2.5, "y": 2.5, "z_min": 0.1, "z_max": 3.0} if boundaries is None else boundaries
+        self.boundaries = {"x": 2.5, "y": 2.5, "z_min": -0.5, "z_max": 3.0} if boundaries is None else boundaries
         self.safety_thread = None
         self.in_boundaries = True
         self.emergency_event = Event()

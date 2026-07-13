@@ -48,15 +48,18 @@ class InterceptNavigation3D(DroneEnvironment):
 
     def __init__(self, use_simulator: Literal[0, 1], max_velocity: float = 0.25, step_time: float = 0.5,
                  exploration_steps: int = 1000, episode_length: int = 80,
-                 interceptor_max_velocity: float = 0.075):
+                 interceptor_max_velocity: float = 0.125):
 
         super().__init__(use_simulator, max_velocity, step_time)
         self.use_simulator = use_simulator
 
         # Gentle vertical speed cap — CrazySim's z-velocity control is twitchy and
-        # moving up/down fast destabilises the Crazyflie (shoots to the ceiling,
-        # then crashes). Keep vertical motion slow so the task stays 3D but stable.
-        self.max_velocity_z = 0.10
+        # moving up/down fast destabilises the estimator, which makes the firmware
+        # command a thrust spike that LAUNCHES the drone to the ceiling (a crash we
+        # can't stop from here, since it bypasses our velocity setpoint). Keeping
+        # vertical motion very slow keeps the vertical estimator well-conditioned so
+        # that spike almost never builds — the task stays 3D but much more stable.
+        self.max_velocity_z = 0.03
 
         # RL training parameters
         self.episode_length = episode_length
@@ -69,20 +72,31 @@ class InterceptNavigation3D(DroneEnvironment):
         # 2.0 is the value the stable sibling tasks use — larger boxes mean longer
         # position-control moves on reset, which is exactly what blows up the EKF.
         self.xy_limit = 2.0
-        self.z_min = 0.5
-        self.z_max = 1.5
-        self.fixed_z = 1.0                  # runner reset altitude (centre of the z band)
+        # z-band around the 1.0 m reset height. Vertical stability comes from the
+        # max_velocity_z cap above (slow climbs keep CrazySim's vertical estimator
+        # well-conditioned), so the band can be wide enough for real 3D variety —
+        # it still ends well short of the containment lines (0.25 / 1.8) and the
+        # firmware kill boundary (|z| 2.25).
+        self.z_min = 0.6
+        self.z_max = 1.4
+        self.fixed_z = 1.0                  # centre of the z band (default altitude)
+        # Runner spawn altitude — resampled every episode. Kept a notch inside the
+        # z band so the worst-case vertical gap to a goal (~0.5 m) stays closable
+        # at max_velocity_z within an 80-step episode (0.5 / (0.03 * 0.5) ≈ 34 steps).
+        self.runner_spawn_z_range = (0.8, 1.2)
         self.spawn_margin = 0.5             # keep spawns clear of the xy wall (PID overshoot safety)
         self.goal_margin = 0.3              # keep the goal clear of the xy wall
-        self.z_margin = 0.2                 # keep goal/interceptor spawn off the z floor/ceiling
+        self.z_margin = 0.1                 # keep goal/interceptor spawn off the z floor/ceiling (tight band)
         self.out_of_bounds_tolerance = 0.05  # small grace for PID overshoot at the wall
 
-        # The runner always spawns at the centre (0, 0, fixed_z) — diversity comes
-        # from the random goal + interceptor placement, NOT from moving the runner.
-        # This is the proven-stable pattern from intercept_evader / evade_pursuers:
-        # a long-range reset move on the learner stresses CrazySim's EKF and makes
-        # the drone tumble and fall. The runner still travels a real distance every
-        # episode — to the goal — which is the whole point of the task.
+        # The runner always spawns at the xy centre (0, 0) — lateral diversity
+        # comes from the random goal + interceptor placement, NOT from moving the
+        # runner. This is the proven-stable pattern from intercept_evader /
+        # evade_pursuers: a long-range lateral reset move on the learner stresses
+        # CrazySim's EKF and makes the drone tumble and fall. The spawn ALTITUDE
+        # is resampled each episode (see runner_spawn_z_range): that only changes
+        # the length of the slow, PID-controlled vertical climb out of the ground
+        # teleport, which the max_velocity_z cap keeps gentle.
         self.runner_spawn = [0.0, 0.0, self.fixed_z]
 
         # FAIRNESS — goal placement. The goal must be far enough that a faster
@@ -103,7 +117,7 @@ class InterceptNavigation3D(DroneEnvironment):
         #   * interceptor camped on the goal            -> runner has no chance
         self.intercept_frac = (0.45, 0.65)   # where along the runner->goal path the contest is set up
         self.fairness_jitter = 0.15          # ±15% randomness on the fair lateral distance
-        self.interceptor_z_jitter = 0.3      # vertical variety for the interceptor spawn
+        self.interceptor_z_jitter = 0.25     # vertical variety for the interceptor spawn
         self.min_runner_clearance = 1.0      # interceptor never starts in (near) capture range of the runner
         self.min_goal_clearance = 0.6        # interceptor can't start camped on the goal
 
@@ -114,7 +128,7 @@ class InterceptNavigation3D(DroneEnvironment):
         # actual boundary, leaving room for the drone to coast to a stop instead of
         # sailing through the wall/ceiling on momentum (the out-of-bounds loop).
         self.boundary_brake_margin = 0.25   # xy: start braking this far inside xy_limit
-        self.z_brake_margin = 0.15          # z: start braking this far inside the z band
+        self.z_brake_margin = 0.10          # z: start braking this far inside the z band
 
         self.capture_threshold = 0.30      # metres (3D) — interceptor "catches" the runner (no real collision)
         self.goal_threshold = 0.20         # metres (3D) — runner has reached the goal
@@ -153,15 +167,37 @@ class InterceptNavigation3D(DroneEnvironment):
         # not to SimManager.  SimManager is only responsible for Gazebo visuals.
         self.sim_manager = get_default_sim_manager()
         self.goal_marker_name = "rl_intercept_nav_goal"
-        interceptor_uri = f"udp://0.0.0.0:{self.sim_manager.allocate_port()}"
+        # Runner is on port 19850; interceptor is drone 2 from sitl_multiagent_square -n 2
+        interceptor_uri = "udp://0.0.0.0:19851"
         interceptor_body = CrazyflieBody(
             use_simulator=use_simulator,
             uri=interceptor_uri,
             fixed_z=self.fixed_z,
         )
         interceptor_policy = CallablePolicy(fn=self._interceptor_pursuit)
-        self.interceptor = SimAgent(body=interceptor_body, policy=interceptor_policy)
-        self._interceptor_airborne = False
+        self.interceptor = SimAgent(
+            agent_id=1,
+            body=interceptor_body,
+            policy=interceptor_policy,
+            role="interceptor",
+        )
+
+        # The interceptor repositions via a position-control move to a fresh spawn
+        # EVERY episode, which stresses its EKF. The drone's internal safety monitor
+        # hard-kills (emergency land + disarm) any drone whose |z| > 2.25 — a death
+        # the interceptor can't recover from cleanly. Give its internal boundary
+        # VERTICAL headroom only, so a transient EKF z-overshoot during
+        # re-convergence doesn't trip the destructive kill. Keep xy at the drone
+        # default (2.5, i.e. 0.5 m past the arena wall for PID overshoot) so a
+        # lateral drift is still caught before the interceptor roams far outside
+        # the arena. The task's own out-of-bounds + collision-guard logic
+        # (xy_limit=2.0, z_max=1.4, capture_threshold) still governs episodes.
+        # boundaries uses the post-#28 z_min/z_max schema (the boundary monitor now
+        # checks z_min <= z <= z_max, not abs(z) <= z). A bare "z" key here would
+        # KeyError in the interceptor's boundary thread.
+        interceptor_drone = getattr(self.interceptor.body, "drone", None)
+        if interceptor_drone is not None and hasattr(interceptor_drone, "boundaries"):
+            interceptor_drone.boundaries = {"x": 4, "y": 4, "z_min": -0.5, "z_max": 3.0}
 
         # --- Collision safety monitor ----------------------------------------
         # The RL step is 0.5 s, but a faster interceptor can close >0.25 m within
@@ -174,44 +210,103 @@ class InterceptNavigation3D(DroneEnvironment):
         self._safety_monitor_running = False
         self._safety_thread = None
 
+        # --- Action smoothing (topple prevention) ---------------------------
+        # The velocity controller applies commanded velocity INSTANTLY (its slew
+        # limiter is unwired and max_velocity_change_rate=100 ≈ no limit). SAC is a
+        # maximum-entropy policy, so it outputs high-variance actions that swing
+        # violently between steps (e.g. +0.25 → −0.25 m/s in xy); applying such an
+        # instantaneous velocity reversal pitches the Crazyflie over and flips it in
+        # CrazySim. TD3's near-deterministic actions are smooth and never hit this.
+        # We slew-limit the commanded action per step so every velocity change is
+        # gentle — a full reversal ramps over several steps instead of toppling.
+        #
+        # This slew cap is ALSO a horizontal-acceleration cap, which is the real
+        # lever on the launch bug: to accelerate horizontally the quad must TILT,
+        # and a tilted drone corrupts its own downward altitude sensor (the ToF
+        # z/cos(tilt) model amplifies error), which is what triggers the firmware
+        # thrust-spike launch. Smaller per-step velocity change -> smaller tilt ->
+        # valid altitude estimate. The implied acceleration cap is
+        #   max_action_delta * max_velocity / step_time
+        #   = 0.2 * 0.25 / 0.5 = 0.10 m/s^2   (was 0.20 m/s^2 at 0.4)
+        # i.e. the drone now tilts about half as hard to change course.
+        # Lower this further to reduce tilt/launches more; raise for agility. [0, 2].
+        self.max_action_delta = 0.2
+        self._prev_applied_action = [0.0, 0.0, 0.0]
+
         # Distance tracking for reward calculation
         self.previous_goal_distance = self.max_distance
 
         # Evaluation mode tracking — counts episodes the runner reached the goal
         self.successful_episodes_count = 0
 
-        # EKF drift prevention: reset the Kalman estimator every N episodes so
-        # z-drift can't accumulate to the point where a drone falls mid-episode.
+        # Episode counter (used by reset-time health checks and logging). EKF
+        # drift no longer needs an every-N-episodes cap: the teleport reset
+        # lands both drones and re-seeds their estimators on the ground EVERY
+        # episode, so drift can never accumulate past a single episode.
         self._episode_count = 0
-        self._ekf_reset_interval = 15
 
     # ------------------------------------------------------------------
-    # Interceptor expert policy — 3D pure pursuit toward the runner
+    # Interceptor expert policy — 3D Proportional Navigation (PIP)
     # ------------------------------------------------------------------
 
     def _interceptor_pursuit(self, state, context) -> List[float]:
-        """3D pure pursuit: head straight at the runner at interceptor_max_velocity.
+        """3D Proportional Navigation via Predicted Intercept Point (PIP).
 
-        Velocity components that would drive the interceptor further past a soft
-        boundary are zeroed so it slides along walls/ceiling instead of ramming
-        them. ``context['runner_pos']`` is supplied by the task each step.
+        Pure pursuit always steers toward the evader's *current* position,
+        causing a tail-chase that converges slowly. Proportional Navigation
+        (PN) instead drives the line-of-sight angular rate to zero, placing
+        the pursuer on a collision course. For a constant-velocity evader
+        this is equivalent to steering toward the *Predicted Intercept Point*
+        (PIP): where pursuer and evader can arrive simultaneously given the
+        evader's current velocity [1, 2].
+
+        The PIP is solved by fixed-point iteration (2–4 steps suffice):
+            t_go^(0) = |r| / V_pursuer
+            pip^(k)  = runner_pos + runner_vel * t_go^(k)
+            t_go^(k+1) = |pip^(k) − pursuer_pos| / V_pursuer
+
+        References:
+          [1] Shneydor, N. A. (1998). Missile Guidance and Pursuit, Ch. 4.
+          [2] Weintraub, I., Pachter, M., & Garcia, E. (2020). An introduction
+              to pursuit-evasion differential games. Proc. American Control
+              Conference, pp. 1049–1066.
+          [3] Nahin, P. J. (2012). Chases and Escapes, Ch. 3. Princeton UP.
         """
+        pos = np.array(state.position, dtype=float)
+        soft = self.xy_limit - 0.3
+
+        # Clamp the evader's position into the arena: a boundary-escaped runner
+        # must never pull the aim-point outside it.
         runner = context["runner_pos"]
-        pos = state.position
+        rx = float(np.clip(runner[0], -soft, soft))
+        ry = float(np.clip(runner[1], -soft, soft))
+        rz = float(np.clip(runner[2], self.z_min, self.z_max))
+        target_pos = np.array([rx, ry, rz])
 
-        dx = runner[0] - pos[0]
-        dy = runner[1] - pos[1]
-        dz = runner[2] - pos[2]
-        dist = math.sqrt(dx * dx + dy * dy + dz * dz)
+        runner_vel = np.array(context.get("runner_vel", [0.0, 0.0, 0.0]), dtype=float)
 
-        if dist < 1e-6:
+        # Iterative solve for the predicted intercept point.
+        pip = target_pos.copy()
+        for _ in range(4):
+            d = float(np.linalg.norm(pip - pos))
+            if d < 1e-6:
+                break
+            t_go = d / self.interceptor_max_velocity
+            pip = np.array([
+                float(np.clip(target_pos[0] + runner_vel[0] * t_go, -soft, soft)),
+                float(np.clip(target_pos[1] + runner_vel[1] * t_go, -soft, soft)),
+                float(np.clip(target_pos[2] + runner_vel[2] * t_go, self.z_min, self.z_max)),
+            ])
+
+        aim = pip - pos
+        aim_dist = float(np.linalg.norm(aim))
+        if aim_dist < 1e-6:
             return [0.0, 0.0, 0.0]
 
-        scale = self.interceptor_max_velocity / dist
-        vx, vy, vz = scale * dx, scale * dy, scale * dz
+        scale = self.interceptor_max_velocity / aim_dist
+        vx, vy, vz = scale * aim[0], scale * aim[1], scale * aim[2]
         vz = float(np.clip(vz, -self.interceptor_max_velocity_z, self.interceptor_max_velocity_z))
 
-        soft = self.xy_limit - 0.3
         if (pos[0] <= -soft and vx < 0) or (pos[0] >= soft and vx > 0):
             vx = 0.0
         if (pos[1] <= -soft and vy < 0) or (pos[1] >= soft and vy > 0):
@@ -349,41 +444,209 @@ class InterceptNavigation3D(DroneEnvironment):
         self.interceptor_velocity = list(self.interceptor.velocity)
 
     def _command_interceptor(self, runner_pos: List[float]):
-        """Run the expert pursuit policy and command the interceptor (non-blocking).
+        """Run the PN pursuit policy and command the interceptor (non-blocking).
 
         Called before super().step() so the interceptor flies toward the runner
         during the same step_time sleep the runner moves in.
         """
-        self.interceptor.act({"runner_pos": runner_pos})
+        runner_vel = [
+            self.drone.calculated_velocity.get("x", 0.0),
+            self.drone.calculated_velocity.get("y", 0.0),
+            self.drone.calculated_velocity.get("z", 0.0),
+        ]
+        self.interceptor.act({"runner_pos": runner_pos, "runner_vel": runner_vel})
+        
+    INTERCEPTOR_DEAD_XY = 2.4
 
     def _interceptor_is_dead(self) -> bool:
-        """Detect an interceptor whose EKF blew up or that has fallen."""
-        try:
-            return self._drone_is_dead(self.interceptor.body.get_position())
-        except Exception:
-            return False
+        """Detect an interceptor whose EKF blew up, that has fallen, or that has
+        drifted clean out of the arena.
 
-    def _proactive_ekf_reset(self, drone) -> None:
-        """Lightweight Kalman-filter reset — clears z-drift without a full reconnect.
+        Detection is POSITION-based only, deliberately. We do NOT key off the
+        drone's emergency_event: that flag is set by transient connection
+        blips during a recovery/reconnect, and reacting to it triggers yet another
+        recovery — a feedback loop that turns one death into an unrecoverable
+        restart storm across both drones. A real out-of-arena divergence shows up
+        as a bad POSITION, which is unambiguous and self-clearing once recovery
+        repositions the drone.
 
-        Safe to call while the drone is airborne: the EKF briefly re-converges
-        (< 0.5 s in CrazySim) before the subsequent position-control move starts.
+        Guard against the (0,0,0) placeholder a drone reports mid-recovery: it is
+        NOT a real position.
         """
         try:
-            if getattr(drone, "cf", None) is not None:
-                drone.cf.param.set_value("kalman.resetEstimation", "1")
-                time.sleep(0.4)
+            pos = self.interceptor.body.get_position()
+        except Exception:
+            return False
+        if pos[0] == 0.0 and pos[1] == 0.0 and pos[2] == 0.0:
+            return False  # placeholder during (re)init — not a real reading
+        if self._drone_is_dead(pos):
+            return True
+        if abs(pos[0]) > self.INTERCEPTOR_DEAD_XY or abs(pos[1]) > self.INTERCEPTOR_DEAD_XY:
+            return True
+        return False
+
+    def _proactive_ekf_reset(self, drone, position: List[float] | None = None) -> None:
+        """Kalman-filter reset. DANGEROUS while airborne — DO NOT call in flight.
+
+        Resetting the EKF mid-air makes the estimator emit a brief burst of garbage
+        state, and the onboard controller responds with a thrust spike that
+        "launches" the drone to the ceiling and out of the arena before it stalls
+        and falls. EKF resets must happen on the ground, via the recovery path
+        (_recover_drone re-inits the link and resets the filter safely). This helper
+        is retained only for that ground-level use.
+
+        When ``position`` is given, the filter is seeded with it (via the
+        kalman.initialX/Y/Z firmware params) before the reset, so the estimate
+        STARTS at the drone's new true position instead of having to converge
+        onto it from sensor data — this is how we "tell" a just-teleported
+        drone where it now is. (Velocity needs no seeding: the reset zeroes the
+        velocity state, and a landed drone's true velocity IS zero.)
+        """
+        try:
+            if getattr(drone, "cf", None) is None:
+                return
+            if position is not None:
+                try:
+                    drone.cf.param.set_value("kalman.initialX", f"{float(position[0])}")
+                    drone.cf.param.set_value("kalman.initialY", f"{float(position[1])}")
+                    drone.cf.param.set_value("kalman.initialZ", f"{float(position[2])}")
+                except Exception as exc:
+                    print(f"[InterceptNavigation3D] EKF position seed warning "
+                          f"(continuing with plain reset): {exc}")
+            drone.cf.param.set_value("kalman.resetEstimation", "1")
+            time.sleep(0.4)
         except Exception as exc:
             print(f"[InterceptNavigation3D] EKF reset warning: {exc}")
 
-    def _recover_interceptor_if_dead(self):
-        """Re-initialise + take off the interceptor if it has died, before an episode."""
-        if not self._interceptor_is_dead():
+    # ------------------------------------------------------------------
+    # Teleport reset — land, move the MODELS to their spawns, take off fresh
+    # ------------------------------------------------------------------
+
+    # Gazebo model ids: sitl_multiagent spawns crazyflie_{i} bound to udp port
+    # 19850+i (the same convention the MARL environment's teleport uses), so
+    # the runner (19850) is model 0 and the interceptor (19851) is model 1.
+    RUNNER_GAZEBO_ID = 0
+    INTERCEPTOR_GAZEBO_ID = 1
+    GROUND_Z = 0.02  # resting height for a ground teleport
+
+    def _land_for_teleport(self, drone) -> None:
+        """Best-effort: stop controllers and land one drone so its motors are
+        idle for the teleport. A dead link just falls through — the teleport
+        doesn't need the drone's cooperation, only Gazebo's."""
+        try:
+            if getattr(drone, "velocity_controller_active", False):
+                drone.stop_velocity_control()
+            if getattr(drone, "position_controller_active", False):
+                drone.stop_position_control()
+            drone.set_velocity_vector(0, 0, 0)
+            drone.land()
+        except Exception as exc:
+            print(f"[InterceptNavigation3D] Land-for-teleport warning "
+                  f"({getattr(drone, 'agent_id', '?')}): {exc}")
+
+    def _teleport_reset_both(self, interceptor_spawn: List[float]) -> None:
+        """Land both drones, TELEPORT their Gazebo models to the new spawns on
+        the floor, and re-seed the estimators on the ground.
+
+        This is the dead-drone fix: nobody flies home between episodes. The old
+        reset repositioned the interceptor across the whole arena via position
+        control (the #1 EKF stressor) and needed a crashed drone to fly back
+        from wherever it died — impossible for a dead one. Instead the episode
+        simply *starts* with each model at its spawn:
+
+          1. land both drones together (motors idle — teleporting a model out
+             from under a flying controller looks like a massive position
+             error, the same crash family as the airborne EKF reset),
+          2. set_pose each model to its spawn xy on the floor, LEVEL — which
+             also rights a toppled drone, previously an unrecoverable state,
+          3. reset each EKF on the ground (the safe reset) so the estimator
+             converges at the spawn, not the crash site; a drone with a
+             latched emergency gets the full link recovery instead, which
+             re-inits + resets its filter as part of bring-up.
+
+        Take-off happens afterwards: the parent reset lifts the runner and
+        prepare_reset lifts the interceptor — both now vertical-only moves.
+        If a teleport service call fails, the drones are simply left where
+        they landed and those same moves degrade to the old fly-to-spawn
+        behaviour.
+        """
+        interceptor_drone = getattr(self.interceptor.body, "drone", None)
+
+        # 1) Land both together (parallel descent), then wait for both.
+        self._land_for_teleport(self.drone)
+        if interceptor_drone is not None:
+            self._land_for_teleport(interceptor_drone)
+        for d in (self.drone, interceptor_drone):
+            if d is None:
+                continue
+            try:
+                if not d.is_landed_event.wait(timeout=15):
+                    print(f"[InterceptNavigation3D] WARNING: {getattr(d, 'agent_id', '?')} "
+                          f"did not confirm landing before teleport")
+            except Exception:
+                pass
+
+        # 2) Teleport the models to their spawns, flat on the floor.
+        if not self.sim_manager.set_drone_pose(
+                self.RUNNER_GAZEBO_ID,
+                self.runner_spawn[0], self.runner_spawn[1], self.GROUND_Z,
+                orientation=(0.0, 0.0, 0.0)):
+            print("[InterceptNavigation3D] WARNING: runner ground teleport failed")
+        if not self.sim_manager.set_drone_pose(
+                self.INTERCEPTOR_GAZEBO_ID,
+                interceptor_spawn[0], interceptor_spawn[1], self.GROUND_Z,
+                orientation=(0.0, 0.0, 0.0)):
+            print("[InterceptNavigation3D] WARNING: interceptor ground teleport failed")
+        time.sleep(0.3)  # let physics settle the models onto the floor
+
+        # 3) Fresh estimator at the new true position, while safely grounded.
+        #    The reset is seeded with the teleported pose (kalman.initialX/Y/Z)
+        #    so the estimate starts exactly where the drone now is. Latched-
+        #    emergency drones get the full link recovery instead (unseeded —
+        #    its re-init resets the filter and the estimate then converges
+        #    from sensor data, same as the pre-teleport behaviour).
+        if self.drone.emergency_event.is_set():
+            print("[InterceptNavigation3D] Runner emergency latched — ground recovery at spawn")
+            self.restart()  # timeout-guarded link recovery (take-off at the end is harmless here)
+        else:
+            self._proactive_ekf_reset(
+                self.drone,
+                position=[self.runner_spawn[0], self.runner_spawn[1], self.GROUND_Z],
+            )
+        if interceptor_drone is not None:
+            if interceptor_drone.emergency_event.is_set():
+                print("[InterceptNavigation3D] Interceptor emergency latched — ground recovery at spawn")
+                self._recover_interceptor_if_dead(force=True)
+            else:
+                self._proactive_ekf_reset(
+                    interceptor_drone,
+                    position=[interceptor_spawn[0], interceptor_spawn[1], self.GROUND_Z],
+                )
+        time.sleep(0.5)  # give the estimators a beat to converge at the spawns
+
+    def _recover_interceptor_if_dead(self, force: bool = False):
+        """Re-initialise + take off the interceptor if it has died, before an episode.
+
+        force=True skips the death heuristics and recovers unconditionally 
+        used when the caller already has proof the interceptor is unusable (e.g.
+        the spawn-reposition move kept diverging past containment).
+        """
+        if not force and not self._interceptor_is_dead():
             return
         drone = getattr(self.interceptor.body, "drone", None)
         if drone is None:
             return
         print("[InterceptNavigation3D] Interceptor appears dead — recovering it")
+        # Never recover airborne: _recover_drone's re-init resets the EKF, and an
+        # airborne EKF reset is the thrust-spike launch. A drift past the death
+        # line leaves the interceptor flying, so land it first (best-effort — a
+        # dead link just falls through to the recovery below).
+        try:
+            if drone.is_flying_event.is_set():
+                drone.land()
+                drone.is_landed_event.wait(timeout=10)
+        except Exception:
+            pass
         try:
             # Same survivable-recovery path as the runner: clears the latched
             # emergency, relaunches threads, re-inits the link + resets the EKF.
@@ -394,11 +657,73 @@ class InterceptNavigation3D(DroneEnvironment):
         except Exception as exc:
             print(f"[InterceptNavigation3D] Interceptor recovery exception: {exc}")
 
+    def _position_past_containment(self, pos) -> bool:
+        """True if `pos` has drifted past the containment lines (toward the kill)."""
+        return (abs(pos[0]) > self.CONTAINMENT_XY or
+                abs(pos[1]) > self.CONTAINMENT_XY or
+                pos[2] > self.CONTAINMENT_Z_HIGH or
+                pos[2] < self.CONTAINMENT_Z_LOW)
+
+    def _await_interceptor_reset_safely(self, spawn: List[float], timeout: float = 15.0) -> bool:
+        """Wait for the interceptor to reach its spawn, aborting + re-centering if it drifts.
+
+        The position-control move to spawn is the one interceptor motion not covered
+        by the per-step velocity clamp, so a diverging EKF can drive it toward the
+        fatal kill boundary during the move. Poll the reset event; if the drone
+        drifts past a containment line before arriving, abort the move and let it
+        settle, then retry from the same target. We do NOT reset the EKF in the air
+        here — an airborne Kalman reset triggers the thrust-spike "launch". After a
+        few failed attempts, hand off to ground recovery (which resets the EKF
+        safely) rather than looping into the kill.
+        """
+        deadline = time.time() + timeout
+        attempts = 0
+        max_attempts = 3
+        while time.time() < deadline:
+            if self.interceptor.await_reset(timeout=0.2):
+                return True
+            try:
+                pos = self.interceptor.body.get_position()
+            except Exception:
+                continue
+            if self._position_past_containment(pos):
+                attempts += 1
+                print(f"[InterceptNavigation3D] Interceptor drifting during spawn move "
+                      f"(pos={[round(p, 2) for p in pos]}) — aborting move + letting it settle "
+                      f"(attempt {attempts}/{max_attempts})")
+                drone = getattr(self.interceptor.body, "drone", None)
+                if drone is not None:
+                    try:
+                        drone.stop_position_control()
+                        drone.set_velocity_vector(0, 0, 0)
+                    except Exception:
+                        pass
+                if attempts >= max_attempts:
+                    print("[InterceptNavigation3D] Interceptor spawn move kept diverging — ground recovery")
+                    # Force it: the move diverging past containment IS the proof it
+                    # needs re-init, even if a jumped EKF estimate happens not to
+                    # trip the position/emergency death checks.
+                    self._recover_interceptor_if_dead(force=True)
+                    return False
+                time.sleep(0.3)  # let it settle in place before retrying the move
+                self.interceptor.prepare_reset(spawn)
+        return False
+
     # ------------------------------------------------------------------
     # Collision safety monitor — zeroes both drones within capture_threshold
     # ------------------------------------------------------------------
 
     SAFETY_MONITOR_HZ = 20.0  # how often the background monitor checks separation
+
+    # Containment thresholds — the guard steers a drone back inside once it
+    # crosses these. Set ABOVE normal operation (the step clamp keeps the runner
+    # inside ~xy 1.75 / z 0.7-1.3, and interceptor spawns sit within ±1.5 / 0.7-1.3)
+    # but well BELOW the drone's internal fatal kill boundary (xy 2.5, z 2.25;
+    # interceptor z 3.0). That gap is the runway the guard uses to correct a
+    # drifting/overshooting drone before the destructive emergency-land can fire.
+    CONTAINMENT_XY = 2.1
+    CONTAINMENT_Z_HIGH = 1.8
+    CONTAINMENT_Z_LOW = 0.25
 
     def _stop_both_drones(self):
         """Immediately command zero velocity to the runner and the interceptor."""
@@ -408,6 +733,22 @@ class InterceptNavigation3D(DroneEnvironment):
             pass
         try:
             self.interceptor.body.apply_velocity(0, 0, 0)
+            self.interceptor.velocity = [0.0, 0.0, 0.0]
+        except Exception:
+            pass
+
+    def _freeze_interceptor(self):
+        """Zero the interceptor's velocity setpoint (setpoints persist until replaced).
+
+        Must be called before any long runner-handling window (reset, restart,
+        ground EKF reset): otherwise the interceptor keeps flying on its stale
+        pursuit command — typically toward the wall the runner just died beyond —
+        for the whole window (up to 60 s for a restart) and coasts past its own
+        internal boundary into the emergency kill. This is the "interceptor
+        follows the dead runner and dies too" failure.
+        """
+        try:
+            self.interceptor.body.apply_velocity(0.0, 0.0, 0.0)
             self.interceptor.velocity = [0.0, 0.0, 0.0]
         except Exception:
             pass
@@ -427,28 +768,78 @@ class InterceptNavigation3D(DroneEnvironment):
             self._safety_thread = None
 
     def _safety_monitor_loop(self):
-        """Continuously stop both drones the instant they are within capture_threshold (3D).
+        """Background guard: stop both drones on capture, and brake either drone
+        that approaches the fatal boundary (3D).
 
-        Runs much faster than the RL step so the two drones cannot blow past the
-        0.3 m safety distance inside a single 0.5 s step. Once a collision is
-        latched, it keeps re-zeroing both drones until reset clears the flag.
+        Runs much faster than the RL step so neither drone can blow past the 0.3 m
+        capture distance — nor coast into the internal kill boundary — inside a
+        single 0.5 s step. Priorities each tick:
+          1. If within capture_threshold: stop both drones and latch the collision.
+          2. Otherwise, if a drone has crossed a containment line: BRAKE it (zero
+             velocity) so it halts before the drone's internal emergency-land
+             boundary (the "outside boundary crash").
+
+        Containment deliberately BRAKES rather than driving the drone back inward:
+        commanding an inward velocity from this background thread fights the RL /
+        pursuit velocity command and the sudden setpoint reversal topples the
+        Crazyflie in CrazySim. Zeroing velocity is the same proven-safe operation
+        the collision guard uses, and still halts the drone (~0.4 m short of the
+        kill boundary); the episode then ends out-of-bounds and reset recovers.
         """
         dt = 1.0 / self.SAFETY_MONITOR_HZ
+
+        # A drone that is (re)initialising — e.g. mid-recovery, before its
+        # position system is up — reports exactly (0,0,0). Treating that as a
+        # real position makes the guard "see" a ~0 m separation and latch a
+        # BOGUS capture, which cascades into spurious truncations and a
+        # two-drone restart storm.
+        def _placeholder(p):
+            return p[0] == 0.0 and p[1] == 0.0 and p[2] == 0.0
+
         while self._safety_monitor_running:
+            # Read each drone independently: one drone being mid-recovery
+            # (placeholder position or a raising link) must NOT disable the
+            # containment brake for the OTHER drone — that gap is exactly how
+            # the interceptor used to sail out after its stale pursuit command
+            # while the runner was being recovered.
+            rp = ip = None
             try:
                 rp = self.drone.get_position()
+            except Exception:
+                pass
+            try:
                 ip = self.interceptor.body.get_position()
-                separation = math.sqrt((rp[0] - ip[0]) ** 2 + (rp[1] - ip[1]) ** 2 + (rp[2] - ip[2]) ** 2)
+            except Exception:
+                pass
+            rp_ok = rp is not None and not _placeholder(rp)
+            ip_ok = ip is not None and not _placeholder(ip)
 
+            captured = False
+            if rp_ok and ip_ok:
+                separation = math.sqrt((rp[0] - ip[0]) ** 2 + (rp[1] - ip[1]) ** 2 + (rp[2] - ip[2]) ** 2)
                 if separation < self.capture_threshold:
+                    captured = True
                     self._stop_both_drones()
                     if not self._collision_event.is_set():
                         self.caught = True
                         self._collision_event.set()
                         print(f"[InterceptNavigation3D] COLLISION GUARD: drones within "
                               f"{separation:.2f} m (< {self.capture_threshold:.2f}) — both stopped")
-            except Exception:
-                pass
+
+            if not captured and not self._collision_event.is_set():
+                # Containment — brake (not reverse) any drone past the line,
+                # each judged on its own (valid) reading only.
+                if rp_ok and self._position_past_containment(rp):
+                    try:
+                        self.drone.set_velocity_vector(0, 0, 0)
+                    except Exception:
+                        pass
+                if ip_ok and self._position_past_containment(ip):
+                    try:
+                        self.interceptor.body.apply_velocity(0, 0, 0)
+                        self.interceptor.velocity = [0.0, 0.0, 0.0]
+                    except Exception:
+                        pass
             time.sleep(dt)
 
     # ------------------------------------------------------------------
@@ -476,6 +867,24 @@ class InterceptNavigation3D(DroneEnvironment):
         if z > self.z_max + 0.5:
             return True
         return False
+
+    def _runner_is_dead(self) -> bool:
+        """Runner-specific death check: position heuristics OR a latched emergency.
+
+        The sim emergency stop latches emergency_event WITHOUT disarming, so a
+        boundary-killed runner can be re-launched by the parent reset's take_off
+        and hover at its crash site while every control loop (all gated on
+        emergency_event) refuses commands — a "zombie" whose position (e.g.
+        x=2.6, z=1.0) looks perfectly alive to the position heuristics. The
+        latched flag is the one unambiguous signature of that state, and
+        restart() -> _recover_drone clears it. (Interceptor detection stays
+        position-only: its recovery path sees transient emergency blips from
+        reconnects, which the runner — recovered synchronously from the env
+        thread — does not.)
+        """
+        if self.drone.emergency_event.is_set():
+            return True
+        return self._drone_is_dead(self.drone.get_position())
 
     def _drone_is_stuck(self, position: List[float]) -> bool:
         """Detect a frozen drone reporting the same position every step."""
@@ -604,6 +1013,17 @@ class InterceptNavigation3D(DroneEnvironment):
 
         def _do_restart():
             try:
+                # Never recover airborne: _recover_drone's re-init resets the EKF,
+                # and an airborne EKF reset is the thrust-spike launch. A zombie
+                # runner (latched emergency) may well be hovering — the parent
+                # reset re-launches it because the sim emergency stop never
+                # disarms. Land first (best-effort; a dead link falls through).
+                if self.drone.is_flying_event.is_set():
+                    try:
+                        self.drone.land()
+                        self.drone.is_landed_event.wait(timeout=10)
+                    except Exception:
+                        pass
                 # _recover_drone clears the latched emergency_event and relaunches
                 # the drone's worker threads (which re-init the link + reset the
                 # EKF), making a blow-up survivable instead of permanently fatal.
@@ -638,7 +1058,14 @@ class InterceptNavigation3D(DroneEnvironment):
     # ------------------------------------------------------------------
 
     def reset(self, training: bool = True):
-        """Keep the runner centred, place a fresh 3D goal, and seed the interceptor."""
+        """Teleport both drones to fresh spawns (sim) and start a new episode.
+
+        Sim resets never fly anyone home: both drones land, their MODELS are
+        teleported to the new spawn points on the ground, estimators re-seed
+        there, and take-off is the only flight before the episode begins. On
+        real hardware (no teleport available) this falls back to the old
+        fly-to-spawn reset.
+        """
 
         if not training and not self._is_evaluating:
             self.successful_episodes_count = 0
@@ -650,7 +1077,42 @@ class InterceptNavigation3D(DroneEnvironment):
         self._stop_safety_monitor()
         self._collision_event.clear()
 
-        # Parent reset: takeoff, centre the runner at (0, 0, fixed_z), start velocity control.
+        # Hold the interceptor for the whole reset: with the guard paused, its
+        # last pursuit setpoint would otherwise keep flying it (typically toward
+        # the wall a dying runner just crossed) for however long the runner
+        # handling below takes.
+        self._freeze_interceptor()
+
+        self._episode_count += 1
+
+        # Vertical variety: resample the runner's spawn altitude each episode.
+        # xy stays pinned at the centre (long lateral reset moves are the #1 EKF
+        # stressor); the fresh z only changes the length of the slow vertical
+        # climb after take-off. The parent reset targets reset_position.
+        self.runner_spawn[2] = float(np.random.uniform(*self.runner_spawn_z_range))
+        self.reset_position = list(self.runner_spawn)
+
+        # Sample the new geometry up front — the runner always starts at
+        # runner_spawn, so nothing here depends on live drone positions.
+        self.goal_position = self._sample_goal(self.runner_spawn)
+        interceptor_spawn = self._sample_interceptor_spawn(self.runner_spawn, self.goal_position)
+
+        if self.use_simulator:
+            # Land + teleport both models to their spawns + ground EKF reset.
+            # Dead / toppled / boundary-killed drones are recovered here by
+            # construction — no flight back from a crash site is ever needed.
+            self._teleport_reset_both(interceptor_spawn)
+        elif self._episode_count > 1 and self._runner_is_dead():
+            # Real hardware: no teleport available. Recover a dead runner
+            # BEFORE the parent reset — super().reset() on a zombie (latched
+            # emergency) burns ~30 s re-launching a drone whose control loops
+            # refuse every command, times out, and never re-centres it.
+            print("[InterceptNavigation3D] Runner dead at reset entry — recovering before parent reset")
+            self.restart()
+
+        # Parent reset: takeoff, move the runner to (0, 0, spawn z), start
+        # velocity control. After a teleport the runner is already at the spawn
+        # xy, so this is a short vertical-only climb — not a cross-arena move.
         super().reset(training)
 
         # Stop the velocity controller that the parent started — the runner should hold
@@ -660,27 +1122,30 @@ class InterceptNavigation3D(DroneEnvironment):
             self.drone.stop_velocity_control()
         self.drone.set_velocity_vector(0, 0, 0)
 
-        # If the parent's position-control move blew up the EKF, restart the runner.
-        if self._drone_is_dead(self.drone.get_position()):
-            print("[InterceptNavigation3D] EKF blow-up detected after parent reset — restarting runner")
+        # Verify the re-centre actually happened. This catches every failure
+        # mode regardless of which heuristic missed it: a dead/zombie runner, an
+        # EKF blow-up, or a position move that silently timed out all leave the
+        # runner far from the spawn. Recover, then retry the parent reset ONCE
+        # so the episode starts with a healthy, centred drone.
+        pos = self.drone.get_position()
+        off_center = math.dist(pos, self.runner_spawn) > 0.8
+        if self._runner_is_dead() or off_center:
+            print(f"[InterceptNavigation3D] Runner unhealthy after parent reset "
+                  f"(pos={[round(p, 2) for p in pos]}, off_center={off_center}) — "
+                  f"restarting + re-centering")
             self.restart()
+            super().reset(training)
+            if self.drone.velocity_controller_active:
+                self.drone.stop_velocity_control()
+            self.drone.set_velocity_vector(0, 0, 0)
 
-        # On the first reset, make sure the interceptor is airborne before we fly it.
-        if not self._interceptor_airborne:
-            self.interceptor.ensure_airborne()
-            self.interceptor.await_airborne(timeout=15.0)
-            self._interceptor_airborne = True
+        # Real hardware only: recover the interceptor if it died. (In sim the
+        # teleport reset above already handled every dead-interceptor case.)
+        if not self.use_simulator:
+            self._recover_interceptor_if_dead()
 
-        # If the interceptor's EKF blew up (or it fell), re-initialise it before use.
-        self._recover_interceptor_if_dead()
-
-        # 1) The runner stays where the parent reset left it — the centre (0, 0, fixed_z).
-        #    No long-range position move on the learner (the EKF stressor).
+        # The runner stays where the parent reset left it — the centre (0, 0, fixed_z).
         runner_pos = self.drone.get_position()
-
-        # 2) Sample the goal (far from the runner) and the interceptor spawn (on the path).
-        self.goal_position = self._sample_goal(runner_pos)
-        interceptor_spawn = self._sample_interceptor_spawn(runner_pos, self.goal_position)
 
         # Draw the goal marker in Gazebo.
         if self.use_simulator:
@@ -689,18 +1154,15 @@ class InterceptNavigation3D(DroneEnvironment):
                 marker_name=self.goal_marker_name,
             )
 
-        # 3) Fly the interceptor to its spawn, then arm it for the episode.
-        self._episode_count += 1
-        if self._episode_count % self._ekf_reset_interval == 0:
-            print(f"[InterceptNavigation3D] Proactive EKF reset (episode {self._episode_count})")
-            interceptor_drone = getattr(self.interceptor.body, "drone", None)
-            if interceptor_drone is not None:
-                self._proactive_ekf_reset(interceptor_drone)
-
-        self.interceptor.reset_policy({"runner_pos": runner_pos})
+        # Bring the interceptor up at its spawn and arm it for the episode.
+        # prepare_reset takes off a grounded drone and position-controls it to
+        # the spawn — after the teleport that's a vertical-only climb from the
+        # right xy already, with a freshly ground-reset estimator. We never
+        # reset the EKF airborne (that's the thrust-spike launch).
+        self.interceptor.reset_policy({"runner_pos": runner_pos, "runner_vel": [0.0, 0.0, 0.0]})
         self.interceptor.prepare_reset(interceptor_spawn)
-        if not self.interceptor.await_reset(timeout=15.0):
-            print("[InterceptNavigation3D] WARNING: interceptor timed out moving to spawn")
+        if not self._await_interceptor_reset_safely(interceptor_spawn, timeout=15.0):
+            print("[InterceptNavigation3D] WARNING: interceptor did not reach spawn cleanly")
         self.interceptor.start_episode()
         self.interceptor.refresh()
         self._sync_interceptor()
@@ -710,6 +1172,7 @@ class InterceptNavigation3D(DroneEnvironment):
         self.reached_goal = False
         self.done = False
         self.previous_goal_distance = self._distance_to_target(runner_pos)
+        self._prev_applied_action = [0.0, 0.0, 0.0]  # runner starts the episode at rest
 
         time.sleep(0.5)  # final settle so both drones are stable before stepping
         self.drone.start_velocity_control()
@@ -746,11 +1209,16 @@ class InterceptNavigation3D(DroneEnvironment):
             self._sync_interceptor()
             return result
 
-        # Detect a dead/frozen runner and recover before stepping.
         runner_pos = self.drone.get_position()
-        if self._drone_is_dead(runner_pos) or self._drone_is_stuck(runner_pos):
-            reason = "dead" if self._drone_is_dead(runner_pos) else "stuck"
+        runner_dead = self._runner_is_dead()
+        if runner_dead or self._drone_is_stuck(runner_pos):
+            reason = "dead" if runner_dead else "stuck"
             print(f"[InterceptNavigation3D] Runner appears {reason} (pos={runner_pos}) — restarting")
+            # Hold the interceptor first: restart() can block for up to 60 s,
+            # during which its stale pursuit setpoint would keep flying it. The
+            # guard's containment brake only catches it past the 2.1 m line;
+            # freezing now keeps it inside the arena for the whole restart.
+            self._freeze_interceptor()
             self.restart()
             self._reset_stuck_tracker()
             self.truncate_next = True
@@ -789,7 +1257,17 @@ class InterceptNavigation3D(DroneEnvironment):
         elif predicted_z < z_lo and clamped_action[2] < 0:
             clamped_action[2] = 0.0
 
-        result = super().step(clamped_action)
+        # Slew-rate limit: cap how far the commanded action can move from the last
+        # applied action, so no single velocity change is violent enough to topple
+        # the drone (SAC's high-entropy actions otherwise swing hard step-to-step).
+        limited_action = list(clamped_action)
+        for i in range(3):
+            delta = clamped_action[i] - self._prev_applied_action[i]
+            delta = max(-self.max_action_delta, min(self.max_action_delta, delta))
+            limited_action[i] = self._prev_applied_action[i] + delta
+        self._prev_applied_action = list(limited_action)
+
+        result = super().step(limited_action)
 
         # Refresh interceptor tracking after the step (it has flown for step_time).
         self.interceptor.refresh()
@@ -798,7 +1276,13 @@ class InterceptNavigation3D(DroneEnvironment):
         # If the interceptor died this step, end the episode now so we don't keep
         # training against a fallen drone; the next reset re-initialises it.
         if self._interceptor_is_dead():
-            print("[InterceptNavigation3D] Interceptor died mid-episode — truncating")
+            try:
+                ipos = self.interceptor.body.get_position()
+            except Exception:
+                ipos = self.interceptor_position
+            print(f"[InterceptNavigation3D] Interceptor died mid-episode at "
+                  f"pos={[round(p, 2) for p in ipos]} (z={ipos[2]:.2f}) — truncating. "
+                  f"z>~2.0 here means a thrust-spike launch past its boundary.")
             self.truncate_next = True
 
         return result
@@ -939,7 +1423,27 @@ class InterceptNavigation3D(DroneEnvironment):
         return False
 
     def is_in_testing_zone(self):
-        return self.is_in_boundaries()
+        # Judge against the task's own 3D bounds — the base is_in_boundaries
+        # derives its height range from reset_position[2], which now varies
+        # with the per-episode spawn altitude.
+        return not self._is_out_of_task_bounds(self.drone.get_position())
+
+    def _update_visual_boundaries(self):
+        """Draw the Gazebo boundary overlay at a FIXED height.
+
+        The base version derives the draw height from reset_position[2], which
+        now varies per episode — a changing height changes SimManager's cached
+        boundary signature, making it remove + respawn the wall model on EVERY
+        reset. Gazebo removes entities asynchronously, so the immediate
+        re-create can race the deferred delete and leave no walls for the whole
+        episode. A constant height restores the original spawn-once behaviour.
+        """
+        if not hasattr(self.drone, "set_visual_boundary_lines"):
+            return
+        self.drone.set_visual_boundary_lines(
+            drone_xy_limit=float(self.boundary[0]),
+            z_level=float(self.fixed_z),
+        )
 
     def _check_if_truncated(self, current_state: Dict[str, Any]) -> bool:
         if self.steps >= self.episode_length:
@@ -972,9 +1476,24 @@ class InterceptNavigation3D(DroneEnvironment):
             info['success_count'] = self.successful_episodes_count
         return info
 
+    # ------------------------------------------------------------------
+    # Action space — keep SARL's denormalize as a no-op so the parent's
+    # single multiply-by-max_velocity is the only scaling that happens.
+    # Without this, SARL denormalizes [-1,1]→[-0.25,0.25] and the parent
+    # then multiplies by 0.25 again → 0.0625 m/s effective (4× too slow).
+    # ------------------------------------------------------------------
+
+    @property
+    def max_action_value(self):
+        return 1.0
+
+    @property
+    def min_action_value(self):
+        return -1.0
+
     def sample_action(self):
-        """Sample an action for the exploration phase — returns action in [-max_velocity, max_velocity] (3D)."""
-        return np.random.uniform(-self.max_velocity, self.max_velocity, size=(3,))
+        """Sample a normalized action in [-1, 1] — the parent will scale to m/s."""
+        return np.random.uniform(-1.0, 1.0, size=(3,))
 
     def close(self):
         """Land the interceptor and runner, then clear the goal marker."""
