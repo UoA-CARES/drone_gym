@@ -48,7 +48,7 @@ RUN sed -i \
     -e 's/numpy~=2.2/numpy>=1.20,<2.0/' \
     -e 's/packaging~=25.0/packaging>=21.0/' \
     /drone_ws/cflib_src/pyproject.toml && \
-    SETUPTOOLS_SCM_PRETEND_VERSION=0.1.31 python3 -m pip install --no-cache-dir -e ./cflib_src
+    SETUPTOOLS_SCM_PRETEND_VERSION=0.1.31 python3 -m pip install --no-cache-dir ./cflib_src
 
 # Copy drone_gym source and install.
 COPY drone_gym    ./drone_gym/drone_gym
