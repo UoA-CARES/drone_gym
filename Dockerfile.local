@@ -50,20 +50,21 @@ RUN sed -i \
     /drone_ws/cflib_src/pyproject.toml && \
     SETUPTOOLS_SCM_PRETEND_VERSION=0.1.31 python3 -m pip install --no-cache-dir ./cflib_src
 
-# Copy drone_gym source and install.
-COPY drone_gym    ./drone_gym/drone_gym
-COPY requirements.txt ./drone_gym/requirements.txt
-COPY setup.py     ./drone_gym/setup.py
-
-RUN python3 -m pip install --no-cache-dir -r ./drone_gym/requirements.txt && \
-    python3 -m pip install --no-cache-dir -e ./drone_gym
-
-# Install CARES RL after drone_gym so the CLI is available to scheduler commands.
+# Install CARES RL first so its pinned numpy==1.26.4 is set before drone_gym installs.
 RUN python3 -m pip install --no-cache-dir --upgrade pip setuptools wheel && \
     python3 -m pip install --no-cache-dir pettingzoo && \
     git clone --branch ${CARES_RL_REF} https://github.com/UoA-CARES/cares_reinforcement_learning.git /opt/cares_reinforcement_learning && \
     cd /opt/cares_reinforcement_learning && \
     python3 -m pip install --no-cache-dir -e ".[gym]"
+
+# Copy drone_gym source and install (numpy>=1.21.0 already satisfied by cares_rl's 1.26.4).
+COPY drone_gym    ./drone_gym/drone_gym
+COPY requirements.txt ./drone_gym/requirements.txt
+COPY setup.py     ./drone_gym/setup.py
+COPY README.md    ./drone_gym/README.md
+
+RUN python3 -m pip install --no-cache-dir -r ./drone_gym/requirements.txt && \
+    python3 -m pip install --no-cache-dir -e ./drone_gym
 
 # Open workspace/runtime permissions for arbitrary non-root HPC runtime accounts.
 RUN chmod -R a+rX /drone_ws /opt/cares_reinforcement_learning /usr/local/lib/python3.10/dist-packages && \
