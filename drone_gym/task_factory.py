@@ -16,6 +16,7 @@ from drone_gym.tasks.move_circle.move_circle_2d_slow import MoveCircle2DSlow
 from drone_gym.tasks.evade_pursuers.evade_pursuers_2d import EvadePursuers2D
 from drone_gym.tasks.evade_pursuers.evade_pursuers_2d_particle import EvadePursuers2DParticle
 from drone_gym.tasks.marl.move_to_targets_2d import MarlMoveToTargets2D
+from drone_gym.tasks.intercept_target.marl_tag import MarlTag
 
 
 def make(task_name: str, use_simulator: Literal[0,1], **kwargs):
@@ -50,6 +51,8 @@ def make(task_name: str, use_simulator: Literal[0,1], **kwargs):
         env = EvadePursuers2DParticle(use_simulator, **kwargs)
     elif task_name == "marl_move_to_targets_2d":
         env = MarlMoveToTargets2D(use_simulator, **kwargs)
+    elif task_name == "marl_tag":
+        env = MarlTag(use_simulator, **kwargs)
     else:
         raise ValueError(f"Unknown task name: {task_name}")
     return env
