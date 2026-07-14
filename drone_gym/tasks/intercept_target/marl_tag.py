@@ -53,6 +53,7 @@ class MarlTag(MarlDroneEnvironment):
     def __init__(
         self,
         use_simulator: Literal[0, 1],
+        num_agents: int = 2,
         max_velocity: float = 0.25,
         max_velocity_z: float = 0.03,
         step_time: float = 0.5,
@@ -65,6 +66,10 @@ class MarlTag(MarlDroneEnvironment):
         capture_threshold: float = 0.30,
         goal_threshold: float = 0.20,
     ) -> None:
+        # Tag is inherently a two-player game (one runner, one interceptor).
+        # num_agents is accepted so the CLI/config can pass it, but only 2 is valid.
+        if num_agents != 2:
+            raise ValueError(f"marl_tag is a 2-agent task; got num_agents={num_agents}")
         # Exactly two agents: possible_agents becomes ["drone_0", "drone_1"].
         super().__init__(
             use_simulator=use_simulator,
