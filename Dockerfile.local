@@ -1,0 +1,89 @@
+FROM ubuntu:22.04
+
+SHELL ["/bin/bash", "-c"]
+
+# --- ENVIRONMENT & CACHE SETUP ---
+ENV HOME=/tmp
+ENV GZ_VERSION=garden
+ENV CARES_LOG_BASE_DIR=/workspace/output
+ENV GZ_FUEL_CACHE_DIR=/tmp/gz/fuel
+ENV GZ_IP=127.0.0.1
+# Isolate host-networked Gazebo jobs from other local simulations by default.
+ENV GZ_PARTITION=drone_sim
+ENV LIBGL_ALWAYS_SOFTWARE=1
+ENV MPLCONFIGDIR=/tmp/matplotlib_cache
+ENV DEBIAN_FRONTEND=noninteractive
+ENV PYTHONUNBUFFERED=1
+
+ARG CARES_RL_REF=main
+
+WORKDIR /drone_ws
+
+# Pre-create writable runtime directories for non-root workers.
+RUN mkdir -p /tmp/matplotlib_cache /tmp/gz/fuel /workspace/output /tmp/cares_output && \
+    chmod -R 777 /tmp/matplotlib_cache /tmp/gz /workspace/output /tmp/cares_output
+
+# Install core system and Python packages.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl \
+    git \
+    gnupg \
+    lsb-release \
+    python3.10 \
+    python3-pip \
+    build-essential \
+    libusb-1.0-0 \
+    socat \
+    wget && \
+    rm -rf /var/lib/apt/lists/*
+
+# Copy cflib source and install.
+# Build this file from drone_gym/:
+#   docker build -f Dockerfile.local -t cares:drone-local .
+COPY CrazySim/crazyflie-lib-python ./cflib_src
+
+# Relax strict version pins in cflib that conflict with cares_rl dependencies.
+RUN sed -i \
+    -e 's/scipy~=1.14/scipy>=1.10/' \
+    -e 's/numpy~=2.2/numpy>=1.20,<2.0/' \
+    -e 's/packaging~=25.0/packaging>=21.0/' \
+    /drone_ws/cflib_src/pyproject.toml && \
+    SETUPTOOLS_SCM_PRETEND_VERSION=0.1.31 python3 -m pip install --no-cache-dir -e ./cflib_src
+
+# Copy drone_gym source and install.
+COPY drone_gym    ./drone_gym/drone_gym
+COPY requirements.txt ./drone_gym/requirements.txt
+COPY setup.py     ./drone_gym/setup.py
+
+RUN python3 -m pip install --no-cache-dir -r ./drone_gym/requirements.txt && \
+    python3 -m pip install --no-cache-dir -e ./drone_gym
+
+# Install CARES RL after drone_gym so the CLI is available to scheduler commands.
+RUN python3 -m pip install --no-cache-dir --upgrade pip setuptools wheel && \
+    python3 -m pip install --no-cache-dir pettingzoo && \
+    git clone --branch ${CARES_RL_REF} https://github.com/UoA-CARES/cares_reinforcement_learning.git /opt/cares_reinforcement_learning && \
+    cd /opt/cares_reinforcement_learning && \
+    python3 -m pip install --no-cache-dir -e ".[gym]"
+
+# Open workspace/runtime permissions for arbitrary non-root HPC runtime accounts.
+RUN chmod -R a+rX /drone_ws /opt/cares_reinforcement_learning /usr/local/lib/python3.10/dist-packages && \
+    chmod -R 777 /tmp/matplotlib_cache /tmp/gz /workspace/output /tmp/cares_output
+
+RUN printf '%s\n' \
+    '#!/usr/bin/env bash' \
+    'set -e' \
+    '' \
+    'export CARES_LOG_BASE_DIR="${CARES_LOG_BASE_DIR:-/workspace/output}"' \
+    'if ! mkdir -p "$CARES_LOG_BASE_DIR" 2>/dev/null || [ ! -w "$CARES_LOG_BASE_DIR" ]; then' \
+    '  export CARES_LOG_BASE_DIR=/tmp/cares_output' \
+    '  mkdir -p "$CARES_LOG_BASE_DIR"' \
+    'fi' \
+    '' \
+    'exec "$@"' \
+> /drone_entrypoint.sh && \
+    chmod 755 /drone_entrypoint.sh
+
+WORKDIR /drone_ws
+
+ENTRYPOINT ["/drone_entrypoint.sh"]
+CMD ["bash"]
