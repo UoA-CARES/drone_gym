@@ -14,6 +14,10 @@ ENV LIBGL_ALWAYS_SOFTWARE=1
 ENV MPLCONFIGDIR=/tmp/matplotlib_cache
 ENV DEBIAN_FRONTEND=noninteractive
 ENV PYTHONUNBUFFERED=1
+# Headless OpenGL for cv2 and matplotlib (no display needed)
+ENV MUJOCO_GL=egl
+ENV PYOPENGL_PLATFORM=egl
+ENV NVIDIA_DRIVER_CAPABILITIES=compute,graphics
 
 ARG CARES_RL_REF=main
 
@@ -36,21 +40,33 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     socat \
     wget \
     libgl1 \
-    libglib2.0-0 && \
+    libglib2.0-0 \
+    libegl1 \
+    libgles2 \
+    libosmesa6 \
+    libglfw3 \
+    libxrender1 \
+    libxext6 \
+    libsm6 \
+    libx11-6 \
+    libxrandr2 \
+    libxinerama1 \
+    libxcursor1 \
+    libxi6 \
+    libxxf86vm1 \
+    ffmpeg && \
     rm -rf /var/lib/apt/lists/*
 
-# Copy cflib source and install.
+# Clone and install cflib (sitl-release branch required for CrazySim compatibility).
 # Build this file from drone_gym/:
 #   docker build -f Dockerfile.local -t cares:drone-local .
-COPY CrazySim/crazyflie-lib-python ./cflib_src
-
-# Relax strict version pins in cflib that conflict with cares_rl dependencies.
-RUN sed -i \
-    -e 's/scipy~=1.14/scipy>=1.10/' \
-    -e 's/numpy~=2.2/numpy>=1.20,<2.0/' \
-    -e 's/packaging~=25.0/packaging>=21.0/' \
-    /drone_ws/cflib_src/pyproject.toml && \
-    SETUPTOOLS_SCM_PRETEND_VERSION=0.1.31 python3 -m pip install --no-cache-dir ./cflib_src
+RUN git clone --branch sitl-release https://github.com/bitcraze/crazyflie-lib-python.git /drone_ws/cflib_src && \
+    sed -i \
+        -e 's/scipy~=1.14/scipy>=1.10/' \
+        -e 's/numpy~=2.2/numpy>=1.20,<2.0/' \
+        -e 's/packaging~=25.0/packaging>=21.0/' \
+        /drone_ws/cflib_src/pyproject.toml && \
+    SETUPTOOLS_SCM_PRETEND_VERSION=0.1.31 python3 -m pip install --no-cache-dir /drone_ws/cflib_src
 
 # Install CARES RL first so its pinned numpy==1.26.4 is set before drone_gym installs.
 RUN python3 -m pip install --no-cache-dir --upgrade pip setuptools wheel && \
@@ -67,6 +83,12 @@ COPY README.md    ./drone_gym/README.md
 
 RUN python3 -m pip install --no-cache-dir -r ./drone_gym/requirements.txt && \
     python3 -m pip install --no-cache-dir -e ./drone_gym
+
+# Force reinstall versions known to work with cflib/CrazySim (mirrors setup.sh).
+RUN python3 -m pip install --force-reinstall --no-cache-dir \
+    pandas==2.3.3 \
+    opencv-python==4.7.0.72 \
+    "numpy>=1.20,<1.25"
 
 # Open workspace/runtime permissions for arbitrary non-root HPC runtime accounts.
 RUN chmod -R a+rX /drone_ws /opt/cares_reinforcement_learning /usr/local/lib/python3.10/dist-packages && \
