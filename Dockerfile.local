@@ -57,10 +57,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg && \
     rm -rf /var/lib/apt/lists/*
 
-# Clone and install cflib (sitl-release branch required for CrazySim compatibility).
+# Clone and install cflib (default branch, with version pins relaxed — mirrors setup.sh).
 # Build this file from drone_gym/:
 #   docker build -f Dockerfile.local -t cares:drone-local .
-RUN git clone --branch sitl-release https://github.com/bitcraze/crazyflie-lib-python.git /drone_ws/cflib_src && \
+RUN git clone https://github.com/bitcraze/crazyflie-lib-python.git /drone_ws/cflib_src && \
     sed -i \
         -e 's/scipy~=1.14/scipy>=1.10/' \
         -e 's/numpy~=2.2/numpy>=1.20,<2.0/' \
