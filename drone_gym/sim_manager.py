@@ -1,6 +1,8 @@
 import math
 import os
+import re
 import subprocess
+import signal
 import tempfile
 import threading
 import time
@@ -38,6 +40,46 @@ class MarkerState:
     model_file: str | None = None
     lock: threading.Lock = field(default_factory=threading.Lock)
 
+@dataclass
+class SimLaunchConfig:
+    """
+    Configuration for launching and managing the CrazySim/Gazebo simulator process.
+
+    Args:
+        firmware_dir: Path to the CrazySim Crazyflie firmware directory. This is
+            used as the working directory when running the launch script. Defaults to
+            "CrazySim/crazyflie-firmware".
+        launch_script: Relative path to the CrazySim/Gazebo launch script from
+            inside firmware_dir. Defaults to
+            "tools/crazyflie-simulation/simulator_files/gazebo/launch/sitl_multiagent_square.sh".
+        model: Name of the robot model to launch. Defaults to "crazyflie".
+        num_agents: Number of simulated Crazyflie agents to launch. Defaults to 1.
+        startup_timeout: Maximum time, in seconds, to wait for the simulator to
+            become responsive after launching. Defaults to 60.0.
+        shutdown_timeout: Maximum time, in seconds, to wait for the simulator
+            process to shut down cleanly before forcing termination. Defaults to
+            10.0.
+        restart_delay: Time, in seconds, to wait between stopping and restarting
+            the simulator. Defaults to 8.0.
+        log_file: Path to the file where simulator stdout and stderr output should
+            be written. Defaults to "logs/crazysim.log".
+    """
+
+    firmware_dir: str = "CrazySim/crazyflie-firmware"
+    launch_script: str = (
+        "tools/crazyflie-simulation/simulator_files/gazebo/launch/"
+        "sitl_multiagent_square.sh"
+    )
+
+    model: str = "crazyflie"
+    num_agents: int = 1
+
+    startup_timeout: float = 60.0
+    shutdown_timeout: float = 10.0
+    restart_delay: float = 8.0
+
+    log_file: str = "logs/crazysim.log"
+
 class SimManager:
     """
     World-level simulation manager for Gazebo/CrazySim.
@@ -57,6 +99,7 @@ class SimManager:
     def __init__(
         self,
         world_name: str = "crazysim_default",
+        sim_launch_config: SimLaunchConfig | None = None,
         enable_target_marker: bool = True,
         enable_boundary_lines: bool = True,
         marker_name: str = "rl_target_marker",
@@ -66,9 +109,15 @@ class SimManager:
         marker_pose_tolerance: float = 0.005,
         boundary_line_thickness: float = 0.02,
         boundary_visual_height: float = 0.8,
-        gz_timeout: float = 1.5,
+        gz_timeout: float = 5.0,
     ) -> None:
+
+        # Gazebo launch configuration
         self.world_name = world_name
+        self.sim_launch_config = sim_launch_config
+        self.sim_process: subprocess.Popen | None = None
+        self._sim_process_lock = threading.Lock()
+        self._sim_log_handle = None
 
         # Target marker settings/state
         self.enable_target_marker = enable_target_marker
@@ -94,6 +143,366 @@ class SimManager:
 
         # Gazebo command settings
         self.gz_timeout = gz_timeout
+
+    def start_sim(self) -> bool:
+        """
+        Start the CrazySim/Gazebo simulator process if it is not already running.
+
+        Returns:
+            True if the simulator process is running and ready.
+            False if the simulator could not be launched.
+        """
+        if self.sim_launch_config is None:
+            raise RuntimeError(
+                "Cannot start simulator because sim_launch_config was not provided."
+            )
+
+        with self._sim_process_lock:
+            if self.is_sim_process_alive():
+                print("[SIM MANAGER] Simulator process is already running.")
+                print("[DEBUG - SimManager] StartSim returns true because process is already running")
+                return True
+
+            firmware_dir = self.sim_launch_config.firmware_dir
+            if not os.path.isdir(firmware_dir):
+                print(
+                    "[SIM MANAGER] Cannot start simulator. "
+                    f"Firmware directory does not exist: {firmware_dir}"
+                )
+                return False
+
+            launch_script_path = os.path.join(
+                firmware_dir,
+                self.sim_launch_config.launch_script,
+            )
+            if not os.path.isfile(launch_script_path):
+                print(
+                    "[SIM MANAGER] Cannot start simulator. "
+                    f"Launch script does not exist: {launch_script_path}"
+                )
+                return False
+
+            log_dir = os.path.dirname(self.sim_launch_config.log_file)
+
+            if log_dir:
+                os.makedirs(log_dir, exist_ok=True)
+
+            cmd =[
+                "bash",
+                self.sim_launch_config.launch_script,
+                "-m",
+                self.sim_launch_config.model,
+                "-n",
+                str(self.sim_launch_config.num_agents),
+            ]
+
+            try:
+                self._sim_log_handle = open(self.sim_launch_config.log_file, "a", encoding="utf-8")
+
+                print("[SIM MANAGER] Starting CrazySim/Gazebo...")
+                print(f"[SIM MANAGER] Command: {' '.join(cmd)}")
+                print(f"[SIM MANAGER] Working directory: {firmware_dir}")
+                print(f"[SIM MANAGER] Log file: {self.sim_launch_config.log_file}")
+
+                self.sim_process = subprocess.Popen(
+                    cmd,
+                    cwd=firmware_dir,
+                    stdout=self._sim_log_handle,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                    start_new_session=True,
+                    env=self._get_sim_process_env()
+                )
+                print(f"[SIM MANAGER] Launch PID: {self.sim_process.pid}")
+
+            except OSError as exc:
+                print(f"[SIM MANAGER] Failed to start simulator: {exc}")
+                self._close_sim_log_handle()
+                self.sim_process = None
+                return False
+
+        if not self.wait_until_sim_ready():
+            print("[SIM MANAGER] Simulator startup failed. Stopping partial startup...")
+            self.stop_sim()
+            return False
+
+        print("[DEBUG - SimManager] StartSim returns true at end of function")
+        return True
+        
+    def _get_sim_process_env(self) -> dict[str, str]:
+        """
+        Return a cleaned environment for launching CrazySim/Gazebo.
+
+        CARES RL or imported Python packages such as OpenCV can set Qt plugin paths
+        that break Gazebo's Qt GUI. The simulator should use the system Gazebo/Qt
+        environment, not Python package Qt plugins.
+        """
+        env = os.environ.copy()
+
+        # Prevent OpenCV/cv2's bundled Qt plugins from being used by Gazebo.
+        env.pop("QT_PLUGIN_PATH", None)
+        env.pop("QT_QPA_PLATFORM_PLUGIN_PATH", None)
+
+        return env
+
+    def _count_sitl_processes(self) -> int:
+        """
+        Return the number of running Crazyflie SITL cf2 processes.
+
+        This is used as a startup readiness check to verify that the launch script
+        has started the expected simulated drone firmware processes.
+        """
+        try:
+            result = subprocess.run(
+                ["pgrep", "-fc", r"sitl_make/build/cf2"],
+                capture_output=True,
+                text=True,
+                timeout=1.0,
+            )
+        except (subprocess.SubprocessError, FileNotFoundError):
+            return 0
+
+        if result.returncode not in (0, 1):
+            return 0
+
+        try:
+            return int(result.stdout.strip() or "0")
+        except ValueError:
+            return 0
+
+    def _expected_drone_model_names(self) -> list[str]:
+        """
+        Return the Gazebo model names expected for the configured number of drones.
+        """
+        if self.sim_launch_config is None:
+            return []
+
+        return [
+            f"crazyflie_{drone_id}"
+            for drone_id in range(self.sim_launch_config.num_agents)
+        ]
+
+    def _get_drone_entity_name(self, drone_id: str | int) -> str:
+        """
+        Return the Gazebo model name for a Crazyflie drone.
+
+        Accepts:
+            - numeric IDs, such as 0 or "0"
+            - MARL agent IDs, such as "drone_0"
+            - Gazebo model names, such as "crazyflie_0"
+        """
+        drone_id_str = str(drone_id)
+
+        if drone_id_str.startswith("crazyflie_"):
+            return drone_id_str
+
+        if drone_id_str.startswith("drone_"):
+            drone_id_str = drone_id_str.removeprefix("drone_")
+
+        return f"crazyflie_{drone_id_str}"
+        
+    def _sitl_processes_ready(self) -> bool:
+        """
+        Return True if the expected number of SITL drone processes are running.
+        """
+        if self.sim_launch_config is None:
+            return False
+        count = self._count_sitl_processes()
+        print("[DEBUG - SimManager] Checking SITL processes: ", count)
+        return count >= self.sim_launch_config.num_agents
+
+    def are_drones_spawned(self, timeout: float | None = None) -> bool:
+        """
+        Return True if all configured Crazyflie drone models are present in Gazebo.
+        """
+        if self.sim_launch_config is None:
+            raise RuntimeError(
+                "Cannot check spawned drones because sim_launch_config was not provided."
+            )
+
+        pose_info = self._get_world_pose_info(timeout=timeout)
+
+        if not pose_info:
+            return False
+
+        entity_poses = self._parse_entity_poses_from_pose_info(pose_info)
+
+        expected_drone_names = self._expected_drone_model_names()
+        print("[DEBUG - SimManager] Expected drone names: ", expected_drone_names)
+        # print the coords of the drones found
+        for drone_name in expected_drone_names:
+            if drone_name in entity_poses:
+                print(f"[DEBUG - SimManager] Found {drone_name} at {entity_poses[drone_name]}")
+            else:
+                print(f"[DEBUG - SimManager] {drone_name} not found in Gazebo.")
+
+        return all(drone_name in entity_poses for drone_name in expected_drone_names)
+
+    def wait_until_sim_ready(self) -> bool:
+        """
+        Wait until CrazySim/Gazebo has completed enough startup to be usable:
+            - the managed launch process is still alive
+            - the expected number of SITL cf2 drone processes are running
+            - the expected Crazyflie models are spawned in Gazebo
+
+        Returns:
+            True if the simulator becomes ready before startup_timeout.
+            False otherwise.
+        """
+        if self.sim_launch_config is None:
+            raise RuntimeError(
+                "Cannot wait for simulator readiness because sim_launch_config was not provided."
+            )
+
+        print("[SIM MANAGER] Waiting for CrazySim/Gazebo to become ready...")
+
+        deadline = time.monotonic() + self.sim_launch_config.startup_timeout
+
+        while time.monotonic() < deadline:
+            if not self.is_sim_process_alive():
+                print("[SIM MANAGER] Simulator launch process exited during startup.")
+                return False
+
+            sitl_count = self._count_sitl_processes()
+            sitl_ready = sitl_count >= self.sim_launch_config.num_agents
+            drones_spawned = self.are_drones_spawned(timeout=2.0)
+            launch_alive = self.is_sim_process_alive()
+            print(
+                "[SIM MANAGER] Readiness check: "
+                f"launch_alive={launch_alive}, "
+                f"sitl_count={sitl_count}, "
+                f"sitl_ready={sitl_ready}, "
+                f"drones_spawned={drones_spawned}"
+            )           
+            # if self._sitl_processes_ready() and self.are_drones_spawned(timeout=2.0):
+            #     print("[SIM MANAGER] CrazySim/Gazebo is ready.")
+            #     return True
+            if launch_alive and sitl_ready and drones_spawned:
+                print("[SIM MANAGER] CrazySim/Gazebo is ready.")
+                return True
+            time.sleep(0.5)
+
+        print(
+            "[SIM MANAGER] Timed out waiting for CrazySim/Gazebo to become ready. "
+            f"Expected {self.sim_launch_config.num_agents} SITL processes, "
+            f"found {self._count_sitl_processes()}."
+        )
+        return False
+
+    def is_sim_process_alive(self) -> bool:
+        """
+        Return True if SimManager has launched a simulator process and it is still running.
+        """
+        return self.sim_process is not None and self.sim_process.poll() is None
+    
+    def _close_sim_log_handle(self) -> None:
+        """
+        Close the simulator log file handle if it is open.
+        """
+        if self._sim_log_handle is not None:
+            self._sim_log_handle.close()
+            self._sim_log_handle = None
+
+    def stop_sim(self) -> None:
+        """
+        Stop the CrazySim/Gazebo simulator process launched by SimManager.
+
+        The simulator is launched with start_new_session=True, so this method first
+        tries to terminate the whole process group. If the simulator does not stop
+        within shutdown_timeout, the process group is force-killed.
+        """
+        with self._sim_process_lock:
+            if self.sim_process is None:
+                print("[SIM MANAGER] No simulator process to stop.")
+                self._close_sim_log_handle()
+                return
+
+            process = self.sim_process
+
+            if process.poll() is not None:
+                print(
+                    "[SIM MANAGER] Simulator process has already stopped "
+                    f"with return code {process.returncode}."
+                )
+                self.sim_process = None
+                self._close_sim_log_handle()
+                return
+
+            shutdown_timeout = 10.0
+            if self.sim_launch_config is not None:
+                shutdown_timeout = self.sim_launch_config.shutdown_timeout
+
+            print("[SIM MANAGER] Stopping CrazySim/Gazebo...")
+
+            try:
+                os.killpg(os.getpgid(process.pid), signal.SIGTERM)
+                process.wait(timeout=shutdown_timeout)
+                print("[SIM MANAGER] Simulator stopped cleanly.")
+
+            except subprocess.TimeoutExpired:
+                print(
+                    "[SIM MANAGER] Simulator did not stop within "
+                    f"{shutdown_timeout} seconds. Force killing..."
+                )
+
+                try:
+                    os.killpg(os.getpgid(process.pid), signal.SIGKILL)
+                    process.wait(timeout=5.0)
+                    print("[SIM MANAGER] Simulator force killed.")
+
+                except OSError as exc:
+                    print(f"[SIM MANAGER] Failed to force kill simulator: {exc}")
+
+            except ProcessLookupError:
+                print("[SIM MANAGER] Simulator process was already gone.")
+
+            except OSError as exc:
+                print(
+                    "[SIM MANAGER] Failed to stop simulator process group. "
+                    f"Trying direct process termination. Error: {exc}"
+                )
+
+                try:
+                    process.terminate()
+                    process.wait(timeout=shutdown_timeout)
+                    print("[SIM MANAGER] Simulator stopped using direct termination.")
+
+                except subprocess.TimeoutExpired:
+                    print("[SIM MANAGER] Direct termination timed out. Force killing process.")
+                    process.kill()
+                    process.wait(timeout=5.0)
+
+            finally:
+                self.sim_process = None
+                self._close_sim_log_handle()
+
+    def restart_sim(self) -> bool:
+        """
+        Restart the CrazySim/Gazebo simulator process.
+
+        This stops the currently managed simulator process, waits for restart_delay,
+        clears simulator visual state cached by SimManager, and starts a new simulator
+        process.
+
+        Returns:
+            True if the simulator process was launched successfully after the restart,
+            False otherwise.
+        """
+        if self.sim_launch_config is None:
+            raise RuntimeError(
+                "Cannot restart simulator because sim_launch_config was not provided."
+            )
+
+        print("[SIM MANAGER] Restarting CrazySim/Gazebo...")
+
+        self.stop_sim()
+
+        if self.sim_launch_config.restart_delay > 0.0:
+            time.sleep(self.sim_launch_config.restart_delay)
+
+        self.reset_visual_state()
+
+        return self.start_sim()
 
     def _safe_file_name(self, name: str) -> str:
         """
@@ -329,6 +738,61 @@ class SimManager:
         # Some Gazebo service responses do not include explicit data: true/false.
         # If there was no return-code failure and no explicit error, treat it as ok.
         return True, output
+    
+    def _run_gz_topic(
+        self,
+        topic: str,
+        timeout: float | None = None,
+    ) -> tuple[bool, str]:
+        """
+        Echo one Gazebo topic and return the output.
+        """
+        effective_timeout = timeout if timeout is not None else self.gz_timeout
+
+        cmd = [
+            "gz",
+            "topic",
+            "-e",
+            "-t",
+            topic,
+        ]
+
+        try:
+            result = subprocess.run(
+                cmd,
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=effective_timeout,
+            )
+
+        except subprocess.TimeoutExpired as exc:
+            stdout = exc.stdout or ""
+            stderr = exc.stderr or ""
+
+            if isinstance(stdout, bytes):
+                stdout = stdout.decode(errors="replace")
+
+            if isinstance(stderr, bytes):
+                stderr = stderr.decode(errors="replace")
+
+            output = stdout + stderr
+            return bool(output), output
+
+        except FileNotFoundError:
+            return False, ""
+
+        output = (result.stdout or "") + (result.stderr or "")
+
+        if result.returncode != 0 and not output:
+            return False, output
+
+        output_lower = output.lower()
+
+        if "[err]" in output_lower:
+            return False, output
+
+        return bool(output), output
 
     def _write_target_marker_model_file(
         self,
@@ -399,6 +863,112 @@ class SimManager:
 
         return ok
 
+    def _get_world_pose_info(self, timeout: float | None = None) -> str:
+        """
+        Return Gazebo pose info text for the current world.
+        """
+        topic = f"/world/{self.world_name}/pose/info"
+
+        ok, output = self._run_gz_topic(
+            topic=topic,
+            timeout=timeout,
+        )
+
+        if not ok:
+            return ""
+
+        return output
+
+    def _parse_entity_poses_from_pose_info(
+        self,
+        pose_info: str,
+    ) -> dict[str, tuple[float, float, float]]:
+        """
+        Parse Gazebo pose info text into entity positions.
+
+        Returns:
+            Dictionary mapping entity names to (x, y, z) world positions.
+        """
+        poses: dict[str, tuple[float, float, float]] = {}
+
+        pose_blocks = re.finditer(
+            r"pose\s*{(?P<block>.*?)(?=\npose\s*{|\Z)",
+            pose_info,
+            re.DOTALL,
+        )
+
+        for pose_block in pose_blocks:
+            block = pose_block.group("block")
+
+            name_match = re.search(r'name:\s*"([^"]+)"', block)
+            position_match = re.search(
+                r"position\s*{\s*"
+                r"x:\s*([-+0-9.eE]+)\s*"
+                r"y:\s*([-+0-9.eE]+)\s*"
+                r"z:\s*([-+0-9.eE]+)",
+                block,
+                re.DOTALL,
+            )
+
+            if name_match is None or position_match is None:
+                continue
+
+            entity_name = name_match.group(1)
+
+            try:
+                poses[entity_name] = (
+                    float(position_match.group(1)),
+                    float(position_match.group(2)),
+                    float(position_match.group(3)),
+                )
+            except ValueError:
+                continue
+
+        return poses
+    
+    def get_entity_pose(
+        self,
+        entity_name: str,
+        timeout: float | None = None,
+    ) -> tuple[float, float, float] | None:
+        """
+        Return an entity's current Gazebo world position.
+
+        Args:
+            entity_name: Gazebo entity/model name.
+            timeout: Optional timeout in seconds for reading Gazebo pose info.
+
+        Returns:
+            (x, y, z) position in metres if the entity is found, otherwise None.
+        """
+        pose_info = self._get_world_pose_info(timeout=timeout)
+
+        if not pose_info:
+            return None
+
+        entity_poses = self._parse_entity_poses_from_pose_info(pose_info)
+
+        return entity_poses.get(entity_name)
+    
+    def get_drone_pose(
+        self,
+        drone_id: str | int,
+        timeout: float | None = None,
+    ) -> tuple[float, float, float] | None:
+        """
+        Return a Crazyflie model's current Gazebo world position.
+
+        Args:
+            drone_id: Drone ID for corresponding Gazebo entity name.
+            timeout: Optional timeout in seconds for reading Gazebo pose info.
+
+        Returns:
+            (x, y, z) position in metres if the drone model is found, otherwise None.
+        """
+        drone_name = self._get_drone_entity_name(drone_id)
+        return self.get_entity_pose(drone_name, timeout=timeout)
+
+
     def _set_entity_pose(
         self, 
         entity_name: str,
@@ -468,10 +1038,14 @@ class SimManager:
         Set a Crazyflie model's position and optionally its orientation.
 
         Args:
+            drone_id: Drone ID for corresponding Gazebo entity name.
+            x: World x position in metres.
+            y: World y position in metres.
+            z: World z position in metres.
             orientation: Optional (roll, pitch, yaw) in radians.
                 When None, the current orientation is preserved.
         """
-        drone_name = f"crazyflie_{drone_id}"
+        drone_name = self._get_drone_entity_name(drone_id)
         return self._set_entity_pose(drone_name, x, y, z, orientation)
 
     def _boundary_model_file_path(
