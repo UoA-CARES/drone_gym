@@ -39,6 +39,7 @@ faster interceptors, port ``_safety_monitor_loop`` from ``sarl_tag`` before use.
 """
 
 import math
+from collections import deque
 from typing import Any, Literal
 
 import numpy as np
@@ -117,6 +118,22 @@ class MarlTag(MarlDroneEnvironment):
         # a higher max_velocity (see the per-agent speed note in step processing).
         self.interceptor_speed_ratio = 1.0
 
+        # --- Interceptor speed curriculum (performance-gated ratchet) --------
+        # The interceptor is a learner, so this caps its physical chase speed
+        # (applied in _apply_task_action_processing). Start slow so the runner
+        # can learn to navigate, then raise the cap as its success rate climbs.
+        self.curriculum_enabled = True
+        self.interceptor_speed_min = 0.05             # starting cap (m/s)
+        self.interceptor_speed_max = self.max_velocity  # ceiling = runner's max speed
+        self.curriculum_window = 50
+        self.curriculum_success_threshold = 0.6
+        self.curriculum_speed_step = 0.02
+        self.interceptor_speed = (self.interceptor_speed_min
+                                  if self.curriculum_enabled else self.max_velocity)
+        self.interceptor_speed_ratio = self.interceptor_speed / max(self.max_velocity, 1e-6)
+        self._episode_count = 0
+        self._recent_runner_outcomes = deque(maxlen=self.curriculum_window)
+
         # --- Stability: boundary brake + slew limit --------------------------
         # BOTH agents now learn, so BOTH emit high-entropy actions that topple
         # the Crazyflie if applied as instantaneous velocity reversals. The SARL
@@ -172,10 +189,39 @@ class MarlTag(MarlDroneEnvironment):
     # Reset — sample fresh geometry, then teleport both drones to spawns
     # ------------------------------------------------------------------
 
+    def _update_interceptor_curriculum(self, training: bool = True) -> None:
+        """Raise the interceptor's speed cap as the runner's success rate climbs.
+        Ratchets up only; stalls if the runner plateaus."""
+        if not self.curriculum_enabled or not training:
+            return
+        # self.winner still holds the just-finished episode's result here
+        # (_reset_task_state clears it later during super().reset()).
+        if self._episode_count > 1:
+            self._recent_runner_outcomes.append(1.0 if self.winner == self.RUNNER else 0.0)
+        if len(self._recent_runner_outcomes) < self.curriculum_window:
+            return
+        success_rate = sum(self._recent_runner_outcomes) / len(self._recent_runner_outcomes)
+        if (success_rate >= self.curriculum_success_threshold
+                and self.interceptor_speed < self.interceptor_speed_max):
+            self.interceptor_speed = min(
+                self.interceptor_speed_max,
+                self.interceptor_speed + self.curriculum_speed_step,
+            )
+            self.interceptor_speed_ratio = self.interceptor_speed / max(self.max_velocity, 1e-6)
+            self._recent_runner_outcomes.clear()
+            print(f"[MarlTag][curriculum] runner success {success_rate:.0%} -> "
+                  f"interceptor speed {self.interceptor_speed:.3f} m/s")
+
     def reset(self, seed: int | None = None, options: dict[str, Any] | None = None):
         """Sample the episode geometry, write it into ``reset_positions`` so the
         base teleport places each drone at its spawn, then defer to the base
         reset (land -> teleport -> take off -> velocity control)."""
+        training = (options or {}).get("training", True)
+        self._episode_count += 1
+        # Update speed BEFORE sampling the spawn so the new interceptor_speed_ratio
+        # feeds the fair-spawn placement.
+        self._update_interceptor_curriculum(training)
+
         # The runner always starts at the centre; the goal and interceptor spawn
         # are randomized. Sample here (before the base reset) because the base's
         # _reset_all_drones teleports drones to reset_positions.
@@ -310,6 +356,14 @@ class MarlTag(MarlDroneEnvironment):
         ``_denormalize_action`` has no agent argument.)
         """
         requested = [vx, vy, vz]
+
+        # Curriculum speed cap: scale the interceptor's commanded xy velocity so
+        # its top speed = interceptor_speed. The runner is unaffected.
+        if agent == self.INTERCEPTOR and self.curriculum_enabled:
+            ratio = self.interceptor_speed / max(self.max_velocity, 1e-6)
+            vx *= ratio
+            vy *= ratio
+
         prediction_time = self.step_time + self.time_tolerance
 
         px = current_position[0] + vx * prediction_time

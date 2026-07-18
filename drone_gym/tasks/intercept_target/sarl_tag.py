@@ -3,6 +3,7 @@ import numpy as np
 import math
 import time
 import threading
+from collections import deque
 from typing import Dict, List, Any, Literal
 
 from drone_gym.drone_environment import DroneEnvironment
@@ -123,6 +124,20 @@ class SarlTag(DroneEnvironment):
 
         self.interceptor_max_velocity = interceptor_max_velocity     # > max_velocity so capture is feasible
         self.interceptor_max_velocity_z = 0.030      # gentle vertical cap for the pursuer too
+
+        # --- Interceptor speed curriculum (performance-gated ratchet) --------
+        # Start the interceptor slow so the runner can learn to reach the goal,
+        # then raise its speed as the runner's success rate climbs. Speed only
+        # ever increases, and stalls automatically if the runner stops improving.
+        self.curriculum_enabled = True
+        self.interceptor_speed_min = 0.05                          # starting speed (m/s)
+        self.interceptor_speed_max = self.interceptor_max_velocity  # ceiling = the ctor value
+        self.curriculum_window = 50               # episodes judged per difficulty level
+        self.curriculum_success_threshold = 0.6   # runner success rate that earns a bump
+        self.curriculum_speed_step = 0.01         # speed added per bump (m/s)
+        if self.curriculum_enabled:
+            self.interceptor_max_velocity = self.interceptor_speed_min
+        self._recent_runner_outcomes = deque(maxlen=self.curriculum_window)
 
         # Brake margins: the per-step clamp zeroes a velocity component before the
         # actual boundary, leaving room for the drone to coast to a stop instead of
@@ -1057,6 +1072,29 @@ class SarlTag(DroneEnvironment):
     # DroneEnvironment overrides
     # ------------------------------------------------------------------
 
+    def _update_interceptor_curriculum(self, training: bool = True) -> None:
+        """Record the finished episode's runner outcome and, once a full window
+        is in, raise the interceptor's speed if the runner is succeeding often
+        enough. Ratchets up only; stalls if the runner plateaus."""
+        if not self.curriculum_enabled or not training:
+            return
+        # self.reached_goal still holds the just-finished episode's result here
+        # (reset clears it later), so record it before the rest of reset runs.
+        if self._episode_count > 1:
+            self._recent_runner_outcomes.append(1.0 if self.reached_goal else 0.0)
+        if len(self._recent_runner_outcomes) < self.curriculum_window:
+            return
+        success_rate = sum(self._recent_runner_outcomes) / len(self._recent_runner_outcomes)
+        if (success_rate >= self.curriculum_success_threshold
+                and self.interceptor_max_velocity < self.interceptor_speed_max):
+            self.interceptor_max_velocity = min(
+                self.interceptor_speed_max,
+                self.interceptor_max_velocity + self.curriculum_speed_step,
+            )
+            self._recent_runner_outcomes.clear()  # re-earn the next bump at the new speed
+            print(f"[SarlTag][curriculum] runner success {success_rate:.0%} -> "
+                  f"interceptor speed {self.interceptor_max_velocity:.3f} m/s")
+
     def reset(self, training: bool = True):
         """Teleport both drones to fresh spawns (sim) and start a new episode.
 
@@ -1084,6 +1122,10 @@ class SarlTag(DroneEnvironment):
         self._freeze_interceptor()
 
         self._episode_count += 1
+
+        # Update the interceptor speed BEFORE sampling its spawn, so the new
+        # speed feeds the fair-spawn placement this episode.
+        self._update_interceptor_curriculum(training)
 
         # Vertical variety: resample the runner's spawn altitude each episode.
         # xy stays pinned at the centre (long lateral reset moves are the #1 EKF
