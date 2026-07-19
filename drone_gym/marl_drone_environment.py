@@ -1,4 +1,6 @@
 from abc import abstractmethod
+import os
+import subprocess
 import time
 from typing import Any, Literal
 
@@ -8,7 +10,7 @@ from pettingzoo.utils.env import ParallelEnv
 
 from drone_gym.drone_sim import DroneSim
 from drone_gym.drone import Drone
-from drone_gym.sim_manager import SimManager
+from drone_gym.sim_manager import SimManager, SimLaunchConfig
 
 ########### NOTES ################
 # [ ] Need to update Drone class to work with multiple drones and probably 
@@ -38,9 +40,40 @@ class MarlDroneEnvironment(ParallelEnv):
         self.num_agents_config = num_agents
 
         if self.use_simulator:
-            self.sim_manager = SimManager(world_name="crazysim_default")
+            self.sim_manager = SimManager(
+                sim_launch_config=SimLaunchConfig(
+                    num_agents=self.num_agents_config
+                )
+            )
+
+            time.sleep(1)  # Allow time for the sim manager to initialize
+            print("Starting simulator...")
+            sim_started = self.sim_manager.start_sim()
+            print("start_sim returned:", sim_started)
+
+            print("cwd:", os.getcwd())
+            print("DISPLAY:", os.environ.get("DISPLAY"))
+            print("XDG_RUNTIME_DIR:", os.environ.get("XDG_RUNTIME_DIR"))
+
+            subprocess.run(
+                'ps -eo pid,ppid,pgid,sid,stat,etime,cmd | '
+                'grep -i "sitl_multiagent_square\\|gz sim\\|cf2" | grep -v grep',
+                shell=True,
+            )
+
+            print("launch process alive:", self.sim_manager.is_sim_process_alive())
+            print("sitl ready:", self.sim_manager._sitl_processes_ready())
+            print("drones spawned:", self.sim_manager.are_drones_spawned(timeout=2.0))
+
+            if not sim_started:
+                raise RuntimeError("Failed to start CrazySim/Gazebo simulator.")
+            # if not self.sim_manager.start_sim():
+            #     raise RuntimeError("Failed to start CrazySim/Gazebo simulator.")
         else:
             self.sim_manager = None
+
+        print("Debug moving on")
+        print("Is sim started:", self.sim_manager.is_sim_process_alive())
 
         # Control limits
         self.max_velocity = max_velocity
@@ -321,6 +354,9 @@ class MarlDroneEnvironment(ParallelEnv):
                 drone.stop()
             except Exception as exc:
                 print(f"Error closing {agent}: {exc}")
+        
+        if self.use_simulator and self.sim_manager is not None:
+            self.sim_manager.stop_sim()
 
     def state(self) -> np.ndarray:
         """
