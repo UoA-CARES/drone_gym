@@ -1,0 +1,20 @@
+# Python cache
+**/__pycache__
+**/*.pyc
+**/*.pyo
+**/*.egg-info
+
+# Virtual environments
+.venv
+**/.venv
+
+# CrazySim is cloned directly in the Dockerfile — exclude entire directory from build context
+CrazySim
+
+# Logs / outputs
+cares_rl_logs
+*.log
+
+# Docs / media
+docs
+velocity_controller_tuning_graphs

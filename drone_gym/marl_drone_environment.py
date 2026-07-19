@@ -513,11 +513,26 @@ class MarlDroneEnvironment(ParallelEnv):
                         drone.start_boundary_monitoring()
 
                 self.sim_manager.set_drone_pose(
-                    drone_id=self.possible_agents.index(agent), 
+                    drone_id=self.possible_agents.index(agent),
                     x=self.reset_positions[agent][0],
                     y=self.reset_positions[agent][1],
-                    z=0.02
+                    z=0.02,
+                    orientation=(0.0, 0.0, 0.0),
                 )
+
+        time.sleep(0.3)  # let physics settle models onto the floor
+
+        for agent in self.possible_agents:
+            drone = self.drones[agent]
+            if isinstance(drone, DroneSim):
+                spawn_pos = [
+                    self.reset_positions[agent][0],
+                    self.reset_positions[agent][1],
+                    0.02,
+                ]
+                self._reset_ekf(drone, spawn_pos)
+
+        time.sleep(0.5)  # give estimators time to converge at spawns before takeoff
 
         for agent in self.possible_agents:
             drone = self.drones[agent]
@@ -641,6 +656,29 @@ class MarlDroneEnvironment(ParallelEnv):
         print(f"[RESET] Timeout waiting for drones: {timed_out_agents}")
         return False
     
+    def _reset_ekf(self, drone: DroneSim, position: list[float] | None = None) -> None:
+        """Seed the Kalman filter with the drone's true position and reset it.
+
+        DANGEROUS while airborne — only call after the drone has landed and been
+        teleported to its spawn. Without this, the EKF still estimates the old
+        crash position after a teleport and the position controller fires a large
+        corrective thrust that launches the drone into the ceiling.
+        """
+        try:
+            if getattr(drone, "cf", None) is None:
+                return
+            if position is not None:
+                try:
+                    drone.cf.param.set_value("kalman.initialX", f"{float(position[0])}")
+                    drone.cf.param.set_value("kalman.initialY", f"{float(position[1])}")
+                    drone.cf.param.set_value("kalman.initialZ", f"{float(position[2])}")
+                except Exception as exc:
+                    print(f"[{getattr(drone, 'agent_id', '?')}] EKF seed warning (continuing with plain reset): {exc}")
+            drone.cf.param.set_value("kalman.resetEstimation", "1")
+            time.sleep(0.4)
+        except Exception as exc:
+            print(f"[{getattr(drone, 'agent_id', '?')}] EKF reset warning: {exc}")
+
     def _all_drones_safe(self) -> bool:
         """
         Check if all drones are currently in a safe state (i.e., no emergency events).
