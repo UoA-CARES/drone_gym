@@ -4,14 +4,11 @@
 
 [![Python 3.10](https://img.shields.io/badge/python-3.10-blue.svg)](https://www.python.org/downloads/release/python-3100/)
 
-Gymnasium-compatible environment for reinforcement learning with Crazyflie drones in real-world settings using Vicon motion capture.
+Gymnasium/PettingZoo-compatible reinforcement learning environments for Crazyflie drones. `drone_gym` supports both real Crazyflie drones using Vicon motion capture and CrazySim/Gazebo simulation.
 
 Developed by the CARES Lab at the University of Auckland.
 
 </div>
-
-> **Note**: This environment is designed to work with the [CARES Gymnasium Environments](https://github.com/UoA-CARES/gymnasium_envrionments) framework for running RL training tasks.
-
 
 ## Setup Instructions
 For all installation, run the **[setup.sh](setup.sh)** script - `bash setup.sh .`.
@@ -70,10 +67,14 @@ drone_gym/
 
 ### Key Components
 
-- **`drone_setup.py`**: Base class for implementing the low-level drone setup and control.
-- **`drone.py`**: Child class of `drone_setup.py` with PID velocity/position controllers, Vicon integration, and safety boundary checking
-- **`drone_sim.py`**: Child class of `drone_setup.py` with functions for running the drone in simulation
-- **`drone_environment.py`**: Abstract base class for creating custom RL environments following the Gymnasium API
+- **`drone_setup.py`**: Base class for implementing the shared low-level drone setup and control.
+- **`drone.py`**: Child class of `drone_setup.py` for real Crazyflie drones, with physical drone connection handling, Vicon-based position tracking, PID velocity/position controllers, and hardware safety behaviour.
+- **`drone_sim.py`**: Child class of `drone_setup.py` for CrazySim/Gazebo drones, with simulated Crazyflie connection handling, simulator position updates, simulated safety behaviour, and integration with `SimManager`.
+- **`drone_environment.py`**: Abstract base class for single-agent RL environments following the Gymnasium API.
+- **`marl_drone_environment.py`**: Abstract base class for multi-agent RL environments following the PettingZoo parallel API.
+- **`sim_manager.py`**: Manages CrazySim/Gazebo at the world level, including simulator auto-launch, readiness checks, Gazebo drone pose access, and Gazebo objects.
+- **`utils/position_source.py`**: Defines the common interface for drone position sources so real and simulated position providers can be swapped more cleanly.
+- **`utils/vicon_position_source.py`**: Provides the newer Vicon position-source implementation, including shared Vicon packet receiving through `ViconProvider` and per-drone position tracking through `ViconPositionSource`.
 - **`utils/vicon_connection_class.py`**: Handles UDP communication with Vicon motion capture system for precise position tracking
 
 
@@ -84,14 +85,38 @@ drone_gym/
 Refer to the instructions under Hardware Setup. When running RL tasks, include the `--use_simulator 0` flag.
 
 ### Running the Simulator
-To run the simulation, go to `CrazySim/crazyflie-firmware`.
-Then run:
-```bash
-bash tools/crazyflie-simulation/simulator_files/gazebo/launch/sitl_multiagent_square.sh -m crazyflie -n <num_vehicles>; exec bash
+
+For simulator-based training, `drone_gym` is designed to automatically launch CrazySim/Gazebo. When a simulator task is created, the environment creates a `SimManager` object that starts CrazySim/Gazebo, waits until the expected simulated Crazyflie drones are ready, and then creates the drone objects used by the task.
+
+The default simulator launch assumes that the training command is run from the workspace root folder, with the following relative folder structure:
+```text
+<workspace-root>/
+├── cares_reinforcement_learning/
+├── drone_gym/
+└── CrazySim/
+    └── crazyflie-firmware/
+```
+By default, `SimManager` expects the CrazySim firmware folder to be located at:
+```text
+CrazySim/crazyflie-firmware
+```
+and it runs the CrazySim launch script from that folder. If your CrazySim repository is stored somewhere else, update the simulator launch configuration in the code by providing a different `firmware_dir` through `SimLaunchConfig`.
+
+When training finishes normally, CARES RL calls the environment cleanup function, which closes the drone connections and stops the Gazebo/CrazySim processes started by `SimManager`.
+
+Simulator output is written to:
+```text
+logs/crazysim.log
 ```
 
-Refer to Running RL Tasks for how to execute training runs. The simulator will need to be shutdown and restarted after each training run.
+If the program crashes, is force-stopped, or exits before cleanup is reached, Gazebo or SITL processes may remain running and may need to be closed manually. They should close on their own the next time training is called, or they can be cleaned up with:
+```text
+pkill -f "gz sim"
+pkill -f "sitl_make/build/cf2"
+pkill -f "sitl_multiagent_square.sh"
+```
 
+Refer to the "Running RL Tasks" section for instructions on executing training runs.
 
 ### Running the Simulator using Docker
 Alternatively, you can use docker to run the simulation:
@@ -130,13 +155,18 @@ This image contains the `cares_reinforcement_learning`, `gymnasium_envrionments`
 
 ### Running RL Tasks
 
-This environment is designed to be used with the [CARES Reinforcement Learning](https://github.com/UoA-CARES/cares_reinforcement_learning) framework. To run RL training tasks:
+`drone_gym` is designed to be used with the [CARES Reinforcement Learning](https://github.com/UoA-CARES/cares_reinforcement_learning) framework. To run RL training tasks:
 
 ```bash
-# Run a training task (example)
+# Run a SARL task (example)
 cares-rl train cli --gym drone --task move_to_random_2d_position SAC
-cares-rl train cli drone --task sarl_tag SAC
+
+# Run a MARL task (example)
+cares-rl train cli --gym marl_drone --task marl_move_to_targets_2d --num_agents 4 MADDPG
 ```
+Available task names are defined in `drone_gym/task_factory.py`. Tasks may have additional optional parameters; see specific task files for more information. 
+
+For simulator-based training, run the command from the workspace root folder described in the "Running the Simulator" section. For real Crazyflie training, include the `--use_simulator 0` flag.
 
 Refer to the [CARES Reinforcement Learning](https://github.com/UoA-CARES/cares_reinforcement_learning) for detailed instructions on running tasks and configuring training parameters.
 
@@ -171,7 +201,7 @@ drone.stop()
 
 ### Creating Custom RL Tasks
 
-Extend the `DroneEnvironment` base class to create custom tasks in the `tasks` folder:
+Extend the `DroneEnvironment` or `MarlDroneEnvironment` base class to create custom tasks in the `tasks` folder:
 
 ```python
 from drone_gym.drone_environment import DroneEnvironment
@@ -195,7 +225,7 @@ class MyCustomTask(DroneEnvironment):
     # Implement other abstract methods...
 ```
 
-See `move_to_2d_position.py` and `move_to_random_2d_position.py` for complete examples.
+See `move_to_2d_position.py` and `marl_move_to_targets_2d.py` for complete examples.
 
 ### Example Task Demos
 
