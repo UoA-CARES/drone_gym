@@ -146,25 +146,29 @@ class DroneEnvironment(ABC):
         # Check that the drone is not already flying
         print("DRONE RESET")
 
-        if not self.drone.is_flying_event.is_set():
-            print("Control: The drone is already flying")
-            self.drone.take_off()
-            time.sleep(1)
+        if isinstance(self.drone, DroneSim):
+            self._prepare_sim_drone_for_reset()
 
-        # Ensure drone is flying before setting target position
-        self.drone.is_flying_event.wait(timeout=15)
+        self._move_drone_to_reset_position()
+        # if not self.drone.is_flying_event.is_set():
+        #     print("Control: The drone is already flying")
+        #     self.drone.take_off()
+        #     time.sleep(1)
 
-        # Move to the task's reset position (defaults to [0, 0, 1])
-        self.drone.set_target_position(*self.reset_position)
-        time.sleep(0.1)  # Allow target position to be set
-        self.drone.start_position_control()
+        # # Ensure drone is flying before setting target position
+        # self.drone.is_flying_event.wait(timeout=15)
 
-        # Wait for position to be reached
-        self.drone.at_reset_position.wait(timeout=12)
-        time.sleep(1)
-        self.drone.stop_position_control()
+        # # Move to the task's reset position (defaults to [0, 0, 1])
+        # self.drone.set_target_position(*self.reset_position)
+        # time.sleep(0.1)  # Allow target position to be set
+        # self.drone.start_position_control()
 
-        self.drone.clear_reset_position_event()
+        # # Wait for position to be reached
+        # self.drone.at_reset_position.wait(timeout=12)
+        # time.sleep(1)
+        # self.drone.stop_position_control()
+
+        # self.drone.clear_reset_position_event()
 
         # Reset task-specific state
         self._reset_task_state()
@@ -180,6 +184,158 @@ class DroneEnvironment(ABC):
         self.drone.start_velocity_control()
 
         return self._get_state()
+    
+    def _move_drone_to_reset_position(self) -> None:
+        """
+        Take off when necessary and move the drone to the configured reset position.
+
+        This behaviour is shared by physical and simulated drones.
+        """
+        if not self.drone.is_flying_event.is_set():
+            print("[Reset] Taking off before moving to reset position.")
+            self.drone.take_off()
+            time.sleep(1)
+
+        # Ensure the drone is flying before enabling position control
+        if not self.drone.is_flying_event.wait(timeout=15):
+            print(
+                "[Reset] Drone failed to confirm take-off before "
+                "moving to the reset position."
+            )
+
+        self.drone.set_target_position(*self.reset_position)
+        time.sleep(0.1)
+
+        self.drone.start_position_control()
+
+        reset_reached = self.drone.at_reset_position.wait(timeout=12)
+
+        if not reset_reached:
+            print(
+                "[Reset] Drone failed to reach the reset position "
+                f"within the timeout. Target: {self.reset_position}, "
+                f"current: {self.drone.get_position()}"
+            )
+
+        time.sleep(1)
+
+        self.drone.stop_position_control()
+        self.drone.clear_reset_position_event()
+        self.drone.set_velocity_vector(0.0, 0.0, 0.0)
+
+    def _prepare_sim_drone_for_reset(self) -> None:
+        """
+        Prepare a simulated drone for a new episode.
+
+        The drone is landed, its emergency and boundary-monitoring state is
+        restored, its Gazebo model is moved to the reset spawn, and its EKF is
+        reseeded before take-off.
+        """
+        if self.sim_manager is None:
+            print("[Reset] No simulator manager available; skipping simulated drone reset.")
+            return
+
+        print("[Reset] Preparing simulated drone for reset.")
+
+        # Ensure the simulated drone is on the ground before teleporting it
+        self.drone.land()
+
+        if not self.drone.is_landed_event.wait(timeout=10):
+            print(
+                "[Reset] Simulated drone did not confirm landing before teleport."
+            )
+
+        # A hard-boundary response leaves this set and disables controllers
+        if self.drone.emergency_event.is_set():
+            print("[Reset] Clearing simulated drone emergency state.")
+            self.drone.clear_emergency_event()
+
+        # Restore boundary monitoring if it stopped following an emergency
+        if self.drone.safety_thread_active:
+            self.drone.stop_boundary_monitoring()
+
+        time.sleep(0.2)
+        self.drone.start_boundary_monitoring()
+
+        spawn_position = [
+            float(self.reset_position[0]),
+            float(self.reset_position[1]),
+            0.02,
+        ]
+
+        print(
+            "[Reset] Teleporting simulated drone to spawn position: "
+            f"{spawn_position}"
+        )
+
+        self.sim_manager.set_drone_pose(
+            drone_id=0,
+            x=spawn_position[0],
+            y=spawn_position[1],
+            z=spawn_position[2],
+            orientation=(0.0, 0.0, 0.0),
+        )
+
+        # Allow the model to settle onto the Gazebo floor
+        time.sleep(0.3)
+
+        self._reset_ekf(
+            drone=self.drone,
+            position=spawn_position,
+        )
+
+        # Give the estimator time to converge before taking off
+        time.sleep(0.5)
+        
+    def _reset_ekf(
+        self,
+        drone: DroneSim,
+        position: list[float] | None = None,
+    ) -> None:
+        """
+        Seed the Kalman filter with the drone's true position and reset it.
+
+        Only call this after the simulated drone has landed and has been
+        teleported. Otherwise, the estimator may still use the old position
+        and produce a large corrective command during take-off.
+        """
+        try:
+            if getattr(drone, "cf", None) is None:
+                return
+
+            if position is not None:
+                try:
+                    drone.cf.param.set_value(
+                        "kalman.initialX",
+                        f"{float(position[0])}",
+                    )
+                    drone.cf.param.set_value(
+                        "kalman.initialY",
+                        f"{float(position[1])}",
+                    )
+                    drone.cf.param.set_value(
+                        "kalman.initialZ",
+                        f"{float(position[2])}",
+                    )
+
+                except Exception as exc:
+                    print(
+                        f"[{getattr(drone, 'agent_id', '?')}] "
+                        "EKF seed warning; continuing with plain reset: "
+                        f"{exc}"
+                    )
+
+            drone.cf.param.set_value(
+                "kalman.resetEstimation",
+                "1",
+            )
+            time.sleep(0.4)
+
+        except Exception as exc:
+            print(
+                f"[{getattr(drone, 'agent_id', '?')}] "
+                f"EKF reset warning: {exc}"
+            )
 
     def step(self, action):
         """Execute one step in the environment"""
@@ -191,8 +347,8 @@ class DroneEnvironment(ABC):
 
         self.steps += 1
 
-        if len(action) != 3:  # changed from 3 to 2
-            raise ValueError("Action must be a 3-element array [vx, vy]")
+        if len(action) != 3:
+            raise ValueError("Action must be a 3-element array [vx, vy, vz]")
 
         # Denormalize action from [-1, 1] to [-max_velocity, max_velocity]
         vx = action[0] * self.max_velocity
