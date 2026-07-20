@@ -77,10 +77,7 @@ class InterceptTargetLine3D(DroneEnvironment):
         self._sample_target_start()
         self._sample_target_velocity()
 
-        if hasattr(self.drone, "set_visual_target_marker_position"):
-            self.drone.set_visual_target_marker_position(
-                self.target_position[0], self.target_position[1], self.target_position[2]
-            )
+        self._set_target_marker(self.target_position)
 
         self.previous_distance = self._distance_to_target(self.drone.get_position())
 
@@ -177,10 +174,7 @@ class InterceptTargetLine3D(DroneEnvironment):
             new_sz = self.target_position[2] + self.target_velocity[2] * self.step_time
         
         self.target_position = [new_sx, new_sy, new_sz]
-        if hasattr(self.drone, "set_visual_target_marker_position"):
-            self.drone.set_visual_target_marker_position(
-                self.target_position[0], self.target_position[1], self.target_position[2]
-            )
+        self._set_target_marker(self.target_position)
 
     def _reset_task_state(self):
         """Reset task-specific state variables"""

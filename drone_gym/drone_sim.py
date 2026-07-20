@@ -55,42 +55,6 @@ class DroneSim(DroneSetup):
             position_source=position_source
         )
 
-    def set_visual_target_marker_position(
-        self,
-        x: float,
-        y: float,
-        z: float,
-        marker_name: str | None = None,
-    ) -> None:
-        """
-        Backwards-compatible wrapper.
-
-        If marker_name is provided, pass it to SimManager.
-        Otherwise, call SimManager without marker_name so it uses its own default.
-        """
-        if marker_name is not None:
-            self.sim_manager.set_visual_target_marker_position(
-                x=x,
-                y=y,
-                z=z,
-                marker_name=marker_name,
-            )
-        else:
-            self.sim_manager.set_visual_target_marker_position(
-                x=x,
-                y=y,
-                z=z,
-            )
-
-    def set_visual_boundary_lines(self, drone_xy_limit: float, z_level: float) -> None:
-        """
-        Backwards-compatible wrapper
-        """
-        self.sim_manager.set_visual_boundary_lines(
-            xy_limit=drone_xy_limit,
-            z_level=z_level,
-        )
-
     def initialise_crazyflie(self) -> bool:
         """Initialise Crazyflie connection for CrazySim"""
         try:

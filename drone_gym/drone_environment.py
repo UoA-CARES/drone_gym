@@ -92,21 +92,56 @@ class DroneEnvironment(ABC):
         # Success tracking for learning phase
         self.success_count = 0
 
-    def _update_visual_boundaries(self):
-        """Push per-task boundary limits to Gazebo visual overlays when available."""
-        if not hasattr(self.drone, "set_visual_boundary_lines"):
+    def _update_visual_boundaries(self) -> None:
+        """
+        Draw or update the task flight boundary in Gazebo.
+
+        This is a simulation-only world operation. Physical-drone
+        environments do not have a SimManager, so this method is a no-op.
+        """
+        if self.sim_manager is None:
             return
 
-        drone_xy = float(self.xy_limit)
-        z_level = float(self.reset_position[2])
+        xy_limit = float(self.xy_limit)
+        z_level = float(self.z_limit)
 
-        if hasattr(self, "boundary") and isinstance(self.boundary, list) and len(self.boundary) >= 4:
-            drone_xy = float(self.boundary[0])
-            z_level = float(max(self.boundary[2], self.reset_position[2]))
+        if (
+            hasattr(self, "boundary")
+            and isinstance(self.boundary, list)
+            and len(self.boundary) >= 4
+        ):
+            xy_limit = float(self.boundary[0])
+            z_level = float(self.boundary[2])
 
-        self.drone.set_visual_boundary_lines(
-            drone_xy_limit=drone_xy,
+        self.sim_manager.set_visual_boundary_lines(
+            xy_limit=xy_limit,
             z_level=z_level,
+        )
+
+    def _set_target_marker(
+        self,
+        position: List[float] | np.ndarray,
+        marker_name: str = "target",
+    ) -> None:
+        """
+        Draw or update a Gazebo marker for a task target.
+
+        This method is a no-op when the environment is controlling
+        a physical drone.
+        """
+        if self.sim_manager is None:
+            return
+
+        if len(position) != 3:
+            raise ValueError(
+                "Target marker position must contain [x, y, z]."
+            )
+
+        self.sim_manager.set_visual_target_marker_position(
+            x=float(position[0]),
+            y=float(position[1]),
+            z=float(position[2]),
+            marker_name=marker_name,
         )
 
     def _reset_control_properties(self):
