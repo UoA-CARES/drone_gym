@@ -7,7 +7,6 @@ from collections import deque
 from typing import Dict, List, Any, Literal
 
 from drone_gym.drone_environment import DroneEnvironment
-from drone_gym.sim_manager import get_default_sim_manager
 from drone_gym.agents.bodies import CrazyflieBody
 from drone_gym.agents.policies import CallablePolicy
 from drone_gym.agents.sim_agent import SimAgent
