@@ -1,15 +1,10 @@
 from abc import ABC, abstractmethod
-import os
-import subprocess
 from drone_gym.sim_manager import SimManager, SimLaunchConfig
 from drone_gym.drone_sim import DroneSim
 from drone_gym.drone import Drone
 import time
 import numpy as np
 from typing import Dict, List, Any, Literal
-
-# TODO - make naming more consistent
-
 
 class DroneEnvironment(ABC):
     """Base drone environment that handles common drone operations"""
@@ -23,46 +18,36 @@ class DroneEnvironment(ABC):
         self._closed = False  # Track if the environment has been closed
         # Set the appropriate drone instance based on use_simulator flag
         print("use_simulator", use_simulator)
-        self.num_agents_config = 1  # Default to 1 agent; can be overridden by tasks
+        self.use_simulator = use_simulator
 
-        if use_simulator:
+        # TODO: init should have a input for the number of drones and that is assigned to self.num_agents_config. 
+        # Tasks such as sarl_tag will then use that to spawn the correct number of drones through sim manager.
+        self.num_agents_config = 1  
+
+        if self.use_simulator:
             self.sim_manager = SimManager(
                 sim_launch_config=SimLaunchConfig(
                     num_agents=self.num_agents_config
                 )
             )
-
             time.sleep(1)  # Allow time for the sim manager to initialize
             print("Starting simulator...")
             sim_started = self.sim_manager.start_sim()
-            print("start_sim returned:", sim_started)
-
-            print("cwd:", os.getcwd())
-            print("DISPLAY:", os.environ.get("DISPLAY"))
-            print("XDG_RUNTIME_DIR:", os.environ.get("XDG_RUNTIME_DIR"))
-
-            subprocess.run(
-                'ps -eo pid,ppid,pgid,sid,stat,etime,cmd | '
-                'grep -i "sitl_multiagent_square\\|gz sim\\|cf2" | grep -v grep',
-                shell=True,
-            )
-
-            print("launch process alive:", self.sim_manager.is_sim_process_alive())
-            print("sitl ready:", self.sim_manager._sitl_processes_ready())
-            print("drones spawned:", self.sim_manager.are_drones_spawned(timeout=2.0))
-
             if not sim_started:
                 raise RuntimeError("Failed to start CrazySim/Gazebo simulator.")
-            # if not self.sim_manager.start_sim():
-            #     raise RuntimeError("Failed to start CrazySim/Gazebo simulator.")
+  
         else:
             self.sim_manager = None
             
-        if use_simulator:
+        if self.use_simulator:
             print("Made DroneSim")
-            self.drone = DroneSim(
-                sim_manager=self.sim_manager,
-            )
+            try:
+                self.drone = DroneSim(
+                    sim_manager=self.sim_manager,
+                )
+            except Exception:
+                self.sim_manager.stop_sim()
+                raise
         else:
             print("Made Drone")
             self.drone = Drone()
@@ -185,25 +170,6 @@ class DroneEnvironment(ABC):
             self._prepare_sim_drone_for_reset()
 
         self._move_drone_to_reset_position()
-        # if not self.drone.is_flying_event.is_set():
-        #     print("Control: The drone is already flying")
-        #     self.drone.take_off()
-        #     time.sleep(1)
-
-        # # Ensure drone is flying before setting target position
-        # self.drone.is_flying_event.wait(timeout=15)
-
-        # # Move to the task's reset position (defaults to [0, 0, 1])
-        # self.drone.set_target_position(*self.reset_position)
-        # time.sleep(0.1)  # Allow target position to be set
-        # self.drone.start_position_control()
-
-        # # Wait for position to be reached
-        # self.drone.at_reset_position.wait(timeout=12)
-        # time.sleep(1)
-        # self.drone.stop_position_control()
-
-        # self.drone.clear_reset_position_event()
 
         # Reset task-specific state
         self._reset_task_state()

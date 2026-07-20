@@ -1172,24 +1172,3 @@ class SimManager:
         qw = cr * cp * cy + sr * sp * sy
 
         return qx, qy, qz, qw
-
-
-_DEFAULT_SIM_MANAGER: SimManager | None = None
-_DEFAULT_SIM_MANAGER_LOCK = threading.Lock()
-
-
-def get_default_sim_manager() -> SimManager:
-    """
-    Return a shared default SimManager.
-
-    This lets the current single-agent code keep using DroneSim() with no
-    extra arguments, while also making it possible for future multiple
-    DroneSim objects to share one simulation manager.
-    """
-    global _DEFAULT_SIM_MANAGER
-
-    with _DEFAULT_SIM_MANAGER_LOCK:
-        if _DEFAULT_SIM_MANAGER is None:
-            _DEFAULT_SIM_MANAGER = SimManager()
-
-        return _DEFAULT_SIM_MANAGER

@@ -6,7 +6,7 @@ from cflib.crazyflie import Crazyflie
 
 from cflib.crazyflie.syncCrazyflie import SyncCrazyflie
 from drone_gym.drone_setup import DroneSetup
-from drone_gym.sim_manager import SimManager, get_default_sim_manager
+from drone_gym.sim_manager import SimManager
 import warnings
 from drone_gym.utils.crazyflie_log_position_source import (
     CrazyflieLogPositionSource,
@@ -39,7 +39,7 @@ class DroneSim(DroneSetup):
         # Drone Properties
         self.simulation = simulation
         self.agent_id = agent_id
-        self.sim_manager = sim_manager or get_default_sim_manager()
+        self.sim_manager = sim_manager
         if position_source is None:
             position_source = CrazyflieLogPositionSource(
                 crazyflie_getter=lambda: self.cf,
