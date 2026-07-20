@@ -6,7 +6,7 @@ from cflib.crazyflie import Crazyflie
 
 from cflib.crazyflie.syncCrazyflie import SyncCrazyflie
 from drone_gym.drone_setup import DroneSetup
-from drone_gym.sim_manager import SimManager, get_default_sim_manager
+from drone_gym.sim_manager import SimManager
 import warnings
 from drone_gym.utils.crazyflie_log_position_source import (
     CrazyflieLogPositionSource,
@@ -39,7 +39,7 @@ class DroneSim(DroneSetup):
         # Drone Properties
         self.simulation = simulation
         self.agent_id = agent_id
-        self.sim_manager = sim_manager or get_default_sim_manager()
+        self.sim_manager = sim_manager
         if position_source is None:
             position_source = CrazyflieLogPositionSource(
                 crazyflie_getter=lambda: self.cf,
@@ -53,42 +53,6 @@ class DroneSim(DroneSetup):
             simulation=simulation, 
             boundaries=boundaries, 
             position_source=position_source
-        )
-
-    def set_visual_target_marker_position(
-        self,
-        x: float,
-        y: float,
-        z: float,
-        marker_name: str | None = None,
-    ) -> None:
-        """
-        Backwards-compatible wrapper.
-
-        If marker_name is provided, pass it to SimManager.
-        Otherwise, call SimManager without marker_name so it uses its own default.
-        """
-        if marker_name is not None:
-            self.sim_manager.set_visual_target_marker_position(
-                x=x,
-                y=y,
-                z=z,
-                marker_name=marker_name,
-            )
-        else:
-            self.sim_manager.set_visual_target_marker_position(
-                x=x,
-                y=y,
-                z=z,
-            )
-
-    def set_visual_boundary_lines(self, drone_xy_limit: float, z_level: float) -> None:
-        """
-        Backwards-compatible wrapper
-        """
-        self.sim_manager.set_visual_boundary_lines(
-            xy_limit=drone_xy_limit,
-            z_level=z_level,
         )
 
     def initialise_crazyflie(self) -> bool:

@@ -161,10 +161,7 @@ class MoveCircle2D(DroneEnvironment):
         if self.current_angle >= 2 * np.pi:
             self.current_angle -= 2 * np.pi
 
-        if hasattr(self.drone, "set_visual_target_marker_position"):
-            self.drone.set_visual_target_marker_position(
-                self.goal_position[0], self.goal_position[1], self.goal_position[2]
-            )
+        self._set_target_marker(self.goal_position)
 
     def _reset_task_state(self):
         """Reset task-specific state variables"""

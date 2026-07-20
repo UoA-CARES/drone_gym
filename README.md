@@ -109,7 +109,7 @@ Simulator output is written to:
 logs/crazysim.log
 ```
 
-If the program crashes, is force-stopped, or exits before cleanup is reached, Gazebo or SITL processes may remain running and may need to be closed manually. They should close on their own the next time training is called, or they can be cleaned up with:
+If the program crashes, is force-stopped, or exits before cleanup is reached, Gazebo or SITL processes may remain running and will need to be closed manually with:
 ```text
 pkill -f "gz sim"
 pkill -f "sitl_make/build/cf2"
@@ -159,7 +159,7 @@ This image contains the `cares_reinforcement_learning`, `gymnasium_envrionments`
 
 ```bash
 # Run a SARL task (example)
-cares-rl train cli --gym drone --task move_to_random_2d_position SAC
+cares-rl train cli --gym drone --task move_random_2d SAC
 
 # Run a MARL task (example)
 cares-rl train cli --gym marl_drone --task marl_move_to_targets_2d --num_agents 4 MADDPG

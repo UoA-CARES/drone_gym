@@ -5,7 +5,6 @@ import time
 import threading
 from typing import Dict, List, Any, Literal
 from drone_gym.drone_environment import DroneEnvironment
-from drone_gym.sim_manager import get_default_sim_manager
 from drone_gym.agents.ticker import AgentTicker
 import matplotlib.pyplot as plt
 import io

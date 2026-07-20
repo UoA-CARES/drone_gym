@@ -1,22 +1,53 @@
 from abc import ABC, abstractmethod
+from drone_gym.sim_manager import SimManager, SimLaunchConfig
 from drone_gym.drone_sim import DroneSim
 from drone_gym.drone import Drone
 import time
 import numpy as np
 from typing import Dict, List, Any, Literal
 
-# TODO - make naming more consistent
-
-
 class DroneEnvironment(ABC):
     """Base drone environment that handles common drone operations"""
 
-    def __init__(self, use_simulator: Literal[0,1], max_velocity: float = 0.5, step_time: float = 0.5):
+    def __init__(
+            self, 
+            use_simulator: Literal[0,1],
+            max_velocity: float = 0.5,
+            step_time: float = 0.5,
+        ) -> None:
+        self._closed = False  # Track if the environment has been closed
         # Set the appropriate drone instance based on use_simulator flag
         print("use_simulator", use_simulator)
-        if use_simulator:
+        self.use_simulator = use_simulator
+
+        # TODO: init should have a input for the number of drones and that is assigned to self.num_agents_config. 
+        # Tasks such as sarl_tag will then use that to spawn the correct number of drones through sim manager.
+        self.num_agents_config = 1  
+
+        if self.use_simulator:
+            self.sim_manager = SimManager(
+                sim_launch_config=SimLaunchConfig(
+                    num_agents=self.num_agents_config
+                )
+            )
+            time.sleep(1)  # Allow time for the sim manager to initialize
+            print("Starting simulator...")
+            sim_started = self.sim_manager.start_sim()
+            if not sim_started:
+                raise RuntimeError("Failed to start CrazySim/Gazebo simulator.")
+  
+        else:
+            self.sim_manager = None
+            
+        if self.use_simulator:
             print("Made DroneSim")
-            self.drone = DroneSim()
+            try:
+                self.drone = DroneSim(
+                    sim_manager=self.sim_manager,
+                )
+            except Exception:
+                self.sim_manager.stop_sim()
+                raise
         else:
             print("Made Drone")
             self.drone = Drone()
@@ -46,21 +77,56 @@ class DroneEnvironment(ABC):
         # Success tracking for learning phase
         self.success_count = 0
 
-    def _update_visual_boundaries(self):
-        """Push per-task boundary limits to Gazebo visual overlays when available."""
-        if not hasattr(self.drone, "set_visual_boundary_lines"):
+    def _update_visual_boundaries(self) -> None:
+        """
+        Draw or update the task flight boundary in Gazebo.
+
+        This is a simulation-only world operation. Physical-drone
+        environments do not have a SimManager, so this method is a no-op.
+        """
+        if self.sim_manager is None:
             return
 
-        drone_xy = float(self.xy_limit)
-        z_level = float(self.reset_position[2])
+        xy_limit = float(self.xy_limit)
+        z_level = float(self.z_limit)
 
-        if hasattr(self, "boundary") and isinstance(self.boundary, list) and len(self.boundary) >= 4:
-            drone_xy = float(self.boundary[0])
-            z_level = float(max(self.boundary[2], self.reset_position[2]))
+        if (
+            hasattr(self, "boundary")
+            and isinstance(self.boundary, list)
+            and len(self.boundary) >= 4
+        ):
+            xy_limit = float(self.boundary[0])
+            z_level = float(self.boundary[2])
 
-        self.drone.set_visual_boundary_lines(
-            drone_xy_limit=drone_xy,
+        self.sim_manager.set_visual_boundary_lines(
+            xy_limit=xy_limit,
             z_level=z_level,
+        )
+
+    def _set_target_marker(
+        self,
+        position: List[float] | np.ndarray,
+        marker_name: str = "target",
+    ) -> None:
+        """
+        Draw or update a Gazebo marker for a task target.
+
+        This method is a no-op when the environment is controlling
+        a physical drone.
+        """
+        if self.sim_manager is None:
+            return
+
+        if len(position) != 3:
+            raise ValueError(
+                "Target marker position must contain [x, y, z]."
+            )
+
+        self.sim_manager.set_visual_target_marker_position(
+            x=float(position[0]),
+            y=float(position[1]),
+            z=float(position[2]),
+            marker_name=marker_name,
         )
 
     def _reset_control_properties(self):
@@ -100,25 +166,10 @@ class DroneEnvironment(ABC):
         # Check that the drone is not already flying
         print("DRONE RESET")
 
-        if not self.drone.is_flying_event.is_set():
-            print("Control: The drone is already flying")
-            self.drone.take_off()
-            time.sleep(1)
+        if isinstance(self.drone, DroneSim):
+            self._prepare_sim_drone_for_reset()
 
-        # Ensure drone is flying before setting target position
-        self.drone.is_flying_event.wait(timeout=15)
-
-        # Move to the task's reset position (defaults to [0, 0, 1])
-        self.drone.set_target_position(*self.reset_position)
-        time.sleep(0.1)  # Allow target position to be set
-        self.drone.start_position_control()
-
-        # Wait for position to be reached
-        self.drone.at_reset_position.wait(timeout=12)
-        time.sleep(1)
-        self.drone.stop_position_control()
-
-        self.drone.clear_reset_position_event()
+        self._move_drone_to_reset_position()
 
         # Reset task-specific state
         self._reset_task_state()
@@ -134,6 +185,180 @@ class DroneEnvironment(ABC):
         self.drone.start_velocity_control()
 
         return self._get_state()
+    
+    def _move_drone_to_reset_position(self) -> None:
+        """
+        Take off when necessary and move the drone to the configured reset position.
+
+        This behaviour is shared by physical and simulated drones.
+        """
+        if not self.drone.is_flying_event.is_set():
+            print("[Reset] Taking off before moving to reset position.")
+            self.drone.take_off()
+            time.sleep(1)
+
+        # Ensure the drone is flying before enabling position control
+        if not self.drone.is_flying_event.wait(timeout=15):
+            print(
+                "[Reset] Drone failed to confirm take-off before "
+                "moving to the reset position."
+            )
+
+        self.drone.set_target_position(*self.reset_position)
+        time.sleep(0.1)
+
+        self.drone.start_position_control()
+
+        reset_reached = self.drone.at_reset_position.wait(timeout=12)
+
+        if not reset_reached:
+            print(
+                "[Reset] Drone failed to reach the reset position "
+                f"within the timeout. Target: {self.reset_position}, "
+                f"current: {self.drone.get_position()}"
+            )
+
+        time.sleep(1)
+
+        self.drone.stop_position_control()
+        self.drone.clear_reset_position_event()
+        self.drone.set_velocity_vector(0.0, 0.0, 0.0)
+
+    def _prepare_sim_drone_for_reset(self) -> None:
+        """
+        Prepare a simulated drone for a new episode.
+
+        The drone is landed, its emergency and boundary-monitoring state is
+        restored, its Gazebo model is moved to the reset spawn, and its EKF is
+        reseeded before take-off.
+        """
+        if self.sim_manager is None:
+            print("[Reset] No simulator manager available; skipping simulated drone reset.")
+            return
+
+        print("[Reset] Preparing simulated drone for reset.")
+
+        # Ensure the simulated drone is on the ground before teleporting it
+        self.drone.land()
+
+        if not self.drone.is_landed_event.wait(timeout=10):
+            print(
+                "[Reset] Simulated drone did not confirm landing before teleport."
+            )
+
+        # A hard-boundary response leaves this set and disables controllers
+        if self.drone.emergency_event.is_set():
+            print("[Reset] Clearing simulated drone emergency state.")
+            self.drone.clear_emergency_event()
+
+        # Restore boundary monitoring if it stopped following an emergency
+        if self.drone.safety_thread_active:
+            self.drone.stop_boundary_monitoring()
+
+        time.sleep(0.2)
+        self.drone.start_boundary_monitoring()
+
+        spawn_position = [
+            float(self.reset_position[0]),
+            float(self.reset_position[1]),
+            0.02,
+        ]
+
+        print(
+            "[Reset] Teleporting simulated drone to spawn position: "
+            f"{spawn_position}"
+        )
+
+        self.sim_manager.set_drone_pose(
+            drone_id=0,
+            x=spawn_position[0],
+            y=spawn_position[1],
+            z=spawn_position[2],
+            orientation=(0.0, 0.0, 0.0),
+        )
+
+        # Allow the model to settle onto the Gazebo floor
+        time.sleep(0.3)
+
+        self._reset_ekf(
+            drone=self.drone,
+            position=spawn_position,
+        )
+
+        # Give the estimator time to converge before taking off
+        time.sleep(0.5)
+        
+    def _reset_ekf(
+        self,
+        drone: DroneSim,
+        position: list[float] | None = None,
+    ) -> None:
+        """
+        Seed the Kalman filter with the drone's true position and reset it.
+
+        Only call this after the simulated drone has landed and has been
+        teleported. Otherwise, the estimator may still use the old position
+        and produce a large corrective command during take-off.
+        """
+        try:
+            if getattr(drone, "cf", None) is None:
+                return
+
+            if position is not None:
+                try:
+                    drone.cf.param.set_value(
+                        "kalman.initialX",
+                        f"{float(position[0])}",
+                    )
+                    drone.cf.param.set_value(
+                        "kalman.initialY",
+                        f"{float(position[1])}",
+                    )
+                    drone.cf.param.set_value(
+                        "kalman.initialZ",
+                        f"{float(position[2])}",
+                    )
+
+                except Exception as exc:
+                    print(
+                        f"[{getattr(drone, 'agent_id', '?')}] "
+                        "EKF seed warning; continuing with plain reset: "
+                        f"{exc}"
+                    )
+
+            drone.cf.param.set_value(
+                "kalman.resetEstimation",
+                "1",
+            )
+            time.sleep(0.4)
+
+        except Exception as exc:
+            print(
+                f"[{getattr(drone, 'agent_id', '?')}] "
+                f"EKF reset warning: {exc}"
+            )
+
+    def _stop_drone_motion(self, reason: str = "") -> None:
+        """
+        Cancel the drone's current commanded motion.
+
+        This does not land, disconnect, or stop the velocity-control thread.
+        It only replaces the current velocity target with zero.
+        """
+        try:
+            self.drone.set_velocity_vector(0.0, 0.0, 0.0)
+
+            if reason:
+                print(
+                    "[SARL ENV] Zero velocity command sent: "
+                    f"{reason}"
+                )
+
+        except Exception as exc:
+            print(
+                "[SARL ENV] Failed to send zero velocity command: "
+                f"{exc}"
+            )
 
     def step(self, action):
         """Execute one step in the environment"""
@@ -145,8 +370,8 @@ class DroneEnvironment(ABC):
 
         self.steps += 1
 
-        if len(action) != 3:  # changed from 3 to 2
-            raise ValueError("Action must be a 3-element array [vx, vy]")
+        if len(action) != 3:
+            raise ValueError("Action must be a 3-element array [vx, vy, vz]")
 
         # Denormalize action from [-1, 1] to [-max_velocity, max_velocity]
         vx = action[0] * self.max_velocity
@@ -184,6 +409,8 @@ class DroneEnvironment(ABC):
         # Check if episode is done using task-specific logic
         done = self._check_if_done(current_state)
         truncated = self._check_if_truncated(current_state)
+        if done or truncated:
+            self._stop_drone_motion()
 
         # Generate info dict
         info = {
@@ -251,15 +478,40 @@ class DroneEnvironment(ABC):
         self._reset_target_set = False  # Force re-setting on next reset
         print(f"Reset position updated to {self.reset_position}")
 
-    def close(self):
-        """Clean up the drone environment"""
-        self.drone.land()
-        self.drone.is_landed_event.wait(timeout=30)
-        if not self.drone.is_landed_event.is_set():
-            print("Drone is failing to land....")
-            print("Forcing stop")
-        # time.sleep(5)
-        self.drone.stop()
+    def close(self) -> None:
+        """
+        Stop the drone interface and any simulator owned by the environment.
+        """
+        if self._closed:
+            return
+
+        self._closed = True
+
+        try:
+            try:
+                self.drone.land()
+
+                if not self.drone.is_landed_event.wait(timeout=30):
+                    print(
+                        "[SARL ENV] Drone failed to confirm landing. "
+                        "Forcing drone shutdown."
+                    )
+
+            except Exception as exc:
+                print(f"[SARL ENV] Error while landing drone: {exc}")
+
+            finally:
+                try:
+                    self.drone.stop()
+                except Exception as exc:
+                    print(f"[SARL ENV] Error while stopping drone: {exc}")
+
+        finally:
+            if self.sim_manager is not None:
+                try:
+                    self.sim_manager.stop_sim()
+                except Exception as exc:
+                    print(f"[SARL ENV] Error while stopping simulator: {exc}")
 
     def render(self, mode="human"):
         """Render the environment state"""
@@ -299,7 +551,13 @@ class DroneEnvironment(ABC):
         return False
 
     def change_battery(self):
-
+        """
+        Land the drone, wait for user confirmation of battery change, and then re-initialize and take off.
+        This method is intended for use with physical drones and will not perform any actions if the drone is a simulation instance.
+        """
+        if isinstance(self.drone, DroneSim):
+            return 
+        
         if self.drone.velocity_controller_active:
             self.drone.stop_velocity_control()
         print("[Drone] Beginning battery change operation.")
@@ -336,6 +594,14 @@ class DroneEnvironment(ABC):
         return True
 
     def restart(self):
+        """
+        Restart the drone after it has landed or crashed, ensuring it is ready for flight. 
+        Does the necessary cleanup, waits for user confirmation, and does re-initialization steps before take-off.
+        This method is intended for use with physical drones and will not perform any actions if the drone is a simulation instance.
+        """
+        if isinstance(self.drone, DroneSim):
+            return 
+        
         self.drone.pre_battery_change_cleanup()
         time.sleep(2)
 
