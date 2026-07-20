@@ -337,6 +337,28 @@ class DroneEnvironment(ABC):
                 f"EKF reset warning: {exc}"
             )
 
+    def _stop_drone_motion(self, reason: str = "") -> None:
+        """
+        Cancel the drone's current commanded motion.
+
+        This does not land, disconnect, or stop the velocity-control thread.
+        It only replaces the current velocity target with zero.
+        """
+        try:
+            self.drone.set_velocity_vector(0.0, 0.0, 0.0)
+
+            if reason:
+                print(
+                    "[SARL ENV] Zero velocity command sent: "
+                    f"{reason}"
+                )
+
+        except Exception as exc:
+            print(
+                "[SARL ENV] Failed to send zero velocity command: "
+                f"{exc}"
+            )
+
     def step(self, action):
         """Execute one step in the environment"""
 
@@ -386,6 +408,8 @@ class DroneEnvironment(ABC):
         # Check if episode is done using task-specific logic
         done = self._check_if_done(current_state)
         truncated = self._check_if_truncated(current_state)
+        if done or truncated:
+            self._stop_drone_motion()
 
         # Generate info dict
         info = {
@@ -526,7 +550,13 @@ class DroneEnvironment(ABC):
         return False
 
     def change_battery(self):
-
+        """
+        Land the drone, wait for user confirmation of battery change, and then re-initialize and take off.
+        This method is intended for use with physical drones and will not perform any actions if the drone is a simulation instance.
+        """
+        if isinstance(self.drone, DroneSim):
+            return 
+        
         if self.drone.velocity_controller_active:
             self.drone.stop_velocity_control()
         print("[Drone] Beginning battery change operation.")
@@ -563,6 +593,14 @@ class DroneEnvironment(ABC):
         return True
 
     def restart(self):
+        """
+        Restart the drone after it has landed or crashed, ensuring it is ready for flight. 
+        Does the necessary cleanup, waits for user confirmation, and does re-initialization steps before take-off.
+        This method is intended for use with physical drones and will not perform any actions if the drone is a simulation instance.
+        """
+        if isinstance(self.drone, DroneSim):
+            return 
+        
         self.drone.pre_battery_change_cleanup()
         time.sleep(2)
 
