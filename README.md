@@ -159,7 +159,7 @@ This image contains the `cares_reinforcement_learning`, `gymnasium_envrionments`
 
 ```bash
 # Run a SARL task (example)
-cares-rl train cli --gym drone --task move_to_random_2d_position SAC
+cares-rl train cli --gym drone --task move_random_2d SAC
 
 # Run a MARL task (example)
 cares-rl train cli --gym marl_drone --task marl_move_to_targets_2d --num_agents 4 MADDPG
