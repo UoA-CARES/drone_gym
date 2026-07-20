@@ -1,4 +1,7 @@
 from abc import ABC, abstractmethod
+import os
+import subprocess
+from drone_gym.sim_manager import SimManager, SimLaunchConfig
 from drone_gym.drone_sim import DroneSim
 from drone_gym.drone import Drone
 import time
@@ -11,12 +14,55 @@ from typing import Dict, List, Any, Literal
 class DroneEnvironment(ABC):
     """Base drone environment that handles common drone operations"""
 
-    def __init__(self, use_simulator: Literal[0,1], max_velocity: float = 0.5, step_time: float = 0.5):
+    def __init__(
+            self, 
+            use_simulator: Literal[0,1],
+            max_velocity: float = 0.5,
+            step_time: float = 0.5,
+        ) -> None:
+        self._closed = False  # Track if the environment has been closed
         # Set the appropriate drone instance based on use_simulator flag
         print("use_simulator", use_simulator)
+        self.num_agents_config = 1  # Default to 1 agent; can be overridden by tasks
+
+        if use_simulator:
+            self.sim_manager = SimManager(
+                sim_launch_config=SimLaunchConfig(
+                    num_agents=self.num_agents_config
+                )
+            )
+
+            time.sleep(1)  # Allow time for the sim manager to initialize
+            print("Starting simulator...")
+            sim_started = self.sim_manager.start_sim()
+            print("start_sim returned:", sim_started)
+
+            print("cwd:", os.getcwd())
+            print("DISPLAY:", os.environ.get("DISPLAY"))
+            print("XDG_RUNTIME_DIR:", os.environ.get("XDG_RUNTIME_DIR"))
+
+            subprocess.run(
+                'ps -eo pid,ppid,pgid,sid,stat,etime,cmd | '
+                'grep -i "sitl_multiagent_square\\|gz sim\\|cf2" | grep -v grep',
+                shell=True,
+            )
+
+            print("launch process alive:", self.sim_manager.is_sim_process_alive())
+            print("sitl ready:", self.sim_manager._sitl_processes_ready())
+            print("drones spawned:", self.sim_manager.are_drones_spawned(timeout=2.0))
+
+            if not sim_started:
+                raise RuntimeError("Failed to start CrazySim/Gazebo simulator.")
+            # if not self.sim_manager.start_sim():
+            #     raise RuntimeError("Failed to start CrazySim/Gazebo simulator.")
+        else:
+            self.sim_manager = None
+            
         if use_simulator:
             print("Made DroneSim")
-            self.drone = DroneSim()
+            self.drone = DroneSim(
+                sim_manager=self.sim_manager,
+            )
         else:
             print("Made Drone")
             self.drone = Drone()
@@ -251,15 +297,40 @@ class DroneEnvironment(ABC):
         self._reset_target_set = False  # Force re-setting on next reset
         print(f"Reset position updated to {self.reset_position}")
 
-    def close(self):
-        """Clean up the drone environment"""
-        self.drone.land()
-        self.drone.is_landed_event.wait(timeout=30)
-        if not self.drone.is_landed_event.is_set():
-            print("Drone is failing to land....")
-            print("Forcing stop")
-        # time.sleep(5)
-        self.drone.stop()
+    def close(self) -> None:
+        """
+        Stop the drone interface and any simulator owned by the environment.
+        """
+        if self._closed:
+            return
+
+        self._closed = True
+
+        try:
+            try:
+                self.drone.land()
+
+                if not self.drone.is_landed_event.wait(timeout=30):
+                    print(
+                        "[SARL ENV] Drone failed to confirm landing. "
+                        "Forcing drone shutdown."
+                    )
+
+            except Exception as exc:
+                print(f"[SARL ENV] Error while landing drone: {exc}")
+
+            finally:
+                try:
+                    self.drone.stop()
+                except Exception as exc:
+                    print(f"[SARL ENV] Error while stopping drone: {exc}")
+
+        finally:
+            if self.sim_manager is not None:
+                try:
+                    self.sim_manager.stop_sim()
+                except Exception as exc:
+                    print(f"[SARL ENV] Error while stopping simulator: {exc}")
 
     def render(self, mode="human"):
         """Render the environment state"""
