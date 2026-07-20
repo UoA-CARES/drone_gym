@@ -109,7 +109,7 @@ Simulator output is written to:
 logs/crazysim.log
 ```
 
-If the program crashes, is force-stopped, or exits before cleanup is reached, Gazebo or SITL processes may remain running and may need to be closed manually. They should close on their own the next time training is called, or they can be cleaned up with:
+If the program crashes, is force-stopped, or exits before cleanup is reached, Gazebo or SITL processes may remain running and will need to be closed manually with:
 ```text
 pkill -f "gz sim"
 pkill -f "sitl_make/build/cf2"
