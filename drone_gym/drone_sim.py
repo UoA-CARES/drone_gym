@@ -1,3 +1,4 @@
+from multiprocessing import Event, Lock
 import queue
 import time
 
@@ -47,6 +48,9 @@ class DroneSim(DroneSetup):
                 label=self.agent_id,
             )
 
+        self.fatal_error_event = Event()
+        self.fatal_error_lock = Lock()
+    
         super().__init__(
             uri=uri, 
             agent_id=agent_id, 
@@ -103,14 +107,15 @@ class DroneSim(DroneSetup):
 
             # Arm the drone
             print(f"[{self.agent_id}] Arming Crazyflie...")
-            self.cf.platform.send_arming_request(True)
+            # self.cf.platform.send_arming_request(True)
+            self.cf.supervisor.send_arming_request(True)
             time.sleep(1.5)
             self.armed = True
             print(f"[{self.agent_id}] Crazyflie armed.")
 
             self._setup_battery_logging()
             self._setup_velocity_logging()
-            self.cf.disconnected.add_callback(self._connection_lost)
+            # self.cf.disconnected.add_callback(self._disconnected)
             self.cf.connection_lost.add_callback(self._connection_lost)
     
             # Signal that hardware is ready
@@ -183,9 +188,16 @@ class DroneSim(DroneSetup):
         self.position_controller_active = False
         self.velocity_controller_active = False
 
-    def _connection_lost(self, link_uri):
+    # def _disconnected(self, link_uri):
+    #     print(f"\n[{self.agent_id}] CRITICAL: Drone ({link_uri}) disconnected!")
+
+    def _connection_lost(self, link_uri: str, message: str) -> None:
         print(f"\n[{self.agent_id}] CRITICAL: Connection no longer works!")
-        print(f"[{self.agent_id}] Reason: Simulation crashed or link was severed.")
+        print(f"[{self.agent_id}] Link: {link_uri}")
+        print(f"[{self.agent_id}] Reason: {message}")
+
+        with self.fatal_error_lock:
+            self.fatal_error_event.set()
         self.emergency_event.set()
 
 if __name__ == "__main__":
