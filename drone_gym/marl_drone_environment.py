@@ -73,7 +73,8 @@ class MarlDroneEnvironment(ParallelEnv):
             self.sim_manager = None
 
         print("Debug moving on")
-        print("Is sim started:", self.sim_manager.is_sim_process_alive())
+        if self.use_simulator == 0:
+            print("Is sim started:", self.sim_manager.is_sim_process_alive())
 
         # Control limits
         self.max_velocity = max_velocity
@@ -208,6 +209,22 @@ class MarlDroneEnvironment(ParallelEnv):
 
         # Reset each drone to its own separated reset position
         while True:
+            if self.sim_manager is not None:
+                fatal_agents = self._get_fatal_sim_drone_agents()
+
+                if fatal_agents:
+                    print(
+                        f"[SIM RECOVERY] Fatal drone error detected for: "
+                        f"{fatal_agents}"
+                    )
+
+                    if not self._recover_from_fatal_sim_error(
+                        max_attempts=3,
+                        retry_delay=10.0,
+                    ):
+                        raise RuntimeError(
+                            "Failed to recover the simulator after all retry attempts."
+                        )
             self._reset_all_drones()
             if self._all_drones_safe():
                 for agent in self.possible_agents:
@@ -685,10 +702,150 @@ class MarlDroneEnvironment(ParallelEnv):
 
         This could be used apart of battery checks or other safety-related terminations in the future.
         """
-        return all(
-            not self.drones[agent].emergency_event.is_set()
-            for agent in self.possible_agents
+        for agent in self.possible_agents:
+            drone = self.drones[agent]
+
+            if drone.emergency_event.is_set():
+                return False
+
+            if (
+                isinstance(drone, DroneSim)
+                and drone.fatal_error_event.is_set()
+            ):
+                return False
+
+        return True
+
+    def _get_fatal_sim_drone_agents(self) -> list[str]:
+        """Return simulated agents whose drone interface has a fatal error."""
+        if self.sim_manager is None:
+            return []
+
+        return [
+            agent
+            for agent, drone in self.drones.items()
+            if (
+                isinstance(drone, DroneSim)
+                and drone.fatal_error_event.is_set()
+            )
+        ]
+
+    def _clear_all_drones_instances(self) -> None:
+        """
+        Shuts down drone interfaces and clears drone objects
+        
+        IMPORTANT: Does not land drones
+        """
+        for agent, drone in list(self.drones.items()):
+            try:
+                print(f"[MARL] Stopping old interface for {agent}...")
+                drone.stop()
+            except Exception as exc:
+                print(f"[MARL] Error stopping {agent}: {exc}.")
+
+        self.drones.clear()
+
+    def _recover_from_fatal_sim_error(
+        self,
+        max_attempts: int = 3,
+        retry_delay: float = 5.0,
+    ) -> bool:
+        """
+        Restart the simulator and recreate all DroneSim interfaces.
+
+        Args:
+            max_attempts: Maximum number of complete simulator restart attempts.
+            retry_delay: Delay in seconds between failed attempts.
+
+        Returns:
+            True if the simulator and all drone interfaces were recovered.
+            False if every recovery attempt failed.
+        """
+        if self.sim_manager is None:
+            raise RuntimeError(
+                "Fatal simulated-drone error detected, but no SimManager exists."
+            )
+
+        print("[SIM RECOVERY] Preparing to restart the simulation...")
+
+        # The current objects refer to the old SITL processes and cannot be reused.
+        self._clear_all_drones_instances()
+
+        for attempt in range(1, max_attempts + 1):
+            print(
+                f"[SIM RECOVERY] Recovery attempt "
+                f"{attempt}/{max_attempts}..."
+            )
+
+            try:
+                sim_restarted = self.sim_manager.restart_sim()
+
+                if not sim_restarted:
+                    print(
+                        f"[SIM RECOVERY] Simulator restart failed on "
+                        f"attempt {attempt}/{max_attempts}."
+                    )
+                else:
+                    print(
+                        "[SIM RECOVERY] Simulator restarted. "
+                        "Recreating drone interfaces..."
+                    )
+
+                    # Ensure a previous partial creation attempt is removed.
+                    if self.drones:
+                        self._clear_all_drones_instances()
+
+                    self._create_drones()
+
+                    failed_agents = [
+                        agent
+                        for agent in self.possible_agents
+                        if (
+                            agent not in self.drones
+                            or not self.drones[agent].is_running()
+                            or (
+                                isinstance(self.drones[agent], DroneSim)
+                                and self.drones[
+                                    agent
+                                ].fatal_error_event.is_set()
+                            )
+                        )
+                    ]
+
+                    if not failed_agents:
+                        print(
+                            "[SIM RECOVERY] Simulator and drone interfaces "
+                            "recovered successfully."
+                        )
+                        return True
+
+                    print(
+                        "[SIM RECOVERY] The following drone interfaces "
+                        f"failed to initialise: {failed_agents}"
+                    )
+
+            except Exception as exc:
+                print(
+                    f"[SIM RECOVERY] Recovery attempt "
+                    f"{attempt}/{max_attempts} raised an error: {exc}"
+                )
+
+            # Remove any objects created during an unsuccessful attempt.
+            if self.drones:
+                self._clear_all_drones_instances()
+
+            if attempt < max_attempts:
+                print(
+                    f"[SIM RECOVERY] Retrying in "
+                    f"{retry_delay} seconds..."
+                )
+                time.sleep(retry_delay)
+
+        print(
+            "[SIM RECOVERY] Failed to recover the simulation after "
+            f"{max_attempts} attempts."
         )
+        return False
 
     def _denormalize_action(self, action: np.ndarray) -> tuple[float, float, float]:
         """
