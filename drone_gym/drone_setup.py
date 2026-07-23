@@ -22,7 +22,6 @@ class DroneSetup:
             self,
             uri: str | None = None,
             agent_id: str = "Drone",
-            simulation: bool = False,
             boundaries: dict[str, float] | None = None,
             position_source: PositionSource | None = None,
         ) -> None:
@@ -32,7 +31,6 @@ class DroneSetup:
             default="radio://0/100/2M/E7E7E7E7E7"
         )  # changed radio channel in 22/9
         self.agent_id = agent_id
-        self.simulation = simulation
         self.default_height = 0.5
         self.deck_attached_event = Event()
         self.battery_lock = threading.Lock()
@@ -261,7 +259,8 @@ class DroneSetup:
         self.position_controller_active = False
 
         if self.armed and self.cf:
-            self.cf.platform.send_arming_request(False)
+            # self.cf.platform.send_arming_request(False)
+            self.cf.supervisor.send_arming_request(False)
             self.armed = False
 
         self.command_queue.put("exit")
@@ -547,7 +546,8 @@ class DroneSetup:
 
             if self.armed and self.cf:
                 print(f"[{self.agent_id}] Disarming Crazyflie...")
-                self.cf.platform.send_arming_request(False)
+                # self.cf.platform.send_arming_request(False)
+                self.cf.supervisor.send_arming_request(False)
                 self.armed = False
 
             #Added try catch for safety

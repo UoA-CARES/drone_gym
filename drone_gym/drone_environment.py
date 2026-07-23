@@ -42,9 +42,7 @@ class DroneEnvironment(ABC):
         if self.use_simulator:
             print("Made DroneSim")
             try:
-                self.drone = DroneSim(
-                    sim_manager=self.sim_manager,
-                )
+                self.drone = DroneSim()
             except Exception:
                 self.sim_manager.stop_sim()
                 raise

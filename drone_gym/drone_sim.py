@@ -1,12 +1,14 @@
+from threading import Event, Lock
 import queue
 import time
 
 import cflib.crtp
 from cflib.crazyflie import Crazyflie
+from cflib.crazyflie.log import LogConfig
+
 
 from cflib.crazyflie.syncCrazyflie import SyncCrazyflie
 from drone_gym.drone_setup import DroneSetup
-from drone_gym.sim_manager import SimManager
 import warnings
 from drone_gym.utils.crazyflie_log_position_source import (
     CrazyflieLogPositionSource,
@@ -14,6 +16,8 @@ from drone_gym.utils.crazyflie_log_position_source import (
 from drone_gym.utils.position_source import PositionSource
 
 warnings.filterwarnings('ignore', message='Using legacy TYPE_HOVER_LEGACY')
+
+SUPERVISOR_IS_CRASHED_BIT = 7
 
 class DroneSim(DroneSetup):
     """
@@ -23,7 +27,6 @@ class DroneSim(DroneSetup):
         uri (str): The URI for the Crazyflie drone.
         agent_id (str): Unique identifier for the drone instance.
         simulation (bool): Flag indicating whether the drone is in simulation mode.
-        sim_manager (SimManager | None): Optional SimManager instance for managing simulation interactions. If not provided, a default SimManager will be used.
         boundaries (dict[str, float] | None): Optional dictionary defining the safe operational boundaries for the drone. If not provided, default boundaries will be used. (e.g. {"x": 2.5, "y": 2.5, "z_min": 0.1, "z_max": 3.0})
         position_source (PositionSource | None): Optional PositionSource instance for providing position data. If not provided, a default CrazyflieLogPositionSource will be used.
     """
@@ -32,14 +35,12 @@ class DroneSim(DroneSetup):
             uri: str = "udp://0.0.0.0:19850",
             agent_id: str = "Drone",
             simulation: bool = True,
-            sim_manager: SimManager | None = None,
             boundaries: dict[str, float] | None = None,
             position_source: PositionSource | None = None,
         ) -> None:
         # Drone Properties
         self.simulation = simulation
         self.agent_id = agent_id
-        self.sim_manager = sim_manager
         if position_source is None:
             position_source = CrazyflieLogPositionSource(
                 crazyflie_getter=lambda: self.cf,
@@ -47,10 +48,15 @@ class DroneSim(DroneSetup):
                 label=self.agent_id,
             )
 
+        self.fatal_error_event = Event()
+        self.fatal_error_lock = Lock()
+
+        self.supervisor_log_config = None
+        self.last_supervisor_bitfield: int | None = None
+    
         super().__init__(
             uri=uri, 
             agent_id=agent_id, 
-            simulation=simulation, 
             boundaries=boundaries, 
             position_source=position_source
         )
@@ -71,6 +77,7 @@ class DroneSim(DroneSetup):
                     self.scf = SyncCrazyflie(self.URI, cf=Crazyflie(rw_cache=f"./cache/{self.agent_id}/"))
                     self.scf.open_link()
                     self.cf = self.scf.cf
+                    self.cf.connection_lost.add_callback(self._connection_lost)
                     print(f"[{self.agent_id}] Successfully connected to CrazySim!")
                     break
                 except Exception as e:
@@ -97,21 +104,24 @@ class DroneSim(DroneSetup):
             self.cf.log.reset()
             time.sleep(0.5)
 
+            self._start_supervisor_logging()
+
+
             print(f"[{self.agent_id}] Resetting state estimation (EKF)...")
             self.cf.param.set_value("kalman.resetEstimation", "1")
             time.sleep(0.5)
 
             # Arm the drone
             print(f"[{self.agent_id}] Arming Crazyflie...")
-            self.cf.platform.send_arming_request(True)
+            # self.cf.platform.send_arming_request(True)
+            self.cf.supervisor.send_arming_request(True)
             time.sleep(1.5)
             self.armed = True
             print(f"[{self.agent_id}] Crazyflie armed.")
 
             self._setup_battery_logging()
             self._setup_velocity_logging()
-            self.cf.disconnected.add_callback(self._connection_lost)
-            self.cf.connection_lost.add_callback(self._connection_lost)
+            # self.cf.disconnected.add_callback(self._disconnected)
     
             # Signal that hardware is ready
             self.hardware_ready_event.set()
@@ -146,6 +156,23 @@ class DroneSim(DroneSetup):
         self._join_all_threads()
         self._reset_shared_state()
         self._final_cleanup()
+
+    def _shutdown_crazyflie(self) -> None:
+        """Shutdown Crazyflie connection for CrazySim"""
+        if self.supervisor_log_config is not None:
+            try:
+                self.supervisor_log_config.stop()
+                self.supervisor_log_config.delete()
+            except Exception as exc:
+                print(
+                    f"[{self.agent_id}] Error stopping supervisor logging: "
+                    f"{exc}"
+                )
+            finally:
+                self.supervisor_log_config = None
+        self.last_supervisor_bitfield = None
+
+        super()._shutdown_crazyflie()
 
     def _execute_emergency_stop(self):
         """
@@ -183,9 +210,171 @@ class DroneSim(DroneSetup):
         self.position_controller_active = False
         self.velocity_controller_active = False
 
-    def _connection_lost(self, link_uri):
+    # def _disconnected(self, link_uri):
+    #     print(f"\n[{self.agent_id}] CRITICAL: Drone ({link_uri}) disconnected!")
+
+    def _connection_lost(self, link_uri: str, message: str) -> None:
         print(f"\n[{self.agent_id}] CRITICAL: Connection no longer works!")
-        print(f"[{self.agent_id}] Reason: Simulation crashed or link was severed.")
+        print(f"[{self.agent_id}] Link: {link_uri}")
+        print(f"[{self.agent_id}] Reason: {message}")
+
+        with self.fatal_error_lock:
+            self.fatal_error_event.set()
+        self.emergency_event.set()
+
+    def _start_supervisor_logging(self) -> None:
+        """Start periodic logging of the firmware supervisor bitfield."""
+        try:
+            supervisor_log_config = LogConfig(
+                name=f"{self.agent_id}_supervisor",
+                period_in_ms=100,
+            )
+
+            supervisor_log_config.add_variable(
+                "supervisor.info",
+                "uint16_t",
+            )
+
+            supervisor_log_config.data_received_cb.add_callback(
+                self._supervisor_data_received
+            )
+            supervisor_log_config.error_cb.add_callback(
+                self._supervisor_logging_error
+            )
+
+            self.cf.log.add_config(supervisor_log_config)
+            supervisor_log_config.start()
+
+            self.supervisor_log_config = supervisor_log_config
+
+            print(f"[{self.agent_id}] Supervisor logging started")
+
+        except Exception as exc:
+            print(
+                f"[{self.agent_id}] Failed to start supervisor logging: "
+                f"{exc}"
+            )
+    
+    def _supervisor_logging_error(
+        self,
+        log_config: LogConfig,
+        message: str,
+    ) -> None:
+        print(
+            f"[{self.agent_id}] Supervisor logging error "
+            f"for {log_config.name}: {message}"
+        )
+    
+    def _supervisor_data_received(
+        self,
+        timestamp: int,
+        data: dict[str, int],
+        log_config: LogConfig,
+    ) -> None:
+        """Process a new firmware supervisor bitfield."""
+        current_bitfield = int(data["supervisor.info"])
+        previous_bitfield = self.last_supervisor_bitfield
+
+        if previous_bitfield is None:
+            self._print_initial_supervisor_states(current_bitfield)
+            self.last_supervisor_bitfield = current_bitfield
+
+            if self._is_supervisor_bit_set(
+                current_bitfield,
+                SUPERVISOR_IS_CRASHED_BIT,
+            ):
+                self._handle_supervisor_crash()
+
+            return
+
+        changed_bits = previous_bitfield ^ current_bitfield
+
+        if changed_bits:
+            self._print_supervisor_state_changes(
+                previous_bitfield,
+                current_bitfield,
+                changed_bits,
+            )
+
+        crashed_before = self._is_supervisor_bit_set(
+            previous_bitfield,
+            SUPERVISOR_IS_CRASHED_BIT,
+        )
+        crashed_now = self._is_supervisor_bit_set(
+            current_bitfield,
+            SUPERVISOR_IS_CRASHED_BIT,
+        )
+
+        if not crashed_before and crashed_now:
+            self._handle_supervisor_crash()
+
+        self.last_supervisor_bitfield = current_bitfield
+
+    def _print_initial_supervisor_states(
+        self,
+        bitfield: int,
+    ) -> None:
+        """Print the initial values of all supervisor states known by cflib."""
+        states = {
+            state_name: self._is_supervisor_bit_set(
+                bitfield,
+                bit_position,
+            )
+            for bit_position, state_name
+            in enumerate(self.cf.supervisor.STATES)
+        }
+
+        state_text = ", ".join(
+            f"{state_name}={state_value}"
+            for state_name, state_value in states.items()
+        )
+
+        print(
+            f"[{self.agent_id}] Initial supervisor states: "
+            f"{state_text}"
+        )
+
+    def _print_supervisor_state_changes(
+        self,
+        previous_bitfield: int,
+        current_bitfield: int,
+        changed_bits: int,
+    ) -> None:
+        """Print supervisor states whose values have changed."""
+        for bit_position, state_name in enumerate(
+            self.cf.supervisor.STATES
+        ):
+            bit_mask = 1 << bit_position
+
+            if not changed_bits & bit_mask:
+                continue
+
+            previous_value = self._is_supervisor_bit_set(
+                previous_bitfield,
+                bit_position,
+            )
+            current_value = self._is_supervisor_bit_set(
+                current_bitfield,
+                bit_position,
+            )
+
+            print(
+                f"[{self.agent_id}] Supervisor state changed: "
+                f"{state_name}: {previous_value} -> {current_value}"
+            )
+
+
+    @staticmethod
+    def _is_supervisor_bit_set(
+        bitfield: int,
+        bit_position: int,
+    ) -> bool:
+        """Return whether a particular supervisor bit is set."""
+        return bool(bitfield & (1 << bit_position))
+
+    def _handle_supervisor_crash(self) -> None:
+        with self.fatal_error_lock:
+            self.fatal_error_event.set()
         self.emergency_event.set()
 
 if __name__ == "__main__":
