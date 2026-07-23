@@ -393,7 +393,6 @@ class MarlDroneEnvironment(ParallelEnv):
                 self.drones[agent] = DroneSim(
                     uri=self.drone_uris[agent],
                     agent_id=agent,
-                    sim_manager=self.sim_manager
                 )
             else:
                 self.drones[agent] = Drone(agent_id=agent)

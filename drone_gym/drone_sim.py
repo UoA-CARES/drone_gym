@@ -9,7 +9,6 @@ from cflib.crazyflie.log import LogConfig
 
 from cflib.crazyflie.syncCrazyflie import SyncCrazyflie
 from drone_gym.drone_setup import DroneSetup
-from drone_gym.sim_manager import SimManager
 import warnings
 from drone_gym.utils.crazyflie_log_position_source import (
     CrazyflieLogPositionSource,
@@ -28,7 +27,6 @@ class DroneSim(DroneSetup):
         uri (str): The URI for the Crazyflie drone.
         agent_id (str): Unique identifier for the drone instance.
         simulation (bool): Flag indicating whether the drone is in simulation mode.
-        sim_manager (SimManager | None): Optional SimManager instance for managing simulation interactions. If not provided, a default SimManager will be used.
         boundaries (dict[str, float] | None): Optional dictionary defining the safe operational boundaries for the drone. If not provided, default boundaries will be used. (e.g. {"x": 2.5, "y": 2.5, "z_min": 0.1, "z_max": 3.0})
         position_source (PositionSource | None): Optional PositionSource instance for providing position data. If not provided, a default CrazyflieLogPositionSource will be used.
     """
@@ -37,14 +35,12 @@ class DroneSim(DroneSetup):
             uri: str = "udp://0.0.0.0:19850",
             agent_id: str = "Drone",
             simulation: bool = True,
-            sim_manager: SimManager | None = None,
             boundaries: dict[str, float] | None = None,
             position_source: PositionSource | None = None,
         ) -> None:
         # Drone Properties
         self.simulation = simulation
         self.agent_id = agent_id
-        self.sim_manager = sim_manager
         if position_source is None:
             position_source = CrazyflieLogPositionSource(
                 crazyflie_getter=lambda: self.cf,
@@ -61,7 +57,6 @@ class DroneSim(DroneSetup):
         super().__init__(
             uri=uri, 
             agent_id=agent_id, 
-            simulation=simulation, 
             boundaries=boundaries, 
             position_source=position_source
         )

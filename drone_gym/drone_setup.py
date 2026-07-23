@@ -22,7 +22,6 @@ class DroneSetup:
             self,
             uri: str | None = None,
             agent_id: str = "Drone",
-            simulation: bool = False,
             boundaries: dict[str, float] | None = None,
             position_source: PositionSource | None = None,
         ) -> None:
@@ -32,7 +31,6 @@ class DroneSetup:
             default="radio://0/100/2M/E7E7E7E7E7"
         )  # changed radio channel in 22/9
         self.agent_id = agent_id
-        self.simulation = simulation
         self.default_height = 0.5
         self.deck_attached_event = Event()
         self.battery_lock = threading.Lock()
