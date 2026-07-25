@@ -57,23 +57,32 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg && \
     rm -rf /var/lib/apt/lists/*
 
-# Clone and install cflib (default branch, with version pins relaxed — mirrors setup.sh).
+# Install Gazebo Garden — SimManager shells out to `gz service` for teleports,
+# goal markers, and boundary visuals (drone_gym/sim_manager.py).
+RUN wget https://packages.osrfoundation.org/gazebo.gpg -O /usr/share/keyrings/pkgs-osrf-archive-keyring.gpg && \
+    echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/pkgs-osrf-archive-keyring.gpg] http://packages.osrfoundation.org/gazebo/ubuntu-stable $(lsb_release -cs) main" > /etc/apt/sources.list.d/gazebo-stable.list && \
+    apt-get update && apt-get install -y --no-install-recommends gz-garden && \
+    rm -rf /var/lib/apt/lists/*
+
+# Upgrade pip first: Ubuntu 22.04's stock pip (22.0.2) can't read cflib's PEP 621
+# pyproject metadata and silently installs an empty package named "UNKNOWN".
+RUN python3 -m pip install --no-cache-dir --upgrade pip setuptools wheel
+
+# Install the CrazySim fork of cflib (sitl-release): its UDP driver is modified
+# to speak the SITL firmware's protocol — stock bitcraze cflib hangs at
+# _request_protocol_version() against the CrazySim firmware.
 # Build this file from drone_gym/:
 #   docker build -f Dockerfile.local -t cares:drone-local .
-RUN git clone https://github.com/bitcraze/crazyflie-lib-python.git /drone_ws/cflib_src && \
-    sed -i \
-        -e 's/scipy~=1.14/scipy>=1.10/' \
-        -e 's/numpy~=2.2/numpy>=1.20,<2.0/' \
-        -e 's/packaging~=25.0/packaging>=21.0/' \
-        /drone_ws/cflib_src/pyproject.toml && \
-    SETUPTOOLS_SCM_PRETEND_VERSION=0.1.31 python3 -m pip install --no-cache-dir /drone_ws/cflib_src
+RUN git clone --branch sitl-release https://github.com/llanesc/crazyflie-lib-python.git /drone_ws/cflib_src && \
+    SETUPTOOLS_SCM_PRETEND_VERSION=0.1.31 python3 -m pip install --no-cache-dir /drone_ws/cflib_src && \
+    python3 -c "import cflib.crtp; print('cflib OK after cflib install')"
 
 # Install CARES RL first so its pinned numpy==1.26.4 is set before drone_gym installs.
-RUN python3 -m pip install --no-cache-dir --upgrade pip setuptools wheel && \
-    python3 -m pip install --no-cache-dir pettingzoo && \
+RUN python3 -m pip install --no-cache-dir pettingzoo && \
     git clone --branch ${CARES_RL_REF} https://github.com/UoA-CARES/cares_reinforcement_learning.git /opt/cares_reinforcement_learning && \
     cd /opt/cares_reinforcement_learning && \
-    python3 -m pip install --no-cache-dir -e ".[gym]"
+    python3 -m pip install --no-cache-dir -e ".[gym]" && \
+    python3 -c "import cflib.crtp; print('cflib OK after cares_rl install')"
 
 # Copy drone_gym source and install (numpy>=1.21.0 already satisfied by cares_rl's 1.26.4).
 COPY drone_gym    ./drone_gym/drone_gym
@@ -82,13 +91,15 @@ COPY setup.py     ./drone_gym/setup.py
 COPY README.md    ./drone_gym/README.md
 
 RUN python3 -m pip install --no-cache-dir -r ./drone_gym/requirements.txt && \
-    python3 -m pip install --no-cache-dir -e ./drone_gym
+    python3 -m pip install --no-cache-dir -e ./drone_gym && \
+    python3 -c "import cflib.crtp; print('cflib OK after drone_gym install')"
 
 # Force reinstall versions known to work with cflib/CrazySim (mirrors setup.sh).
 RUN python3 -m pip install --force-reinstall --no-cache-dir \
     pandas==2.3.3 \
     opencv-python==4.7.0.72 \
-    "numpy>=1.20,<1.25"
+    "numpy>=1.20,<1.25" && \
+    python3 -c "import cflib.crtp; print('cflib OK after force-reinstall')"
 
 # Open workspace/runtime permissions for arbitrary non-root HPC runtime accounts.
 RUN chmod -R a+rX /drone_ws /opt/cares_reinforcement_learning /usr/local/lib/python3.10/dist-packages && \
