@@ -10,19 +10,18 @@ class DroneEnvironment(ABC):
     """Base drone environment that handles common drone operations"""
 
     def __init__(
-            self, 
+            self,
             use_simulator: Literal[0,1],
             max_velocity: float = 0.5,
             step_time: float = 0.5,
+            num_agents: int = 1,
         ) -> None:
         self._closed = False  # Track if the environment has been closed
         # Set the appropriate drone instance based on use_simulator flag
         print("use_simulator", use_simulator)
         self.use_simulator = use_simulator
 
-        # TODO: init should have a input for the number of drones and that is assigned to self.num_agents_config. 
-        # Tasks such as sarl_tag will then use that to spawn the correct number of drones through sim manager.
-        self.num_agents_config = 1  
+        self.num_agents_config = num_agents
 
         if self.use_simulator:
             self.sim_manager = SimManager(

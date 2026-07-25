@@ -50,7 +50,7 @@ class SarlTag(DroneEnvironment):
                  exploration_steps: int = 1000, episode_length: int = 80,
                  interceptor_max_velocity: float = 0.125):
 
-        super().__init__(use_simulator, max_velocity, step_time)
+        super().__init__(use_simulator, max_velocity, step_time, num_agents=2)
         self.use_simulator = use_simulator
 
         # Gentle vertical speed cap — CrazySim's z-velocity control is twitchy and
@@ -179,7 +179,6 @@ class SarlTag(DroneEnvironment):
         # --- Interceptor agent (second real SITL Crazyflie) ------------------
         # Constructed directly here — agent lifecycle belongs to the environment,
         # not to SimManager.  SimManager is only responsible for Gazebo visuals.
-        self.sim_manager = get_default_sim_manager()
         self.goal_marker_name = "rl_sarl_tag_goal"
         # Runner is on port 19850; interceptor is drone 2 from sitl_multiagent_square -n 2
         interceptor_uri = "udp://0.0.0.0:19851"
