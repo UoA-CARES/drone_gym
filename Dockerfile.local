@@ -57,20 +57,24 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg && \
     rm -rf /var/lib/apt/lists/*
 
-# Clone and install cflib (default branch, with version pins relaxed — mirrors setup.sh).
+# Upgrade pip FIRST — Ubuntu 22.04 stock pip (22.0.2) silently installs cflib as "UNKNOWN".
 # Build this file from drone_gym/:
 #   docker build -f Dockerfile.local -t cares:drone-local .
-RUN git clone https://github.com/bitcraze/crazyflie-lib-python.git /drone_ws/cflib_src && \
-    sed -i \
-        -e 's/scipy~=1.14/scipy>=1.10/' \
-        -e 's/numpy~=2.2/numpy>=1.20,<2.0/' \
-        -e 's/packaging~=25.0/packaging>=21.0/' \
-        /drone_ws/cflib_src/pyproject.toml && \
-    SETUPTOOLS_SCM_PRETEND_VERSION=0.1.31 python3 -m pip install --no-cache-dir /drone_ws/cflib_src
+RUN python3 -m pip install --no-cache-dir --upgrade pip setuptools wheel
+
+# Install Gazebo Garden — sim_manager.py shells out to `gz service` for teleports and visuals.
+RUN wget https://packages.osrfoundation.org/gazebo.gpg -O /usr/share/keyrings/pkgs-osrf-archive-keyring.gpg && \
+    echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/pkgs-osrf-archive-keyring.gpg] http://packages.osrfoundation.org/gazebo/ubuntu-stable $(lsb_release -cs) main" > /etc/apt/sources.list.d/gazebo-stable.list && \
+    apt-get update && apt-get install -y --no-install-recommends gz-garden && \
+    rm -rf /var/lib/apt/lists/*
+
+# CrazySim fork of cflib required — stock bitcraze cflib hangs at _request_protocol_version().
+RUN git clone --branch sitl-release https://github.com/llanesc/crazyflie-lib-python.git /drone_ws/cflib_src && \
+    SETUPTOOLS_SCM_PRETEND_VERSION=0.1.31 python3 -m pip install --no-cache-dir /drone_ws/cflib_src && \
+    python3 -c "import cflib.crtp; print('cflib OK')"
 
 # Install CARES RL first so its pinned numpy==1.26.4 is set before drone_gym installs.
-RUN python3 -m pip install --no-cache-dir --upgrade pip setuptools wheel && \
-    python3 -m pip install --no-cache-dir pettingzoo && \
+RUN python3 -m pip install --no-cache-dir pettingzoo && \
     git clone --branch ${CARES_RL_REF} https://github.com/UoA-CARES/cares_reinforcement_learning.git /opt/cares_reinforcement_learning && \
     cd /opt/cares_reinforcement_learning && \
     python3 -m pip install --no-cache-dir -e ".[gym]"
