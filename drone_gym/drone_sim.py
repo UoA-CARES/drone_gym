@@ -19,6 +19,21 @@ warnings.filterwarnings('ignore', message='Using legacy TYPE_HOVER_LEGACY')
 
 SUPERVISOR_IS_CRASHED_BIT = 7
 
+# Bit order of the firmware's `supervisor.info` bitfield (see
+# infoBitfield construction in supervisor.c). The installed cflib fork
+# under CrazySim/crazyflie-lib-python predates cflib's Supervisor class,
+# so there is no `cf.supervisor.STATES` to read this from.
+SUPERVISOR_STATES = [
+    "canBeArmed",
+    "isArmed",
+    "autoArmingActive",
+    "canFly",
+    "isFlying",
+    "isTumbled",
+    "isLocked",
+    "isCrashed",
+]
+
 class DroneSim(DroneSetup):
     """
     Drone class for CrazySim (Gazebo simulation)
@@ -113,8 +128,7 @@ class DroneSim(DroneSetup):
 
             # Arm the drone
             print(f"[{self.agent_id}] Arming Crazyflie...")
-            # self.cf.platform.send_arming_request(True)
-            self.cf.supervisor.send_arming_request(True)
+            self.cf.platform.send_arming_request(True)
             time.sleep(1.5)
             self.armed = True
             print(f"[{self.agent_id}] Crazyflie armed.")
@@ -321,7 +335,7 @@ class DroneSim(DroneSetup):
                 bit_position,
             )
             for bit_position, state_name
-            in enumerate(self.cf.supervisor.STATES)
+            in enumerate(SUPERVISOR_STATES)
         }
 
         state_text = ", ".join(
@@ -342,7 +356,7 @@ class DroneSim(DroneSetup):
     ) -> None:
         """Print supervisor states whose values have changed."""
         for bit_position, state_name in enumerate(
-            self.cf.supervisor.STATES
+            SUPERVISOR_STATES
         ):
             bit_mask = 1 << bit_position
 
