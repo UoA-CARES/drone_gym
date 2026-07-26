@@ -1,10 +1,13 @@
 from abc import ABC, abstractmethod
+from collections.abc import Iterator
 from drone_gym.sim_manager import SimManager, SimLaunchConfig
 from drone_gym.drone_sim import DroneSim
 from drone_gym.drone import Drone
 import time
 import numpy as np
 from typing import Dict, List, Any, Literal
+
+RL_DRONE_NAME = "rl_drone"
 
 class DroneEnvironment(ABC):
     """Base drone environment that handles common drone operations"""
@@ -14,15 +17,19 @@ class DroneEnvironment(ABC):
             use_simulator: Literal[0,1],
             max_velocity: float = 0.5,
             step_time: float = 0.5,
+            expert_drones: list[str] | None = None
         ) -> None:
         self._closed = False  # Track if the environment has been closed
         # Set the appropriate drone instance based on use_simulator flag
         print("use_simulator", use_simulator)
         self.use_simulator = use_simulator
 
-        # TODO: init should have a input for the number of drones and that is assigned to self.num_agents_config. 
-        # Tasks such as sarl_tag will then use that to spawn the correct number of drones through sim manager.
-        self.num_agents_config = 1  
+        self.expert_drone_names = expert_drones if expert_drones is not None else []
+
+        if expert_drones is not None:
+            self.num_agents_config = len(expert_drones) + 1  # +1 for the learning agent
+        else:
+            self.num_agents_config = 1  
 
         if self.use_simulator:
             self.sim_manager = SimManager(
@@ -38,17 +45,15 @@ class DroneEnvironment(ABC):
   
         else:
             self.sim_manager = None
-            
-        if self.use_simulator:
-            print("Made DroneSim")
-            try:
-                self.drone = DroneSim()
-            except Exception:
-                self.sim_manager.stop_sim()
-                raise
-        else:
-            print("Made Drone")
-            self.drone = Drone()
+
+        # Initialize the drone instances
+        self.rl_drones: dict[str, Drone | DroneSim] = {}
+        self.expert_drones: dict[str, Drone | DroneSim] = {}
+
+        self.possible_agents = [RL_DRONE_NAME]
+        self.possible_agents.extend(self.expert_drone_names)
+
+        self._create_drones()
             
         self.reset_position = [0, 0, 1]
         self.max_velocity = max_velocity
@@ -74,6 +79,67 @@ class DroneEnvironment(ABC):
 
         # Success tracking for learning phase
         self.success_count = 0
+
+    @property
+    def rl_drone(self) -> Drone | DroneSim:
+        """Return the environment's single RL-controlled drone."""
+
+        try:
+            return self.rl_drones[RL_DRONE_NAME]
+        except KeyError as exc:
+            raise RuntimeError(
+                "The RL drone has not been created."
+            ) from exc
+
+
+    @property
+    def drone(self) -> Drone | DroneSim:
+        """
+        Backwards-compatible alias for the single RL drone.
+
+        Existing SARL tasks currently use self.drone.
+        """
+        return self.rl_drone
+
+    def _iter_drones(
+        self,
+    ) -> Iterator[tuple[str, Drone | DroneSim]]:
+        """Iterate over the RL drone followed by expert drones."""
+
+        yield from self.rl_drones.items()
+        yield from self.expert_drones.items()
+
+    def _generate_default_sim_uris(self) -> dict[str, str]:
+        """Generate default simulator URIs for all drones."""
+        return {
+            agent: f"udp://0.0.0.0:{19850 + i}"
+            for i, agent in enumerate(self.possible_agents)
+        }
+    
+    def _create_drones(self) -> None:
+        """Create drone instances for all drones."""
+
+        self.drone_uris = self._generate_default_sim_uris()
+        if self.use_simulator:
+            self.rl_drones[RL_DRONE_NAME] = DroneSim(
+                uri=self.drone_uris[RL_DRONE_NAME],
+                agent_id=RL_DRONE_NAME,
+            )
+            print(f"[SARL ENV] RL drone simulator created with URI: {self.drone_uris[RL_DRONE_NAME]}")
+        else:
+            self.rl_drones[RL_DRONE_NAME] = Drone(agent_id=RL_DRONE_NAME)
+            print(f"[SARL ENV] RL drone physical instance created with agent ID: {RL_DRONE_NAME}")
+
+        for expert_agent in self.expert_drone_names:
+            if self.use_simulator:
+                self.expert_drones[expert_agent] = DroneSim(
+                    uri=self.drone_uris[expert_agent],
+                    agent_id=expert_agent,
+                )
+                print(f"[SARL ENV] Expert drone simulator created with URI: {self.drone_uris[expert_agent]}")
+            else:
+                self.expert_drones[expert_agent] = Drone(agent_id=expert_agent)
+                print(f"[SARL ENV] Expert drone physical instance created with agent ID: {expert_agent}")
 
     def _update_visual_boundaries(self) -> None:
         """
@@ -485,26 +551,50 @@ class DroneEnvironment(ABC):
 
         self._closed = True
 
-        try:
-            try:
-                self.drone.land()
+        drones = list(self._iter_drones())
 
-                if not self.drone.is_landed_event.wait(timeout=30):
+        try:
+            for drone_name, drone in drones:
+                try:
+                    if drone.velocity_controller_active:
+                        drone.stop_velocity_control()
+
+                    drone.set_velocity_vector(0.0, 0.0, 0.0)
+                    drone.land()
+
+                except Exception as exc:
                     print(
-                        "[SARL ENV] Drone failed to confirm landing. "
-                        "Forcing drone shutdown."
+                        f"[SARL ENV] Error while landing "
+                        f"{drone_name!r}: {exc}"
                     )
 
-            except Exception as exc:
-                print(f"[SARL ENV] Error while landing drone: {exc}")
-
-            finally:
-                try:
-                    self.drone.stop()
-                except Exception as exc:
-                    print(f"[SARL ENV] Error while stopping drone: {exc}")
-
+            for drone_name, drone in drones:
+                        try:
+                            if not drone.is_landed_event.wait(
+                                timeout=30
+                            ):
+                                print(
+                                    f"[SARL ENV] {drone_name!r} failed "
+                                    "to confirm landing. Forcing shutdown."
+                                )
+                        except Exception as exc:
+                            print(
+                                f"[SARL ENV] Error while waiting for "
+                                f"{drone_name!r} to land: {exc}"
+                            )
         finally:
+            for drone_name, drone in drones:
+                try:
+                    drone.stop()
+                except Exception as exc:
+                    print(
+                        f"[SARL ENV] Error while stopping "
+                        f"{drone_name!r}: {exc}"
+                    )
+
+            self.rl_drones.clear()
+            self.expert_drones.clear()
+
             if self.sim_manager is not None:
                 try:
                     self.sim_manager.stop_sim()

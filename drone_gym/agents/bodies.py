@@ -83,12 +83,36 @@ class CrazyflieBody(AgentBody):
 
     is_software_integrated = False
 
-    def __init__(self, use_simulator: int, uri: Optional[str] = None,
-                 fixed_z: float = 1.0, takeoff_timeout: float = 15.0):
-        if use_simulator:
-            self.drone = DroneSim(uri=uri) if uri is not None else DroneSim()
+    def __init__(
+        self,
+        use_simulator: int | None = None,
+        uri: Optional[str] = None,
+        fixed_z: float = 1.0,
+        takeoff_timeout: float = 15.0,
+        drone: Drone | DroneSim | None = None,
+    ) -> None:
+        if drone is not None:
+            self.drone = drone
+            self.owns_drone = False
+
         else:
-            self.drone = Drone()
+            if use_simulator is None:
+                raise ValueError(
+                    "use_simulator is required when CrazyflieBody "
+                    "constructs its own drone."
+                )
+
+            if use_simulator:
+                self.drone = (
+                    DroneSim(uri=uri)
+                    if uri is not None
+                    else DroneSim()
+                )
+            else:
+                self.drone = Drone(uri=uri)
+
+            self.owns_drone = True
+
         self.fixed_z = fixed_z
         self.takeoff_timeout = takeoff_timeout
 
@@ -138,22 +162,34 @@ class CrazyflieBody(AgentBody):
         return list(self.drone.get_position())
 
     def close(self) -> None:
+        if not self.owns_drone:
+            return
+
         d = self.drone
+
         try:
             if d.velocity_controller_active:
                 d.stop_velocity_control()
+
             d.set_velocity_vector(0, 0, 0)
             d.land()
-        except Exception as e:
-            print(f"[CrazyflieBody] Error landing: {e}")
+
+        except Exception as exc:
+            print(
+                f"[CrazyflieBody] Error landing: {exc}"
+            )
+
         try:
             d.is_landed_event.wait(timeout=30)
         except Exception:
             pass
+
         try:
             d.stop()
-        except Exception as e:
-            print(f"[CrazyflieBody] Error stopping: {e}")
+        except Exception as exc:
+            print(
+                f"[CrazyflieBody] Error stopping: {exc}"
+            )
 
 
 class SimulatedBody(AgentBody):

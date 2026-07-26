@@ -49,8 +49,13 @@ class SarlTag(DroneEnvironment):
     def __init__(self, use_simulator: Literal[0, 1], max_velocity: float = 0.25, step_time: float = 0.5,
                  exploration_steps: int = 1000, episode_length: int = 80,
                  interceptor_max_velocity: float = 0.125):
-
-        super().__init__(use_simulator, max_velocity, step_time)
+        self.INTERCEPTOR_NAME = "interceptor_0"
+        super().__init__(
+            use_simulator=use_simulator, 
+            max_velocity=max_velocity, 
+            step_time=step_time,
+            expert_drones=[self.INTERCEPTOR_NAME],
+        )
         self.use_simulator = use_simulator
 
         # Gentle vertical speed cap — CrazySim's z-velocity control is twitchy and
@@ -179,15 +184,22 @@ class SarlTag(DroneEnvironment):
         # --- Interceptor agent (second real SITL Crazyflie) ------------------
         # Constructed directly here — agent lifecycle belongs to the environment,
         # not to SimManager.  SimManager is only responsible for Gazebo visuals.
-        self.sim_manager = get_default_sim_manager()
+        # self.sim_manager = get_default_sim_manager()
         self.goal_marker_name = "rl_sarl_tag_goal"
-        # Runner is on port 19850; interceptor is drone 2 from sitl_multiagent_square -n 2
-        interceptor_uri = "udp://0.0.0.0:19851"
+        # # Runner is on port 19850; interceptor is drone 2 from sitl_multiagent_square -n 2
+        # interceptor_uri = "udp://0.0.0.0:19851"
+        # interceptor_body = CrazyflieBody(
+        #     use_simulator=use_simulator,
+        #     uri=interceptor_uri,
+        #     fixed_z=self.fixed_z,
+        # )
+
+        interceptor_drone = self.expert_drones[self.INTERCEPTOR_NAME]
         interceptor_body = CrazyflieBody(
-            use_simulator=use_simulator,
-            uri=interceptor_uri,
+            drone=interceptor_drone,
             fixed_z=self.fixed_z,
         )
+
         interceptor_policy = CallablePolicy(fn=self._interceptor_pursuit)
         self.interceptor = SimAgent(
             agent_id=1,
@@ -1515,15 +1527,8 @@ class SarlTag(DroneEnvironment):
         """Sample a normalized action in [-1, 1] — the parent will scale to m/s."""
         return np.random.uniform(-1.0, 1.0, size=(3,))
 
-    def close(self):
-        """Land the interceptor and runner, then clear the goal marker."""
+    def close(self) -> None:
         self._stop_safety_monitor()
-        try:
-            self.interceptor.body.close()
-        except Exception as e:
-            print(f"[SarlTag] Error closing interceptor: {e}")
-        if self.use_simulator:
-            self.sim_manager.remove_visual_marker(self.goal_marker_name)
         super().close()
 
     def _render_task_specific_info(self):

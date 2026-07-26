@@ -387,9 +387,6 @@ class MarlDroneEnvironment(ParallelEnv):
         """Create drone instances for all possible agents."""
         for agent in self.possible_agents:
             if self.use_simulator:
-                # TODO: sim_manager shoudn't be passed to each drone
-                # SARL tasks need to be updated to use sim_manager directly
-                # before this can be removed from the drone constructor 
                 self.drones[agent] = DroneSim(
                     uri=self.drone_uris[agent],
                     agent_id=agent,
