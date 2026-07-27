@@ -45,18 +45,17 @@ class SarlTag(DroneEnvironment):
 
         ./sitl_multiagent_square.sh -m crazyflie -n 2   # 19850 (runner), 19851 (interceptor)
     """
+    INTERCEPTOR_NAME = "interceptor_0"
 
     def __init__(self, use_simulator: Literal[0, 1], max_velocity: float = 0.25, step_time: float = 0.5,
                  exploration_steps: int = 1000, episode_length: int = 80,
                  interceptor_max_velocity: float = 0.125):
-        self.INTERCEPTOR_NAME = "interceptor_0"
         super().__init__(
             use_simulator=use_simulator, 
             max_velocity=max_velocity, 
             step_time=step_time,
-            expert_drones=[self.INTERCEPTOR_NAME],
+            expert_drone_names=[self.INTERCEPTOR_NAME],
         )
-        self.use_simulator = use_simulator
 
         # Gentle vertical speed cap — CrazySim's z-velocity control is twitchy and
         # moving up/down fast destabilises the estimator, which makes the firmware

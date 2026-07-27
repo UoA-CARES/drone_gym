@@ -17,24 +17,20 @@ class DroneEnvironment(ABC):
             use_simulator: Literal[0,1],
             max_velocity: float = 0.5,
             step_time: float = 0.5,
-            expert_drones: list[str] | None = None
+            expert_drone_names: list[str] | None = None
         ) -> None:
         self._closed = False  # Track if the environment has been closed
         # Set the appropriate drone instance based on use_simulator flag
         print("use_simulator", use_simulator)
         self.use_simulator = use_simulator
 
-        self.expert_drone_names = expert_drones if expert_drones is not None else []
-
-        if expert_drones is not None:
-            self.num_agents_config = len(expert_drones) + 1  # +1 for the learning agent
-        else:
-            self.num_agents_config = 1  
+        self.expert_drone_names = list(expert_drone_names or [])
+        self.num_drones_config = len(self.expert_drone_names) + 1
 
         if self.use_simulator:
             self.sim_manager = SimManager(
                 sim_launch_config=SimLaunchConfig(
-                    num_agents=self.num_agents_config
+                    num_agents=self.num_drones_config
                 )
             )
             time.sleep(1)  # Allow time for the sim manager to initialize
@@ -50,8 +46,8 @@ class DroneEnvironment(ABC):
         self.rl_drones: dict[str, Drone | DroneSim] = {}
         self.expert_drones: dict[str, Drone | DroneSim] = {}
 
-        self.possible_agents = [RL_DRONE_NAME]
-        self.possible_agents.extend(self.expert_drone_names)
+        self.drone_names = [RL_DRONE_NAME]
+        self.drone_names.extend(self.expert_drone_names)
 
         self._create_drones()
             
@@ -113,7 +109,7 @@ class DroneEnvironment(ABC):
         """Generate default simulator URIs for all drones."""
         return {
             agent: f"udp://0.0.0.0:{19850 + i}"
-            for i, agent in enumerate(self.possible_agents)
+            for i, agent in enumerate(self.drone_names)
         }
     
     def _create_drones(self) -> None:
@@ -193,14 +189,17 @@ class DroneEnvironment(ABC):
             marker_name=marker_name,
         )
 
-    def _reset_control_properties(self):
-        self.drone.clear_command_queue()
+    def _reset_control_properties(
+            self,
+            drone: Drone | DroneSim,
+        ) -> None:
+        drone.clear_command_queue()
         time.sleep(0.5)  # Allow any in-flight commands to be processed
-        self.drone.last_error = {"x": 0.0, "y": 0.0, "z": 0.0}
-        self.drone.integral = {"x": 0.0, "y": 0.0, "z": 0.0}
-        self.drone.velocity_last_error = {"x": 0.0, "y": 0.0, "z": 0.0}
-        self.drone.velocity_integral = {"x": 0.0, "y": 0.0, "z": 0.0}
-        self.drone.target_velocity = {"x": 0.0, "y": 0.0, "z": 0.0}
+        drone.last_error = {"x": 0.0, "y": 0.0, "z": 0.0}
+        drone.integral = {"x": 0.0, "y": 0.0, "z": 0.0}
+        drone.velocity_last_error = {"x": 0.0, "y": 0.0, "z": 0.0}
+        drone.velocity_integral = {"x": 0.0, "y": 0.0, "z": 0.0}
+        drone.target_velocity = {"x": 0.0, "y": 0.0, "z": 0.0}
 
     def reset(self, training: bool = True):
         """Reset the drone to initial position and state"""
@@ -215,7 +214,7 @@ class DroneEnvironment(ABC):
         # Clear episode position tracking
         self.episode_positions = []
 
-        self._reset_control_properties()
+        self._reset_control_properties(drone=self.rl_drone,)
 
         # Stop velocity controller to prevent conflict with position controller
         if self.drone.velocity_controller_active:
@@ -231,9 +230,17 @@ class DroneEnvironment(ABC):
         print("DRONE RESET")
 
         if isinstance(self.drone, DroneSim):
-            self._prepare_sim_drone_for_reset()
+            drone_id = list(self.drone_uris.keys()).index(RL_DRONE_NAME)
+            self._prepare_sim_drone_for_reset(
+                drone=self.rl_drone,
+                drone_id=drone_id,
+                reset_position=self.reset_position,
+            )
 
-        self._move_drone_to_reset_position()
+        self._move_drone_to_reset_position(
+            drone=self.rl_drone,
+            reset_position=self.reset_position,
+        )
 
         # Reset task-specific state
         self._reset_task_state()
@@ -250,45 +257,54 @@ class DroneEnvironment(ABC):
 
         return self._get_state()
     
-    def _move_drone_to_reset_position(self) -> None:
+    def _move_drone_to_reset_position(
+            self,
+            drone: Drone | DroneSim,
+            reset_position: List[float],
+        ) -> None:
         """
         Take off when necessary and move the drone to the configured reset position.
 
         This behaviour is shared by physical and simulated drones.
         """
-        if not self.drone.is_flying_event.is_set():
+        if not drone.is_flying_event.is_set():
             print("[Reset] Taking off before moving to reset position.")
-            self.drone.take_off()
+            drone.take_off()
             time.sleep(1)
 
         # Ensure the drone is flying before enabling position control
-        if not self.drone.is_flying_event.wait(timeout=15):
+        if not drone.is_flying_event.wait(timeout=15):
             print(
                 "[Reset] Drone failed to confirm take-off before "
                 "moving to the reset position."
             )
 
-        self.drone.set_target_position(*self.reset_position)
+        drone.set_target_position(*reset_position)
         time.sleep(0.1)
 
-        self.drone.start_position_control()
+        drone.start_position_control()
 
-        reset_reached = self.drone.at_reset_position.wait(timeout=12)
+        reset_reached = drone.at_reset_position.wait(timeout=12)
 
         if not reset_reached:
             print(
                 "[Reset] Drone failed to reach the reset position "
-                f"within the timeout. Target: {self.reset_position}, "
-                f"current: {self.drone.get_position()}"
+                f"within the timeout. Target: {reset_position}, "
+                f"current: {drone.get_position()}"
             )
 
         time.sleep(1)
 
-        self.drone.stop_position_control()
-        self.drone.clear_reset_position_event()
-        self.drone.set_velocity_vector(0.0, 0.0, 0.0)
+        drone.stop_position_control()
+        drone.clear_reset_position_event()
+        drone.set_velocity_vector(0.0, 0.0, 0.0)
 
-    def _prepare_sim_drone_for_reset(self) -> None:
+    def _prepare_sim_drone_for_reset(
+            self,
+            drone: DroneSim,
+            drone_id: int,
+            reset_position: List[float],
+        ) -> None:
         """
         Prepare a simulated drone for a new episode.
 
@@ -303,28 +319,28 @@ class DroneEnvironment(ABC):
         print("[Reset] Preparing simulated drone for reset.")
 
         # Ensure the simulated drone is on the ground before teleporting it
-        self.drone.land()
+        drone.land()
 
-        if not self.drone.is_landed_event.wait(timeout=10):
+        if not drone.is_landed_event.wait(timeout=10):
             print(
                 "[Reset] Simulated drone did not confirm landing before teleport."
             )
 
         # A hard-boundary response leaves this set and disables controllers
-        if self.drone.emergency_event.is_set():
+        if drone.emergency_event.is_set():
             print("[Reset] Clearing simulated drone emergency state.")
-            self.drone.clear_emergency_event()
+            drone.clear_emergency_event()
 
         # Restore boundary monitoring if it stopped following an emergency
-        if self.drone.safety_thread_active:
-            self.drone.stop_boundary_monitoring()
+        if drone.safety_thread_active:
+            drone.stop_boundary_monitoring()
 
         time.sleep(0.2)
-        self.drone.start_boundary_monitoring()
+        drone.start_boundary_monitoring()
 
         spawn_position = [
-            float(self.reset_position[0]),
-            float(self.reset_position[1]),
+            float(reset_position[0]),
+            float(reset_position[1]),
             0.02,
         ]
 
@@ -334,7 +350,7 @@ class DroneEnvironment(ABC):
         )
 
         self.sim_manager.set_drone_pose(
-            drone_id=0,
+            drone_id=drone_id,
             x=spawn_position[0],
             y=spawn_position[1],
             z=spawn_position[2],
@@ -345,7 +361,7 @@ class DroneEnvironment(ABC):
         time.sleep(0.3)
 
         self._reset_ekf(
-            drone=self.drone,
+            drone=drone,
             position=spawn_position,
         )
 
@@ -402,7 +418,11 @@ class DroneEnvironment(ABC):
                 f"EKF reset warning: {exc}"
             )
 
-    def _stop_drone_motion(self, reason: str = "") -> None:
+    def _stop_drone_motion(
+            self,
+            drone: Drone | DroneSim,
+            reason: str = "",
+        ) -> None:
         """
         Cancel the drone's current commanded motion.
 
@@ -410,7 +430,7 @@ class DroneEnvironment(ABC):
         It only replaces the current velocity target with zero.
         """
         try:
-            self.drone.set_velocity_vector(0.0, 0.0, 0.0)
+            drone.set_velocity_vector(0.0, 0.0, 0.0)
 
             if reason:
                 print(
@@ -422,6 +442,18 @@ class DroneEnvironment(ABC):
             print(
                 "[SARL ENV] Failed to send zero velocity command: "
                 f"{exc}"
+            )
+
+    def _stop_all_drone_motion(
+        self,
+        reason: str = "",
+    ) -> None:
+        """Command zero velocity for every owned drone."""
+
+        for _, drone in self._iter_drones():
+            self._stop_drone_motion(
+                drone=drone,
+                reason=reason,
             )
 
     def step(self, action):
@@ -474,7 +506,7 @@ class DroneEnvironment(ABC):
         done = self._check_if_done(current_state)
         truncated = self._check_if_truncated(current_state)
         if done or truncated:
-            self._stop_drone_motion()
+            self._stop_all_drone_motion()
 
         # Generate info dict
         info = {
