@@ -50,8 +50,11 @@ class DroneEnvironment(ABC):
         self.drone_names.extend(self.expert_drone_names)
 
         self._create_drones()
-            
+
+        # Initialize reset positions for RL drone followed by possible expert drones
+        self.reset_positions: list[list[float]] = []
         self.reset_position = [0, 0, 1]
+
         self.max_velocity = max_velocity
         self.max_velocity_z = 0.5
         self.step_time = step_time
@@ -97,6 +100,40 @@ class DroneEnvironment(ABC):
         """
         return self.rl_drone
 
+    @property
+    def reset_position(self) -> list[float]:
+        """
+        Return the RL drone's reset position.
+
+        This compatibility property preserves the existing single-drone
+        SARL interface. The RL drone is always the first drone returned
+        by _iter_drones(), so its reset position is index zero.
+        """
+        return self.reset_positions[0]
+
+
+    @reset_position.setter
+    def reset_position(
+        self,
+        position: List[float],
+    ) -> None:
+        """
+        Set the RL drone's reset position.
+
+        Existing SARL tasks may continue assigning self.reset_position.
+        """
+        new_position = list(position)
+
+        if (
+            hasattr(self, "reset_positions")
+            and self.reset_positions
+        ):
+            self.reset_positions[0] = new_position
+        else:
+            self.reset_positions = [
+                new_position,
+            ]
+
     def _iter_drones(
         self,
     ) -> Iterator[tuple[str, Drone | DroneSim]]:
@@ -111,6 +148,21 @@ class DroneEnvironment(ABC):
             agent: f"udp://0.0.0.0:{19850 + i}"
             for i, agent in enumerate(self.drone_names)
         }
+
+    def _get_sim_drone_id(
+        self,
+        drone_name: str,
+    ) -> int:
+        """
+        Return the CrazySim model index associated with a drone.
+
+        drone_uris is created in the same order as the SITL instances:
+        index 0 corresponds to crazyflie_0 and port 19850,
+        index 1 corresponds to crazyflie_1 and port 19851, and so on.
+        """
+        return list(
+            self.drone_uris.keys()
+        ).index(drone_name)
     
     def _create_drones(self) -> None:
         """Create drone instances for all drones."""
@@ -201,59 +253,46 @@ class DroneEnvironment(ABC):
         drone.velocity_integral = {"x": 0.0, "y": 0.0, "z": 0.0}
         drone.target_velocity = {"x": 0.0, "y": 0.0, "z": 0.0}
 
-    def reset(self, training: bool = True):
-        """Reset the drone to initial position and state"""
+    def reset(
+        self,
+        training: bool = True,
+    ):
+        """Reset all owned drones and task state."""
 
-        # Handle evaluation mode detection
-        if not training and not self._is_evaluating:
-            print("--- STARTING NEW EVALUATION BLOCK ---")
+        if (
+            not training
+            and not self._is_evaluating
+        ):
+            print(
+                "--- STARTING NEW EVALUATION BLOCK ---"
+            )
             self._is_evaluating = True
+
         elif training:
             self._is_evaluating = False
 
-        # Clear episode position tracking
         self.episode_positions = []
-
-        self._reset_control_properties(drone=self.rl_drone,)
-
-        # Stop velocity controller to prevent conflict with position controller
-        if self.drone.velocity_controller_active:
-            print("[Reset] Stopping velocity controller for reset")
-            self.drone.stop_velocity_control()
-
-        # Stop the current velocity
-        self.drone.set_velocity_vector(0, 0, 0)
-        time.sleep(0.5)
-
         self.steps = 0
-        # Check that the drone is not already flying
+
         print("DRONE RESET")
 
-        if isinstance(self.drone, DroneSim):
-            drone_id = list(self.drone_uris.keys()).index(RL_DRONE_NAME)
-            self._prepare_sim_drone_for_reset(
-                drone=self.rl_drone,
-                drone_id=drone_id,
-                reset_position=self.reset_position,
-            )
+        self._reset_all_drones()
+        for _, drone in self._iter_drones():
+            if not drone.safety_thread_active:
+                drone.start_boundary_monitoring()
 
-        self._move_drone_to_reset_position(
-            drone=self.rl_drone,
-            reset_position=self.reset_position,
-        )
-
-        # Reset task-specific state
+        # Preserve the existing ordering: task state is reset
+        # after physical drone reset has completed.
         self._reset_task_state()
 
-        # Refresh Gazebo boundary lines using current task limits.
         self._update_visual_boundaries()
 
-        # Record initial position
-        initial_position = self.drone.get_position()
-        self.episode_positions.append(initial_position)
-
-        # Start velocity controller for episode steps
-        self.drone.start_velocity_control()
+        initial_position = (
+            self.rl_drone.get_position()
+        )
+        self.episode_positions.append(
+            initial_position
+        )
 
         return self._get_state()
     
@@ -455,6 +494,241 @@ class DroneEnvironment(ABC):
                 drone=drone,
                 reason=reason,
             )
+
+    def _wait_for_all_reset_events(
+        self,
+        timeout: float = 12.0,
+    ) -> bool:
+        """
+        Wait for all owned drones to signal that they reached
+        their reset positions.
+
+        Returns:
+            True when every drone reaches its reset target before
+            the timeout; otherwise False.
+        """
+        drones = list(self._iter_drones())
+        deadline = time.time() + timeout
+
+        while time.time() < deadline:
+            reached_drones = [
+                drone_name
+                for drone_name, drone in drones
+                if drone.at_reset_position.is_set()
+            ]
+
+            if len(reached_drones) == len(drones):
+                print(
+                    "[RESET] All drones reached their "
+                    "reset targets."
+                )
+                return True
+
+            waiting_drones = [
+                drone_name
+                for drone_name, _ in drones
+                if drone_name not in reached_drones
+            ]
+
+            print(
+                "[RESET] Waiting for drones: "
+                f"{waiting_drones}. "
+                f"Reached: {reached_drones}"
+            )
+
+            time.sleep(0.5)
+
+        timed_out_drones = [
+            drone_name
+            for drone_name, drone in drones
+            if not drone.at_reset_position.is_set()
+        ]
+
+        print(
+            "[RESET] Timeout waiting for drones: "
+            f"{timed_out_drones}"
+        )
+
+        return False
+
+    def _reset_all_drones(self) -> None:
+        """
+        Reset all RL and expert drones to their corresponding
+        reset positions.
+
+        reset_positions must follow the same order as _iter_drones():
+        the RL drone first, followed by expert drones.
+        """
+        drones = list(self._iter_drones())
+
+        print(
+            "Resetting all drones to initial positions..."
+        )
+        print(
+            f"Reset positions: {self.reset_positions}"
+        )
+
+        for _, drone in drones:
+            if drone.velocity_controller_active:
+                drone.stop_velocity_control()
+
+            time.sleep(0.5)
+
+            self._reset_control_properties(
+                drone=drone,
+            )
+
+            drone.set_velocity_vector(
+                0.0,
+                0.0,
+                0.0,
+            )
+
+            if isinstance(drone, DroneSim):
+                drone.land()
+
+        for reset_index, (
+            drone_name,
+            drone,
+        ) in enumerate(drones):
+            if not isinstance(drone, DroneSim):
+                continue
+
+            drone.is_landed_event.wait(
+                timeout=10
+            )
+
+            if drone.emergency_event.is_set():
+                drone.clear_emergency_event()
+                if drone.safety_thread_active:
+                    drone.stop_boundary_monitoring()
+                    time.sleep(0.2)
+                    drone.start_boundary_monitoring()
+
+            reset_position = self.reset_positions[
+                reset_index
+            ]
+
+            self.sim_manager.set_drone_pose(
+                drone_id=self._get_sim_drone_id(
+                    drone_name
+                ),
+                x=float(reset_position[0]),
+                y=float(reset_position[1]),
+                z=0.02,
+                orientation=(0.0, 0.0, 0.0),
+            )
+
+        time.sleep(0.3)
+
+        for reset_index, (
+            _,
+            drone,
+        ) in enumerate(drones):
+            if not isinstance(drone, DroneSim):
+                continue
+
+            reset_position = self.reset_positions[
+                reset_index
+            ]
+
+            spawn_position = [
+                float(reset_position[0]),
+                float(reset_position[1]),
+                0.02,
+            ]
+
+            self._reset_ekf(
+                drone=drone,
+                position=spawn_position,
+            )
+        if self.use_simulator:
+            time.sleep(0.5)
+
+        for drone_name, drone in drones:
+            if not drone.is_flying_event.is_set():
+                print(
+                    f"[{drone_name}] "
+                    "Taking off before reset..."
+                )
+                drone.take_off()
+
+        time.sleep(1)
+
+        for drone_name, drone in drones:
+            if drone.is_flying_event.wait(
+                timeout=15
+            ):
+                continue
+
+            if isinstance(drone, Drone):
+                raise RuntimeError(
+                    f"[{drone_name}] Failed to confirm "
+                    "take-off during reset."
+                )
+
+            print(
+                f"[{drone_name}] Failed to confirm "
+                "take-off during reset."
+            )
+
+        for reset_index, (
+            _,
+            drone,
+        ) in enumerate(drones):
+            reset_position = self.reset_positions[
+                reset_index
+            ]
+
+            drone.set_target_position(
+                *reset_position
+            )
+
+        time.sleep(0.1)
+
+        for _, drone in drones:
+            drone.start_position_control()
+
+        reset_success = (
+            self._wait_for_all_reset_events(
+                timeout=10,
+            )
+        )
+
+        if not reset_success:
+            print(
+                "[ERROR] Not all drones reached reset positions in time. Check drone states and reset position configuration."
+            )
+
+        time.sleep(1)
+
+        for _, drone in drones:
+            drone.stop_position_control()
+            drone.clear_reset_position_event()
+            drone.set_velocity_vector(
+                0.0,
+                0.0,
+                0.0,
+            )
+
+        for reset_index, (
+            drone_name,
+            drone,
+        ) in enumerate(drones):
+            initial_position = (
+                drone.get_position()
+            )
+
+            print(
+                f"[{drone_name}] Current position "
+                f"after reset: {initial_position}"
+            )
+            print(
+                f"[{drone_name}] Desired reset target: "
+                f"{self.reset_positions[reset_index]}"
+            )
+
+            drone.start_velocity_control()
 
     def step(self, action):
         """Execute one step in the environment"""
