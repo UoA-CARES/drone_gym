@@ -70,25 +70,50 @@ class AgentBody(ABC):
 
 
 class CrazyflieBody(AgentBody):
-    """A real (or SITL) CrazyFlie controlled like the task's own drone.
+    """
+    Agent-body adapter for a physical or simulated Crazyflie.
 
-    Wraps a DroneSim (simulator) or Drone (real radio). The lifecycle mirrors
-    the per-pursuer logic that used to live inside EvadePursuers2D: takeoff,
-    fly to a spawn via position control, then run velocity control for the
-    episode.
+    A pre-created Drone or DroneSim may be supplied through ``drone``.
+    In that case, the body does not own the drone and ``close()`` leaves
+    its lifecycle to the creating environment.
 
-    Constructing this opens a cflib connection synchronously, so the SITL
-    firmware instance for uri must already be running.
+    For backwards compatibility, the body can still create its own drone
+    when ``use_simulator`` is supplied. In that mode, the body owns and
+    closes the resulting drone interface.
     """
 
     is_software_integrated = False
 
-    def __init__(self, use_simulator: int, uri: Optional[str] = None,
-                 fixed_z: float = 1.0, takeoff_timeout: float = 15.0):
-        if use_simulator:
-            self.drone = DroneSim(uri=uri) if uri is not None else DroneSim()
+    def __init__(
+        self,
+        use_simulator: int | None = None,
+        uri: Optional[str] = None,
+        fixed_z: float = 1.0,
+        takeoff_timeout: float = 15.0,
+        drone: Drone | DroneSim | None = None,
+    ) -> None:
+        if drone is not None:
+            self.drone = drone
+            self.owns_drone = False
+
         else:
-            self.drone = Drone()
+            if use_simulator is None:
+                raise ValueError(
+                    "use_simulator is required when CrazyflieBody "
+                    "constructs its own drone."
+                )
+
+            if use_simulator:
+                self.drone = (
+                    DroneSim(uri=uri)
+                    if uri is not None
+                    else DroneSim()
+                )
+            else:
+                self.drone = Drone(uri=uri)
+
+            self.owns_drone = True
+
         self.fixed_z = fixed_z
         self.takeoff_timeout = takeoff_timeout
 
@@ -138,22 +163,34 @@ class CrazyflieBody(AgentBody):
         return list(self.drone.get_position())
 
     def close(self) -> None:
+        if not self.owns_drone:
+            return
+
         d = self.drone
+
         try:
             if d.velocity_controller_active:
                 d.stop_velocity_control()
+
             d.set_velocity_vector(0, 0, 0)
             d.land()
-        except Exception as e:
-            print(f"[CrazyflieBody] Error landing: {e}")
+
+        except Exception as exc:
+            print(
+                f"[CrazyflieBody] Error landing: {exc}"
+            )
+
         try:
             d.is_landed_event.wait(timeout=30)
         except Exception:
             pass
+
         try:
             d.stop()
-        except Exception as e:
-            print(f"[CrazyflieBody] Error stopping: {e}")
+        except Exception as exc:
+            print(
+                f"[CrazyflieBody] Error stopping: {exc}"
+            )
 
 
 class SimulatedBody(AgentBody):

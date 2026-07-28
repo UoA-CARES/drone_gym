@@ -45,13 +45,17 @@ class SarlTag(DroneEnvironment):
 
         ./sitl_multiagent_square.sh -m crazyflie -n 2   # 19850 (runner), 19851 (interceptor)
     """
+    INTERCEPTOR_NAME = "interceptor_0"
 
     def __init__(self, use_simulator: Literal[0, 1], max_velocity: float = 0.25, step_time: float = 0.5,
                  exploration_steps: int = 1000, episode_length: int = 80,
                  interceptor_max_velocity: float = 0.125):
-
-        super().__init__(use_simulator, max_velocity, step_time)
-        self.use_simulator = use_simulator
+        super().__init__(
+            use_simulator=use_simulator, 
+            max_velocity=max_velocity, 
+            step_time=step_time,
+            expert_drone_names=[self.INTERCEPTOR_NAME],
+        )
 
         # Gentle vertical speed cap — CrazySim's z-velocity control is twitchy and
         # moving up/down fast destabilises the estimator, which makes the firmware
@@ -179,15 +183,22 @@ class SarlTag(DroneEnvironment):
         # --- Interceptor agent (second real SITL Crazyflie) ------------------
         # Constructed directly here — agent lifecycle belongs to the environment,
         # not to SimManager.  SimManager is only responsible for Gazebo visuals.
-        self.sim_manager = get_default_sim_manager()
+        # self.sim_manager = get_default_sim_manager()
         self.goal_marker_name = "rl_sarl_tag_goal"
-        # Runner is on port 19850; interceptor is drone 2 from sitl_multiagent_square -n 2
-        interceptor_uri = "udp://0.0.0.0:19851"
+        # # Runner is on port 19850; interceptor is drone 2 from sitl_multiagent_square -n 2
+        # interceptor_uri = "udp://0.0.0.0:19851"
+        # interceptor_body = CrazyflieBody(
+        #     use_simulator=use_simulator,
+        #     uri=interceptor_uri,
+        #     fixed_z=self.fixed_z,
+        # )
+
+        interceptor_drone = self.expert_drones[self.INTERCEPTOR_NAME]
         interceptor_body = CrazyflieBody(
-            use_simulator=use_simulator,
-            uri=interceptor_uri,
+            drone=interceptor_drone,
             fixed_z=self.fixed_z,
         )
+
         interceptor_policy = CallablePolicy(fn=self._interceptor_pursuit)
         self.interceptor = SimAgent(
             agent_id=1,
@@ -1094,14 +1105,13 @@ class SarlTag(DroneEnvironment):
             print(f"[SarlTag][curriculum] runner success {success_rate:.0%} -> "
                   f"interceptor speed {self.interceptor_max_velocity:.3f} m/s")
 
-    def reset(self, training: bool = True):
-        """Teleport both drones to fresh spawns (sim) and start a new episode.
-
-        Sim resets never fly anyone home: both drones land, their MODELS are
-        teleported to the new spawn points on the ground, estimators re-seed
-        there, and take-off is the only flight before the episode begins. On
-        real hardware (no teleport available) this falls back to the old
-        fly-to-spawn reset.
+    def reset(
+        self,
+        training: bool = True,
+    ):
+        """
+        Sample the task geometry and use the base environment to
+        reset the runner and interceptor together.
         """
 
         if not training and not self._is_evaluating:
@@ -1109,115 +1119,267 @@ class SarlTag(DroneEnvironment):
 
         self._reset_stuck_tracker()
 
-        # Pause the collision guard while both drones reposition to their spawns
-        # (they legitimately fly near each other during repositioning).
+        # The monitor must not treat valid reset movement as capture
+        # or boundary drift.
         self._stop_safety_monitor()
         self._collision_event.clear()
 
-        # Hold the interceptor for the whole reset: with the guard paused, its
-        # last pursuit setpoint would otherwise keep flying it (typically toward
-        # the wall a dying runner just crossed) for however long the runner
-        # handling below takes.
+        # Stop the existing expert command while reset preparation
+        # and any recovery operations are performed.
         self._freeze_interceptor()
 
         self._episode_count += 1
 
-        # Update the interceptor speed BEFORE sampling its spawn, so the new
-        # speed feeds the fair-spawn placement this episode.
+        # This must happen before interceptor spawn sampling because
+        # the configured speed affects fair placement.
         self._update_interceptor_curriculum(training)
 
-        # Vertical variety: resample the runner's spawn altitude each episode.
-        # xy stays pinned at the centre (long lateral reset moves are the #1 EKF
-        # stressor); the fresh z only changes the length of the slow vertical
-        # climb after take-off. The parent reset targets reset_position.
-        self.runner_spawn[2] = float(np.random.uniform(*self.runner_spawn_z_range))
-        self.reset_position = list(self.runner_spawn)
+        # Sample the new runner spawn.
+        self.runner_spawn[2] = float(
+            np.random.uniform(
+                *self.runner_spawn_z_range
+            )
+        )
 
-        # Sample the new geometry up front — the runner always starts at
-        # runner_spawn, so nothing here depends on live drone positions.
-        self.goal_position = self._sample_goal(self.runner_spawn)
-        interceptor_spawn = self._sample_interceptor_spawn(self.runner_spawn, self.goal_position)
+        # Sample task geometry.
+        self.goal_position = self._sample_goal(
+            self.runner_spawn
+        )
 
-        if self.use_simulator:
-            # Land + teleport both models to their spawns + ground EKF reset.
-            # Dead / toppled / boundary-killed drones are recovered here by
-            # construction — no flight back from a crash site is ever needed.
-            self._teleport_reset_both(interceptor_spawn)
-        elif self._episode_count > 1 and self._runner_is_dead():
-            # Real hardware: no teleport available. Recover a dead runner
-            # BEFORE the parent reset — super().reset() on a zombie (latched
-            # emergency) burns ~30 s re-launching a drone whose control loops
-            # refuse every command, times out, and never re-centres it.
-            print("[SarlTag] Runner dead at reset entry — recovering before parent reset")
+        interceptor_spawn = (
+            self._sample_interceptor_spawn(
+                self.runner_spawn,
+                self.goal_position,
+            )
+        )
+
+        # Match the base _iter_drones() order:
+        # rl_drone, then interceptor_0.
+        self.reset_positions = [
+            list(self.runner_spawn),
+            list(interceptor_spawn),
+        ]
+
+        # Keep specialised recovery before the general reset.
+        #
+        # The base reset can reposition healthy drones, but it does
+        # not necessarily recreate a dead link or relaunch terminated
+        # worker threads.
+        if self._episode_count > 1:
+            if self._runner_is_dead():
+                print(
+                    "[SarlTag] Runner dead at reset entry — "
+                    "recovering before coordinated reset"
+                )
+                self.restart()
+
+            interceptor_drone = self.expert_drones[
+                self.INTERCEPTOR_NAME
+            ]
+
+            if (
+                interceptor_drone.emergency_event.is_set()
+                or self._interceptor_is_dead()
+            ):
+                print(
+                    "[SarlTag] Interceptor dead at reset entry — "
+                    "recovering before coordinated reset"
+                )
+                self._recover_interceptor_if_dead(
+                    force=True
+                )
+
+        # Resets both the RL drone and interceptor using:
+        #
+        # self.reset_positions[0] -> rl_drone
+        # self.reset_positions[1] -> interceptor_0
+        state = super().reset(training)
+
+        runner_pos = self.rl_drone.get_position()
+
+        # Optional health check after the coordinated reset.
+        runner_off_spawn = (
+            math.dist(
+                runner_pos,
+                self.runner_spawn,
+            )
+            > 0.8
+        )
+
+        if self._runner_is_dead() or runner_off_spawn:
+            print(
+                "[SarlTag] Runner unhealthy after coordinated "
+                "reset — recovering and retrying once"
+            )
+
             self.restart()
 
-        # Parent reset: takeoff, move the runner to (0, 0, spawn z), start
-        # velocity control. After a teleport the runner is already at the spawn
-        # xy, so this is a short vertical-only climb — not a cross-arena move.
-        super().reset(training)
+            state = super().reset(training)
+            runner_pos = self.rl_drone.get_position()
 
-        # Stop the velocity controller that the parent started — the runner should hold
-        # position quietly while we move the interceptor to its spawn below.  We'll
-        # restart it at the end of this reset so the episode begins cleanly.
-        if self.drone.velocity_controller_active:
-            self.drone.stop_velocity_control()
-        self.drone.set_velocity_vector(0, 0, 0)
+        # The environment resets the drone lifecycle. The task still
+        # resets the expert policy.
+        self.interceptor.reset_policy(
+            {
+                "runner_pos": runner_pos,
+                "runner_vel": [0.0, 0.0, 0.0],
+            }
+        )
 
-        # Verify the re-centre actually happened. This catches every failure
-        # mode regardless of which heuristic missed it: a dead/zombie runner, an
-        # EKF blow-up, or a position move that silently timed out all leave the
-        # runner far from the spawn. Recover, then retry the parent reset ONCE
-        # so the episode starts with a healthy, centred drone.
-        pos = self.drone.get_position()
-        off_center = math.dist(pos, self.runner_spawn) > 0.8
-        if self._runner_is_dead() or off_center:
-            print(f"[SarlTag] Runner unhealthy after parent reset "
-                  f"(pos={[round(p, 2) for p in pos]}, off_center={off_center}) — "
-                  f"restarting + re-centering")
-            self.restart()
-            super().reset(training)
-            if self.drone.velocity_controller_active:
-                self.drone.stop_velocity_control()
-            self.drone.set_velocity_vector(0, 0, 0)
-
-        # Real hardware only: recover the interceptor if it died. (In sim the
-        # teleport reset above already handled every dead-interceptor case.)
-        if not self.use_simulator:
-            self._recover_interceptor_if_dead()
-
-        # The runner stays where the parent reset left it — the centre (0, 0, fixed_z).
-        runner_pos = self.drone.get_position()
-
-        # Draw the goal marker in Gazebo.
-        self._set_target_marker(self.goal_position, marker_name=self.goal_marker_name)
-
-        # Bring the interceptor up at its spawn and arm it for the episode.
-        # prepare_reset takes off a grounded drone and position-controls it to
-        # the spawn — after the teleport that's a vertical-only climb from the
-        # right xy already, with a freshly ground-reset estimator. We never
-        # reset the EKF airborne (that's the thrust-spike launch).
-        self.interceptor.reset_policy({"runner_pos": runner_pos, "runner_vel": [0.0, 0.0, 0.0]})
-        self.interceptor.prepare_reset(interceptor_spawn)
-        if not self._await_interceptor_reset_safely(interceptor_spawn, timeout=15.0):
-            print("[SarlTag] WARNING: interceptor did not reach spawn cleanly")
-        self.interceptor.start_episode()
         self.interceptor.refresh()
         self._sync_interceptor()
 
-        # 4) Reset task state and resume runner velocity control for the episode.
-        self.caught = False
-        self.reached_goal = False
-        self.done = False
-        self.previous_goal_distance = self._distance_to_target(runner_pos)
-        self._prev_applied_action = [0.0, 0.0, 0.0]  # runner starts the episode at rest
+        # Draw the goal after the new geometry has been selected.
+        self._set_target_marker(
+            self.goal_position,
+            marker_name=self.goal_marker_name,
+        )
 
-        time.sleep(0.5)  # final settle so both drones are stable before stepping
-        self.drone.start_velocity_control()
+        # _reset_task_state() is already called by super().reset(),
+        # so caught, reached_goal and done have been cleared.
+        self.previous_goal_distance = (
+            self._distance_to_target(
+                runner_pos
+            )
+        )
 
-        # Both drones are at their (well-separated) spawns — arm the collision guard.
+        self._prev_applied_action = [
+            0.0,
+            0.0,
+            0.0,
+        ]
+
+        time.sleep(0.5)
+
+        # Both drones are now at separated targets.
         self._start_safety_monitor()
 
         return self._get_state()
+
+    # def reset(self, training: bool = True):
+    #     """Teleport both drones to fresh spawns (sim) and start a new episode.
+
+    #     Sim resets never fly anyone home: both drones land, their MODELS are
+    #     teleported to the new spawn points on the ground, estimators re-seed
+    #     there, and take-off is the only flight before the episode begins. On
+    #     real hardware (no teleport available) this falls back to the old
+    #     fly-to-spawn reset.
+    #     """
+
+    #     if not training and not self._is_evaluating:
+    #         self.successful_episodes_count = 0
+
+    #     self._reset_stuck_tracker()
+
+    #     # Pause the collision guard while both drones reposition to their spawns
+    #     # (they legitimately fly near each other during repositioning).
+    #     self._stop_safety_monitor()
+    #     self._collision_event.clear()
+
+    #     # Hold the interceptor for the whole reset: with the guard paused, its
+    #     # last pursuit setpoint would otherwise keep flying it (typically toward
+    #     # the wall a dying runner just crossed) for however long the runner
+    #     # handling below takes.
+    #     self._freeze_interceptor()
+
+    #     self._episode_count += 1
+
+    #     # Update the interceptor speed BEFORE sampling its spawn, so the new
+    #     # speed feeds the fair-spawn placement this episode.
+    #     self._update_interceptor_curriculum(training)
+
+    #     # Vertical variety: resample the runner's spawn altitude each episode.
+    #     # xy stays pinned at the centre (long lateral reset moves are the #1 EKF
+    #     # stressor); the fresh z only changes the length of the slow vertical
+    #     # climb after take-off. The parent reset targets reset_position.
+    #     self.runner_spawn[2] = float(np.random.uniform(*self.runner_spawn_z_range))
+    #     self.reset_position = list(self.runner_spawn)
+
+    #     # Sample the new geometry up front — the runner always starts at
+    #     # runner_spawn, so nothing here depends on live drone positions.
+    #     self.goal_position = self._sample_goal(self.runner_spawn)
+    #     interceptor_spawn = self._sample_interceptor_spawn(self.runner_spawn, self.goal_position)
+
+    #     if self.use_simulator:
+    #         # Land + teleport both models to their spawns + ground EKF reset.
+    #         # Dead / toppled / boundary-killed drones are recovered here by
+    #         # construction — no flight back from a crash site is ever needed.
+    #         self._teleport_reset_both(interceptor_spawn)
+    #     elif self._episode_count > 1 and self._runner_is_dead():
+    #         # Real hardware: no teleport available. Recover a dead runner
+    #         # BEFORE the parent reset — super().reset() on a zombie (latched
+    #         # emergency) burns ~30 s re-launching a drone whose control loops
+    #         # refuse every command, times out, and never re-centres it.
+    #         print("[SarlTag] Runner dead at reset entry — recovering before parent reset")
+    #         self.restart()
+
+    #     # Parent reset: takeoff, move the runner to (0, 0, spawn z), start
+    #     # velocity control. After a teleport the runner is already at the spawn
+    #     # xy, so this is a short vertical-only climb — not a cross-arena move.
+    #     super().reset(training)
+
+    #     # Stop the velocity controller that the parent started — the runner should hold
+    #     # position quietly while we move the interceptor to its spawn below.  We'll
+    #     # restart it at the end of this reset so the episode begins cleanly.
+    #     if self.drone.velocity_controller_active:
+    #         self.drone.stop_velocity_control()
+    #     self.drone.set_velocity_vector(0, 0, 0)
+
+    #     # Verify the re-centre actually happened. This catches every failure
+    #     # mode regardless of which heuristic missed it: a dead/zombie runner, an
+    #     # EKF blow-up, or a position move that silently timed out all leave the
+    #     # runner far from the spawn. Recover, then retry the parent reset ONCE
+    #     # so the episode starts with a healthy, centred drone.
+    #     pos = self.drone.get_position()
+    #     off_center = math.dist(pos, self.runner_spawn) > 0.8
+    #     if self._runner_is_dead() or off_center:
+    #         print(f"[SarlTag] Runner unhealthy after parent reset "
+    #               f"(pos={[round(p, 2) for p in pos]}, off_center={off_center}) — "
+    #               f"restarting + re-centering")
+    #         self.restart()
+    #         super().reset(training)
+    #         if self.drone.velocity_controller_active:
+    #             self.drone.stop_velocity_control()
+    #         self.drone.set_velocity_vector(0, 0, 0)
+
+    #     # Real hardware only: recover the interceptor if it died. (In sim the
+    #     # teleport reset above already handled every dead-interceptor case.)
+    #     if not self.use_simulator:
+    #         self._recover_interceptor_if_dead()
+
+    #     # The runner stays where the parent reset left it — the centre (0, 0, fixed_z).
+    #     runner_pos = self.drone.get_position()
+
+    #     # Draw the goal marker in Gazebo.
+    #     self._set_target_marker(self.goal_position, marker_name=self.goal_marker_name)
+
+    #     # Bring the interceptor up at its spawn and arm it for the episode.
+    #     # prepare_reset takes off a grounded drone and position-controls it to
+    #     # the spawn — after the teleport that's a vertical-only climb from the
+    #     # right xy already, with a freshly ground-reset estimator. We never
+    #     # reset the EKF airborne (that's the thrust-spike launch).
+    #     self.interceptor.reset_policy({"runner_pos": runner_pos, "runner_vel": [0.0, 0.0, 0.0]})
+    #     self.interceptor.prepare_reset(interceptor_spawn)
+    #     if not self._await_interceptor_reset_safely(interceptor_spawn, timeout=15.0):
+    #         print("[SarlTag] WARNING: interceptor did not reach spawn cleanly")
+    #     self.interceptor.start_episode()
+    #     self.interceptor.refresh()
+    #     self._sync_interceptor()
+
+    #     # 4) Reset task state and resume runner velocity control for the episode.
+    #     self.caught = False
+    #     self.reached_goal = False
+    #     self.done = False
+    #     self.previous_goal_distance = self._distance_to_target(runner_pos)
+    #     self._prev_applied_action = [0.0, 0.0, 0.0]  # runner starts the episode at rest
+
+    #     time.sleep(0.5)  # final settle so both drones are stable before stepping
+    #     self.drone.start_velocity_control()
+
+    #     # Both drones are at their (well-separated) spawns — arm the collision guard.
+    #     self._start_safety_monitor()
+
+    #     return self._get_state()
 
     def step(self, action):
         """One env step: command the expert interceptor, then move the learner (3D)."""
@@ -1515,15 +1677,8 @@ class SarlTag(DroneEnvironment):
         """Sample a normalized action in [-1, 1] — the parent will scale to m/s."""
         return np.random.uniform(-1.0, 1.0, size=(3,))
 
-    def close(self):
-        """Land the interceptor and runner, then clear the goal marker."""
+    def close(self) -> None:
         self._stop_safety_monitor()
-        try:
-            self.interceptor.body.close()
-        except Exception as e:
-            print(f"[SarlTag] Error closing interceptor: {e}")
-        if self.use_simulator:
-            self.sim_manager.remove_visual_marker(self.goal_marker_name)
         super().close()
 
     def _render_task_specific_info(self):
