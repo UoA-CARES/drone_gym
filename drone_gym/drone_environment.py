@@ -10,7 +10,16 @@ from typing import Dict, List, Any, Literal
 RL_DRONE_NAME = "rl_drone"
 
 class DroneEnvironment(ABC):
-    """Base drone environment that handles common drone operations"""
+    """
+    Base environment for single-agent reinforcement-learning drone tasks.
+
+    The environment owns exactly one RL-controlled drone and may also own
+    task-controlled expert drones. Tasks remain responsible for expert
+    policies, observations, rewards and other task-specific behaviour.
+
+    The environment manages the lifecycle of all owned drones, including
+    creation, coordinated reset, stopping motion and shutdown.
+    """
 
     def __init__(
             self, 
@@ -19,6 +28,13 @@ class DroneEnvironment(ABC):
             step_time: float = 0.5,
             expert_drone_names: list[str] | None = None
         ) -> None:
+        """
+        Args:
+            use_simulator: Use simulated drones when 1, or physical drones when 0.
+            max_velocity: Maximum x and y velocity in metres per second.
+            step_time: Duration each action is applied, in seconds.
+            expert_drone_names: Ordered names of optional expert drones.
+        """        
         self._closed = False  # Track if the environment has been closed
         # Set the appropriate drone instance based on use_simulator flag
         print("use_simulator", use_simulator)
@@ -52,6 +68,7 @@ class DroneEnvironment(ABC):
         self._create_drones()
 
         # Initialize reset positions for RL drone followed by possible expert drones
+        # The reset_positions list must match the order of _iter_drones()
         self.reset_positions: list[list[float]] = []
         self.reset_position = [0, 0, 1]
 
@@ -295,117 +312,6 @@ class DroneEnvironment(ABC):
         )
 
         return self._get_state()
-    
-    def _move_drone_to_reset_position(
-            self,
-            drone: Drone | DroneSim,
-            reset_position: List[float],
-        ) -> None:
-        """
-        Take off when necessary and move the drone to the configured reset position.
-
-        This behaviour is shared by physical and simulated drones.
-        """
-        if not drone.is_flying_event.is_set():
-            print("[Reset] Taking off before moving to reset position.")
-            drone.take_off()
-            time.sleep(1)
-
-        # Ensure the drone is flying before enabling position control
-        if not drone.is_flying_event.wait(timeout=15):
-            print(
-                "[Reset] Drone failed to confirm take-off before "
-                "moving to the reset position."
-            )
-
-        drone.set_target_position(*reset_position)
-        time.sleep(0.1)
-
-        drone.start_position_control()
-
-        reset_reached = drone.at_reset_position.wait(timeout=12)
-
-        if not reset_reached:
-            print(
-                "[Reset] Drone failed to reach the reset position "
-                f"within the timeout. Target: {reset_position}, "
-                f"current: {drone.get_position()}"
-            )
-
-        time.sleep(1)
-
-        drone.stop_position_control()
-        drone.clear_reset_position_event()
-        drone.set_velocity_vector(0.0, 0.0, 0.0)
-
-    def _prepare_sim_drone_for_reset(
-            self,
-            drone: DroneSim,
-            drone_id: int,
-            reset_position: List[float],
-        ) -> None:
-        """
-        Prepare a simulated drone for a new episode.
-
-        The drone is landed, its emergency and boundary-monitoring state is
-        restored, its Gazebo model is moved to the reset spawn, and its EKF is
-        reseeded before take-off.
-        """
-        if self.sim_manager is None:
-            print("[Reset] No simulator manager available; skipping simulated drone reset.")
-            return
-
-        print("[Reset] Preparing simulated drone for reset.")
-
-        # Ensure the simulated drone is on the ground before teleporting it
-        drone.land()
-
-        if not drone.is_landed_event.wait(timeout=10):
-            print(
-                "[Reset] Simulated drone did not confirm landing before teleport."
-            )
-
-        # A hard-boundary response leaves this set and disables controllers
-        if drone.emergency_event.is_set():
-            print("[Reset] Clearing simulated drone emergency state.")
-            drone.clear_emergency_event()
-
-        # Restore boundary monitoring if it stopped following an emergency
-        if drone.safety_thread_active:
-            drone.stop_boundary_monitoring()
-
-        time.sleep(0.2)
-        drone.start_boundary_monitoring()
-
-        spawn_position = [
-            float(reset_position[0]),
-            float(reset_position[1]),
-            0.02,
-        ]
-
-        print(
-            "[Reset] Teleporting simulated drone to spawn position: "
-            f"{spawn_position}"
-        )
-
-        self.sim_manager.set_drone_pose(
-            drone_id=drone_id,
-            x=spawn_position[0],
-            y=spawn_position[1],
-            z=spawn_position[2],
-            orientation=(0.0, 0.0, 0.0),
-        )
-
-        # Allow the model to settle onto the Gazebo floor
-        time.sleep(0.3)
-
-        self._reset_ekf(
-            drone=drone,
-            position=spawn_position,
-        )
-
-        # Give the estimator time to converge before taking off
-        time.sleep(0.5)
         
     def _reset_ekf(
         self,
