@@ -70,15 +70,16 @@ class AgentBody(ABC):
 
 
 class CrazyflieBody(AgentBody):
-    """A real (or SITL) CrazyFlie controlled like the task's own drone.
+    """
+    Agent-body adapter for a physical or simulated Crazyflie.
 
-    Wraps a DroneSim (simulator) or Drone (real radio). The lifecycle mirrors
-    the per-pursuer logic that used to live inside EvadePursuers2D: takeoff,
-    fly to a spawn via position control, then run velocity control for the
-    episode.
+    A pre-created Drone or DroneSim may be supplied through ``drone``.
+    In that case, the body does not own the drone and ``close()`` leaves
+    its lifecycle to the creating environment.
 
-    Constructing this opens a cflib connection synchronously, so the SITL
-    firmware instance for uri must already be running.
+    For backwards compatibility, the body can still create its own drone
+    when ``use_simulator`` is supplied. In that mode, the body owns and
+    closes the resulting drone interface.
     """
 
     is_software_integrated = False
