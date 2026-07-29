@@ -24,8 +24,12 @@ ARG CARES_RL_REF=main
 WORKDIR /drone_ws
 
 # Pre-create writable runtime directories for non-root workers.
-RUN mkdir -p /tmp/matplotlib_cache /tmp/gz/fuel /workspace/output /tmp/cares_output && \
-    chmod -R 777 /tmp/matplotlib_cache /tmp/gz /workspace/output /tmp/cares_output
+# /drone_ws/logs must exist here because sim_manager.py writes CrazySim logs to
+# a path relative to CWD ("logs/crazysim.log"), and /drone_ws itself is later
+# locked to read+execute only (a+rX) for non-root HPC runtime accounts.
+RUN mkdir -p /tmp/matplotlib_cache /tmp/gz/fuel /workspace/output /tmp/cares_output /drone_ws/logs && \
+    chmod -R 777 /tmp/matplotlib_cache /tmp/gz /workspace/output /tmp/cares_output /drone_ws/logs
+
 
 # Install core system and Python packages.
 RUN apt-get update && apt-get install -y --no-install-recommends \
