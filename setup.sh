@@ -15,7 +15,7 @@ sudo apt install python3.10 python3.10-venv # Python 3.10 and venv module
 
 # Clone repositories (skip if already exist)
 cd $base_dir
-[ -d "cares_reinforcement_learning" ] || git clone --branch v3.0.0 https://github.com/UoA-CARES/cares_reinforcement_learning.git
+[ -d "cares_reinforcement_learning" ] || git clone https://github.com/UoA-CARES/cares_reinforcement_learning.git
 [ -d "drone_gym" ] || git clone https://github.com/UoA-CARES/drone_gym.git
 [ -d "CrazySim" ] || git clone https://github.com/gtfactslab/CrazySim.git --recursive
 cd CrazySim
@@ -75,5 +75,4 @@ sudo pkill -9 -f gz 2>/dev/null || true
 rm -rf /tmp/crazyflie*
 
 # Run training
-echo 'To run simulation:"cd CrazySim/crazyflie-firmware; bash tools/crazyflie-simulation/simulator_files/gazebo/launch/sitl_singleagent.sh -m crazyflie -x 0 -y 0; exec bash"'
 echo "Training example: cares-rl train cli --gym drone --task move_2d SAC"
