@@ -24,12 +24,8 @@ ARG CARES_RL_REF=main
 WORKDIR /drone_ws
 
 # Pre-create writable runtime directories for non-root workers.
-# /drone_ws/logs must exist here because sim_manager.py writes CrazySim logs to
-# a path relative to CWD ("logs/crazysim.log"), and /drone_ws itself is later
-# locked to read+execute only (a+rX) for non-root HPC runtime accounts.
-RUN mkdir -p /tmp/matplotlib_cache /tmp/gz/fuel /workspace/output /tmp/cares_output /drone_ws/logs && \
-    chmod -R 777 /tmp/matplotlib_cache /tmp/gz /workspace/output /tmp/cares_output /drone_ws/logs
-
+RUN mkdir -p /tmp/matplotlib_cache /tmp/gz/fuel /workspace/output /tmp/cares_output && \
+    chmod -R 777 /tmp/matplotlib_cache /tmp/gz /workspace/output /tmp/cares_output
 
 # Install core system and Python packages.
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -58,26 +54,75 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libxcursor1 \
     libxi6 \
     libxxf86vm1 \
-    ffmpeg && \
+    ffmpeg \
+    cmake \
+    pkg-config \
+    python-is-python3 && \
     rm -rf /var/lib/apt/lists/*
 
-# Clone and install cflib (default branch, with version pins relaxed — mirrors setup.sh).
+# Upgrade pip FIRST — Ubuntu 22.04 stock pip (22.0.2) silently installs cflib as "UNKNOWN".
 # Build this file from drone_gym/:
 #   docker build -f Dockerfile.local -t cares:drone-local .
-RUN git clone https://github.com/bitcraze/crazyflie-lib-python.git /drone_ws/cflib_src && \
-    sed -i \
-        -e 's/scipy~=1.14/scipy>=1.10/' \
-        -e 's/numpy~=2.2/numpy>=1.20,<2.0/' \
-        -e 's/packaging~=25.0/packaging>=21.0/' \
-        /drone_ws/cflib_src/pyproject.toml && \
-    SETUPTOOLS_SCM_PRETEND_VERSION=0.1.31 python3 -m pip install --no-cache-dir /drone_ws/cflib_src
+RUN python3 -m pip install --no-cache-dir --upgrade pip setuptools wheel
+
+# Install Gazebo Garden — sim_manager.py shells out to `gz service` for teleports and visuals.
+# Also pull the -dev headers (gz-garden alone only gives runtime libs): the CrazySim Gazebo
+# plugin built below links against gz-plugin2, gz-sim7, gz-transport12, and gz-msgs9.
+RUN wget https://packages.osrfoundation.org/gazebo.gpg -O /usr/share/keyrings/pkgs-osrf-archive-keyring.gpg && \
+    echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/pkgs-osrf-archive-keyring.gpg] http://packages.osrfoundation.org/gazebo/ubuntu-stable $(lsb_release -cs) main" > /etc/apt/sources.list.d/gazebo-stable.list && \
+    apt-get update && apt-get install -y --no-install-recommends \
+    gz-garden \
+    libgz-sim7-dev \
+    libgz-plugin2-dev \
+    libgz-transport12-dev \
+    libgz-msgs9-dev && \
+    rm -rf /var/lib/apt/lists/*
+
+# Build CrazySim/crazyflie-firmware (SITL firmware + Gazebo plugin) into the image so
+# --gym drone training works standalone, without a host bind-mount or NAS dataset mount.
+# Mirrors the "CrazySim SETUP" section of setup.sh.
+RUN git clone --recursive https://github.com/gtfactslab/CrazySim.git /drone_ws/CrazySim && \
+    cd /drone_ws/CrazySim/crazyflie-firmware && \
+    mkdir -p sitl_make/build && \
+    cd sitl_make/build && \
+    cmake .. && \
+    make all -j"$(nproc)"
+
+# Headless-safe launch script: the upstream script calls bare `python` (only python3 exists
+# here) and starts an interactive `gz sim -g` GUI client, which hangs with no X11 in a
+# container. Mirrors the sed patch already verified against a local bind-mounted checkout.
+RUN sed -i \
+    -e 's/\bpython\b/python3/g' \
+    -e 's/^gz sim -g/wait/' \
+    /drone_ws/CrazySim/crazyflie-firmware/tools/crazyflie-simulation/simulator_files/gazebo/launch/sitl_multiagent_square.sh
+
+# CrazySim fork of cflib required — stock bitcraze cflib hangs at _request_protocol_version().
+RUN git clone --branch sitl-release https://github.com/llanesc/crazyflie-lib-python.git /drone_ws/cflib_src && \
+    SETUPTOOLS_SCM_PRETEND_VERSION=0.1.31 python3 -m pip install --no-cache-dir /drone_ws/cflib_src && \
+    python3 -c "import cflib.crtp; print('cflib OK')"
 
 # Install CARES RL first so its pinned numpy==1.26.4 is set before drone_gym installs.
-RUN python3 -m pip install --no-cache-dir --upgrade pip setuptools wheel && \
-    python3 -m pip install --no-cache-dir pettingzoo && \
+# Jinja2 is required at runtime by the CrazySim launch script's jinja_gen.py (model.sdf templating).
+RUN python3 -m pip install --no-cache-dir pettingzoo Jinja2 && \
     git clone --branch ${CARES_RL_REF} https://github.com/UoA-CARES/cares_reinforcement_learning.git /opt/cares_reinforcement_learning && \
     cd /opt/cares_reinforcement_learning && \
     python3 -m pip install --no-cache-dir -e ".[gym]"
+
+# Permission pass over everything built so far, WHILE it's still cheap to cache: CrazySim
+# (full git history + built firmware) and cares_reinforcement_learning are large trees that
+# never change on a drone_gym-only edit, so doing chmod -R here means this layer — and its
+# ~9-minute recursive walk — stays cached across rebuilds that only touch drone_gym. Doing
+# this after the drone_gym COPY below (as one combined chmod) would re-walk the whole
+# tree, including CrazySim, every time drone_gym/ changes.
+#
+# /drone_ws/logs must exist and be writable here too: sim_manager.py writes CrazySim logs
+# to a path relative to CWD ("logs/crazysim.log"), and /drone_ws is about to be locked to
+# read+execute only (a+rX) for non-root HPC runtime accounts — os.makedirs("logs") then
+# hits PermissionError on the HPC (silently fine locally, since `docker run` defaults to
+# root, which bypasses the permission check entirely).
+RUN mkdir -p /drone_ws/logs && \
+    chmod -R a+rX /drone_ws/CrazySim /drone_ws/cflib_src /opt/cares_reinforcement_learning && \
+    chmod -R 777 /drone_ws/logs
 
 # Copy drone_gym source and install (numpy>=1.21.0 already satisfied by cares_rl's 1.26.4).
 COPY drone_gym    ./drone_gym/drone_gym
@@ -95,8 +140,14 @@ RUN python3 -m pip install --force-reinstall --no-cache-dir \
     "numpy>=1.20,<1.25"
 
 # Open workspace/runtime permissions for arbitrary non-root HPC runtime accounts.
-RUN chmod -R a+rX /drone_ws /opt/cares_reinforcement_learning /usr/local/lib/python3.10/dist-packages && \
-    chmod -R 777 /tmp/matplotlib_cache /tmp/gz /workspace/output /tmp/cares_output
+# Only drone_gym + dist-packages (touched by the installs above) need chmod'ing here —
+# CrazySim/cflib/cares_rl were already covered in the cached pass earlier. This keeps a
+# drone_gym-only rebuild's permission pass to seconds instead of minutes.
+# sitl_make/build additionally needs to be writable: the launch script mkdir's a
+# per-agent log directory under it (sitl_make/build/<N>/) every time it spawns a drone.
+RUN chmod -R a+rX /drone_ws/drone_gym /usr/local/lib/python3.10/dist-packages && \
+    chmod -R 777 /tmp/matplotlib_cache /tmp/gz /workspace/output /tmp/cares_output \
+    /drone_ws/CrazySim/crazyflie-firmware/sitl_make/build
 
 RUN printf '%s\n' \
     '#!/usr/bin/env bash' \

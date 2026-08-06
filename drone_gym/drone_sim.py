@@ -19,6 +19,24 @@ warnings.filterwarnings('ignore', message='Using legacy TYPE_HOVER_LEGACY')
 
 SUPERVISOR_IS_CRASHED_BIT = 7
 
+# Mirrors cflib.crazyflie.supervisor.Supervisor.STATES. Kept as a local constant
+# rather than read off `self.cf.supervisor` because older/forked cflib builds
+# (e.g. the SITL-compatible fork) predate that class and have no `supervisor`
+# attribute on Crazyflie at all — these names are only used for display here.
+SUPERVISOR_STATE_NAMES = [
+    'Can be armed',
+    'Is armed',
+    'Is auto armed',
+    'Can fly',
+    'Is flying',
+    'Is tumbled',
+    'Is locked',
+    'Is crashed',
+    'HL control is active',
+    'Finished HL trajectory',
+    'HL control is disabled',
+]
+
 class DroneSim(DroneSetup):
     """
     Drone class for CrazySim (Gazebo simulation)
@@ -111,10 +129,15 @@ class DroneSim(DroneSetup):
             self.cf.param.set_value("kalman.resetEstimation", "1")
             time.sleep(0.5)
 
-            # Arm the drone
+            # Arm the drone. Prefer the modern Supervisor API, but fall back to the
+            # legacy platform request on cflib builds without it (e.g. the
+            # SITL-compatible fork, which predates the Supervisor class).
             print(f"[{self.agent_id}] Arming Crazyflie...")
-            # self.cf.platform.send_arming_request(True)
-            self.cf.supervisor.send_arming_request(True)
+            supervisor = getattr(self.cf, "supervisor", None)
+            if supervisor is not None:
+                supervisor.send_arming_request(True)
+            else:
+                self.cf.platform.send_arming_request(True)
             time.sleep(1.5)
             self.armed = True
             print(f"[{self.agent_id}] Crazyflie armed.")
@@ -321,7 +344,7 @@ class DroneSim(DroneSetup):
                 bit_position,
             )
             for bit_position, state_name
-            in enumerate(self.cf.supervisor.STATES)
+            in enumerate(SUPERVISOR_STATE_NAMES)
         }
 
         state_text = ", ".join(
@@ -342,7 +365,7 @@ class DroneSim(DroneSetup):
     ) -> None:
         """Print supervisor states whose values have changed."""
         for bit_position, state_name in enumerate(
-            self.cf.supervisor.STATES
+            SUPERVISOR_STATE_NAMES
         ):
             bit_mask = 1 << bit_position
 
