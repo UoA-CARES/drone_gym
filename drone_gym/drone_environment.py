@@ -233,7 +233,7 @@ class DroneEnvironment(ABC):
                     agent_id=expert_agent,
                     position_source=ViconPositionSource(
                         object_name=self.vicon_object_names[expert_agent],
-                        vicon_provider=self.vicon_provider,
+                        provider=self.vicon_provider,
                         label=expert_agent,
                     ),
                     uri=self.drone_uris[expert_agent]

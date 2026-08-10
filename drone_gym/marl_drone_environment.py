@@ -367,18 +367,63 @@ class MarlDroneEnvironment(ParallelEnv):
         print("-" * 60)
 
     def close(self) -> None:
-        """Clean up the drone environment"""
-        
-        for agent, drone in self.drones.items():
-            try:
-                drone.land()
-                drone.is_landed_event.wait(timeout=30)
-                drone.stop()
-            except Exception as exc:
-                print(f"Error closing {agent}: {exc}")
-        
-        if self.use_simulator and self.sim_manager is not None:
-            self.sim_manager.stop_sim()
+        """Clean up all drone interfaces and the simulator."""
+
+        drones = list(self.drones.items())
+
+        try:
+            # First tell all drones to stop moving and land.
+            for agent, drone in drones:
+                try:
+                    if drone.velocity_controller_active:
+                        drone.stop_velocity_control()
+
+                    drone.set_velocity_vector(0.0, 0.0, 0.0)
+                    drone.land()
+
+                except Exception as exc:
+                    print(
+                        f"[MARL ENV] Error while landing "
+                        f"{agent!r}: {exc}"
+                    )
+
+            # Then wait for all drones to finish landing.
+            for agent, drone in drones:
+                try:
+                    if not drone.is_landed_event.wait(timeout=30):
+                        print(
+                            f"[MARL ENV] {agent!r} failed "
+                            "to confirm landing. Forcing shutdown."
+                        )
+
+                except Exception as exc:
+                    print(
+                        f"[MARL ENV] Error while waiting for "
+                        f"{agent!r} to land: {exc}"
+                    )
+
+        finally:
+            # Stop every drone interface regardless of landing success.
+            for agent, drone in drones:
+                try:
+                    drone.stop()
+
+                except Exception as exc:
+                    print(
+                        f"[MARL ENV] Error while stopping "
+                        f"{agent!r}: {exc}"
+                    )
+
+            self.drones.clear()
+
+            if self.sim_manager is not None:
+                try:
+                    self.sim_manager.stop_sim()
+
+                except Exception as exc:
+                    print(
+                        f"[MARL ENV] Error while stopping simulator: {exc}"
+                    )
 
     def state(self) -> np.ndarray:
         """
