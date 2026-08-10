@@ -27,7 +27,7 @@ class Drone(DroneSetup):
             self, 
             agent_id: str = "Drone",
             boundaries: dict[str, float] | None = None,
-            uri: str | None = None,
+            uri: str = "radio://0/100/2M/E7E7E7E700",
             position_source: PositionSource | None = None,
         ) -> None:
         # Use either legacy_vicon or source_vicon
@@ -59,14 +59,9 @@ class Drone(DroneSetup):
             uri=uri, 
             position_source=position_source
         )
-        # Drone Properties
-        self.URI = uri_helper.uri_from_env(
-            default="radio://0/100/2M/E7E7E7E7E7"
-        )  # changed radio channel in 22/9
 
-        self.ps = PowerSwitch(
-            "radio://0/100/2M/E7E7E7E7E7"
-        )  # changed radio channel in 22/9
+        # Drone Properties
+        self.ps = PowerSwitch(self.URI)
 
         self.agent_id = agent_id
 

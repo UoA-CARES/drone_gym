@@ -20,16 +20,14 @@ from drone_gym.utils.position_source import (
 class DroneSetup:
     def __init__(
             self,
-            uri: str | None = None,
+            uri: str,
             agent_id: str = "Drone",
             boundaries: dict[str, float] | None = None,
             position_source: PositionSource | None = None,
         ) -> None:
         # Drone Properties
 
-        self.URI = uri if uri is not None else uri_helper.uri_from_env(
-            default="radio://0/100/2M/E7E7E7E7E7"
-        )  # changed radio channel in 22/9
+        self.URI = uri
         self.agent_id = agent_id
         self.default_height = 0.5
         self.deck_attached_event = Event()
