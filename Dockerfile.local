@@ -115,14 +115,19 @@ RUN python3 -m pip install --no-cache-dir pettingzoo Jinja2 && \
 # this after the drone_gym COPY below (as one combined chmod) would re-walk the whole
 # tree, including CrazySim, every time drone_gym/ changes.
 #
-# /drone_ws/logs must exist and be writable here too: sim_manager.py writes CrazySim logs
-# to a path relative to CWD ("logs/crazysim.log"), and /drone_ws is about to be locked to
-# read+execute only (a+rX) for non-root HPC runtime accounts — os.makedirs("logs") then
-# hits PermissionError on the HPC (silently fine locally, since `docker run` defaults to
-# root, which bypasses the permission check entirely).
-RUN mkdir -p /drone_ws/logs && \
+# /drone_ws/logs and /drone_ws/cache must exist and be writable here too, for the same
+# reason: both are relative-path dirs that drone_gym/cflib os.makedirs() at CWD (/drone_ws)
+# on first use — sim_manager.py writes CrazySim logs to "logs/crazysim.log", and
+# drone_sim.py connects cflib with Crazyflie(rw_cache=f"./cache/{agent_id}/") (cflib's
+# TocCache then os.makedirs()s it). /drone_ws is about to be locked to read+execute only
+# (a+rX) for non-root HPC runtime accounts, so without this both hit PermissionError on
+# the HPC (silently fine locally, since `docker run` defaults to root, which bypasses the
+# permission check entirely — the cache one manifests as "PermissionError: './cache'" on
+# the very first connection attempt, which then cascades into every drone looking "dead"
+# and every reset/restart failing identically forever).
+RUN mkdir -p /drone_ws/logs /drone_ws/cache && \
     chmod -R a+rX /drone_ws/CrazySim /drone_ws/cflib_src /opt/cares_reinforcement_learning && \
-    chmod -R 777 /drone_ws/logs
+    chmod -R 777 /drone_ws/logs /drone_ws/cache
 
 # Copy drone_gym source and install (numpy>=1.21.0 already satisfied by cares_rl's 1.26.4).
 COPY drone_gym    ./drone_gym/drone_gym
