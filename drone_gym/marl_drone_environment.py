@@ -5,6 +5,7 @@ import time
 from typing import Any, Literal
 
 import numpy as np
+from drone_gym.drone_gym.utils.vicon_position_source import ViconPositionSource, ViconProvider
 from gymnasium import spaces
 from pettingzoo.utils.env import ParallelEnv
 
@@ -72,10 +73,6 @@ class MarlDroneEnvironment(ParallelEnv):
         else:
             self.sim_manager = None
 
-        print("Debug moving on")
-        if self.use_simulator == 0:
-            print("Is sim started:", self.sim_manager.is_sim_process_alive())
-
         # Control limits
         self.max_velocity = max_velocity
         self.max_velocity_z = max_velocity_z
@@ -114,6 +111,11 @@ class MarlDroneEnvironment(ParallelEnv):
             self.drone_uris = self._generate_default_sim_uris()
         else:
             self.drone_uris = self._generate_default_crazyflie_uris()
+            self.vicon_object_names = {
+                agent: f"Crzayme_{i}" 
+                for i, agent in enumerate(self.possible_agents)
+            }
+            self.vicon_provider = ViconProvider()
 
         # Per-agent drone objects and state containers
         self.drones: dict[str, Drone | DroneSim] = {}
@@ -395,7 +397,15 @@ class MarlDroneEnvironment(ParallelEnv):
                     agent_id=agent,
                 )
             else:
-                self.drones[agent] = Drone(agent_id=agent)
+                self.drones[agent] = Drone(
+                    agent_id=agent,
+                    position_source=ViconPositionSource(
+                        object_name=self.vicon_object_names[agent],
+                        vicon_provider=self.vicon_provider,
+                        label=agent,
+                    ),
+                    uri=self.drone_uris[agent],
+                )
     
     def _generate_grid_reset_positions(self) -> dict[str, list[float]]:
         """

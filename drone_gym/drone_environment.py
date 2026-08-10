@@ -1,5 +1,6 @@
 from abc import ABC, abstractmethod
 from collections.abc import Iterator
+from drone_gym.drone_gym.utils.vicon_position_source import ViconPositionSource, ViconProvider
 from drone_gym.sim_manager import SimManager, SimLaunchConfig
 from drone_gym.drone_sim import DroneSim
 from drone_gym.drone import Drone
@@ -195,6 +196,11 @@ class DroneEnvironment(ABC):
             self.drone_uris = self._generate_default_sim_uris()
         else:
             self.drone_uris = self._generate_default_crazyflie_uris()
+            self.vicon_object_names = { 
+                agent: f"Crzayme_{i}" 
+                for i, agent in enumerate(self.possible_agents)
+            }
+            self.vicon_provider = ViconProvider()
 
         if self.use_simulator:
             self.rl_drones[RL_DRONE_NAME] = DroneSim(
@@ -203,7 +209,16 @@ class DroneEnvironment(ABC):
             )
             print(f"[SARL ENV] RL drone simulator created with URI: {self.drone_uris[RL_DRONE_NAME]}")
         else:
-            self.rl_drones[RL_DRONE_NAME] = Drone(agent_id=RL_DRONE_NAME)
+            
+            self.rl_drones[RL_DRONE_NAME] = Drone(
+                agent_id=RL_DRONE_NAME,
+                position_source= ViconPositionSource(
+                    object_name=self.vicon_object_names[RL_DRONE_NAME],
+                    vicon_provider=self.vicon_provider,
+                    label=RL_DRONE_NAME,
+                ),
+                uri=self.drone_uris[RL_DRONE_NAME]
+            )
             print(f"[SARL ENV] RL drone physical instance created with agent ID: {RL_DRONE_NAME}")
 
         for expert_agent in self.expert_drone_names:
@@ -214,7 +229,15 @@ class DroneEnvironment(ABC):
                 )
                 print(f"[SARL ENV] Expert drone simulator created with URI: {self.drone_uris[expert_agent]}")
             else:
-                self.expert_drones[expert_agent] = Drone(agent_id=expert_agent)
+                self.expert_drones[expert_agent] = Drone(
+                    agent_id=expert_agent,
+                    position_source=ViconPositionSource(
+                        object_name=self.vicon_object_names[expert_agent],
+                        vicon_provider=self.vicon_provider,
+                        label=expert_agent,
+                    ),
+                    uri=self.drone_uris[expert_agent]
+                )
                 print(f"[SARL ENV] Expert drone physical instance created with agent ID: {expert_agent}")
 
     def _update_visual_boundaries(self) -> None:
