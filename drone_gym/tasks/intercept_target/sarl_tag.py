@@ -31,7 +31,7 @@ class SarlTag(DroneEnvironment):
     only that one line changes. The interceptor flies faster than the runner so
     that interception is genuinely feasible.
 
-    An "interception" is a 0.30 m proximity event (3D), never a real drone-on-drone
+    An "interception" is a 0.05 m proximity event (3D), never a real drone-on-drone
     impact: a high-rate background guard stops both drones the instant they are
     within that distance, so the task is collision-safe in sim and the real arena.
 
@@ -148,7 +148,7 @@ class SarlTag(DroneEnvironment):
         self.boundary_brake_margin = 0.25   # xy: start braking this far inside xy_limit
         self.z_brake_margin = 0.10          # z: start braking this far inside the z band
 
-        self.capture_threshold = 0.30      # metres (3D) — interceptor "catches" the runner (no real collision)
+        self.capture_threshold = 0.05      # metres (3D) — interceptor "catches" the runner (no real collision)
         self.goal_threshold = 0.20         # metres (3D) — runner has reached the goal
 
         self.max_xy_range = self.xy_limit * 2
@@ -229,8 +229,8 @@ class SarlTag(DroneEnvironment):
         # a single step — far enough to physically overlap before the step-boundary
         # distance check ever runs. A high-rate background monitor watches the 3D
         # separation continuously and the instant the two drones are within
-        # capture_threshold it zeroes BOTH velocities (so they stop ~0.3 m apart,
-        # never touching) and latches a collision. The episode then ends as a catch.
+        # capture_threshold it zeroes BOTH velocities (so they stop ~0.05 m apart)
+        # and latches a collision. The episode then ends as a catch.
         self._collision_event = threading.Event()
         self._safety_monitor_running = False
         self._safety_thread = None
@@ -796,7 +796,7 @@ class SarlTag(DroneEnvironment):
         """Background guard: stop both drones on capture, and brake either drone
         that approaches the fatal boundary (3D).
 
-        Runs much faster than the RL step so neither drone can blow past the 0.3 m
+        Runs much faster than the RL step so neither drone can blow past the 0.05 m
         capture distance — nor coast into the internal kill boundary — inside a
         single 0.5 s step. Priorities each tick:
           1. If within capture_threshold: stop both drones and latch the collision.
