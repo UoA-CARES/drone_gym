@@ -32,7 +32,11 @@ def run_legacy_vicon_test(
     stats = {name: DroneStats() for name in object_names}
 
     vicon = LegacyViconInterface(udp_ip=udp_ip, udp_port=udp_port)
-    vicon_thread = threading.Thread(target=vicon.main_loop, name="legacy-vicon", daemon=True)
+    vicon_thread = threading.Thread(
+        target=vicon.main_loop,
+        name="legacy-vicon",
+        daemon=True,
+    )
     vicon_thread.start()
 
     end_time = time.monotonic() + test_seconds
@@ -41,6 +45,7 @@ def run_legacy_vicon_test(
         while time.monotonic() < end_time:
             for name in object_names:
                 position = vicon.getPos(name)
+
                 if position is None:
                     continue
 
@@ -60,6 +65,37 @@ def run_legacy_vicon_test(
     return stats
 
 
+def print_tracked_objects(provider: ViconProvider) -> None:
+    interface = provider._interface
+
+    if interface is None:
+        print("\nNo Vicon data received")
+        return
+
+    with interface.tracked_object_lock:
+        tracked_objects = {
+            name: list(data)
+            for name, data in interface.tracked_object.items()
+        }
+
+    print("\n" + "-" * 72)
+    print("VICON TRACKED OBJECTS")
+    print("-" * 72)
+
+    if not tracked_objects:
+        print("No tracked objects received")
+        return
+
+    for name, data in tracked_objects.items():
+        print(
+            f"{name}: "
+            f"pos=({data[0]:.3f}, {data[1]:.3f}, {data[2]:.3f}), "
+            f"rot=({data[3]:.3f}, {data[4]:.3f}, {data[5]:.3f}), "
+            f"vel=({data[6]:.3f}, {data[7]:.3f}, {data[8]:.3f}), "
+            f"angular_vel=({data[9]:.3f}, {data[10]:.3f}, {data[11]:.3f})"
+        )
+
+
 def run_position_source_test(
     object_names: list[str],
     udp_ip: str,
@@ -70,7 +106,11 @@ def run_position_source_test(
     stats = {name: DroneStats() for name in object_names}
     stats_lock = threading.Lock()
 
-    provider = ViconProvider(udp_ip=udp_ip, udp_port=udp_port)
+    provider = ViconProvider(
+        udp_ip=udp_ip,
+        udp_port=udp_port,
+    )
+
     sources: list[ViconPositionSource] = []
 
     def make_callback(object_name: str):
@@ -93,10 +133,15 @@ def run_position_source_test(
                 poll_period=poll_period,
                 label=name,
             )
+
             source.start(make_callback(name))
             sources.append(source)
 
-        time.sleep(test_seconds)
+        end_time = time.monotonic() + test_seconds
+
+        while time.monotonic() < end_time:
+            print_tracked_objects(provider)
+            time.sleep(1.0)
 
     finally:
         for source in sources:
@@ -111,7 +156,11 @@ def print_summary(stats: dict[str, DroneStats]) -> None:
     print("=" * 72)
 
     for object_name, object_stats in stats.items():
-        print(f"{object_name}: samples={object_stats.sample_count}, last_position={object_stats.last_position}")
+        print(
+            f"{object_name}: "
+            f"samples={object_stats.sample_count}, "
+            f"last_position={object_stats.last_position}"
+        )
 
 
 def all_drones_received_samples(
