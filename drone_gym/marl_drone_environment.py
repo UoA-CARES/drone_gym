@@ -5,7 +5,7 @@ import time
 from typing import Any, Literal
 
 import numpy as np
-from drone_gym.drone_gym.utils.vicon_position_source import ViconPositionSource, ViconProvider
+from drone_gym.utils.vicon_position_source import ViconPositionSource, ViconProvider
 from gymnasium import spaces
 from pettingzoo.utils.env import ParallelEnv
 
@@ -401,7 +401,7 @@ class MarlDroneEnvironment(ParallelEnv):
                     agent_id=agent,
                     position_source=ViconPositionSource(
                         object_name=self.vicon_object_names[agent],
-                        vicon_provider=self.vicon_provider,
+                        provider=self.vicon_provider,
                         label=agent,
                     ),
                     uri=self.drone_uris[agent],

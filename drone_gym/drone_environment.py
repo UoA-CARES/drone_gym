@@ -1,6 +1,6 @@
 from abc import ABC, abstractmethod
 from collections.abc import Iterator
-from drone_gym.drone_gym.utils.vicon_position_source import ViconPositionSource, ViconProvider
+from drone_gym.utils.vicon_position_source import ViconPositionSource, ViconProvider
 from drone_gym.sim_manager import SimManager, SimLaunchConfig
 from drone_gym.drone_sim import DroneSim
 from drone_gym.drone import Drone
@@ -214,7 +214,7 @@ class DroneEnvironment(ABC):
                 agent_id=RL_DRONE_NAME,
                 position_source= ViconPositionSource(
                     object_name=self.vicon_object_names[RL_DRONE_NAME],
-                    vicon_provider=self.vicon_provider,
+                    provider=self.vicon_provider,
                     label=RL_DRONE_NAME,
                 ),
                 uri=self.drone_uris[RL_DRONE_NAME]
