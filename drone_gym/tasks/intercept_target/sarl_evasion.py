@@ -29,7 +29,7 @@ class SarlEvasion(DroneEnvironment):
     same 3D pure-pursuit (Proportional Navigation) policy as SarlTag's, supplied
     via the ``callable`` policy seam.
 
-    An "interception" is a 0.05 m proximity event (3D), never a real drone-on-drone
+    An "interception" is a 0.15 m proximity event (3D), never a real drone-on-drone
     impact: a high-rate background guard stops both drones the instant they are
     within that distance, so the task is collision-safe in sim and the real arena.
 
@@ -45,7 +45,7 @@ class SarlEvasion(DroneEnvironment):
     INTERCEPTOR_NAME = "interceptor_0"
 
     def __init__(self, use_simulator: Literal[0, 1], max_velocity: float = 0.25, step_time: float = 0.5,
-                 exploration_steps: int = 1000, episode_length: int = 80,
+                 exploration_steps: int = 1000, episode_length: int = 160,
                  interceptor_max_velocity: float = 0.125):
         super().__init__(
             use_simulator=use_simulator,
@@ -82,8 +82,8 @@ class SarlEvasion(DroneEnvironment):
         self.z_max = 1.4
         self.fixed_z = 1.0                  # centre of the z band (default altitude)
         # Runner spawn altitude — resampled every episode. Kept a notch inside the
-        # z band so vertical variety stays reachable at max_velocity_z within an
-        # 80-step episode.
+        # z band so vertical variety stays reachable at max_velocity_z within the
+        # episode length.
         self.runner_spawn_z_range = (0.8, 1.2)
         self.spawn_margin = 0.5             # keep spawns clear of the xy wall (PID overshoot safety)
         self.z_margin = 0.1                 # keep interceptor spawn off the z floor/ceiling (tight band)
@@ -117,7 +117,7 @@ class SarlEvasion(DroneEnvironment):
         # rate climbs. Speed only ever increases, and stalls automatically if
         # the runner stops improving.
         self.curriculum_enabled = True
-        self.interceptor_speed_min = 0.05                          # starting speed (m/s)
+        self.interceptor_speed_min = 0.09                          # starting speed (m/s) — 36% of runner's max
         self.interceptor_speed_max = self.interceptor_max_velocity  # ceiling = the ctor value
         self.curriculum_window = 50               # episodes judged per difficulty level
         self.curriculum_success_threshold = 0.6   # runner survival rate that earns a bump
@@ -132,7 +132,7 @@ class SarlEvasion(DroneEnvironment):
         self.boundary_brake_margin = 0.25   # xy: start braking this far inside xy_limit
         self.z_brake_margin = 0.10          # z: start braking this far inside the z band
 
-        self.capture_threshold = 0.05      # metres (3D) — interceptor "catches" the runner (no real collision)
+        self.capture_threshold = 0.15      # metres (3D) — interceptor "catches" the runner (no real collision)
 
         self.max_xy_range = self.xy_limit * 2
         self.max_z_range = self.z_max - self.z_min
@@ -203,7 +203,7 @@ class SarlEvasion(DroneEnvironment):
         # a single step — far enough to physically overlap before the step-boundary
         # distance check ever runs. A high-rate background monitor watches the 3D
         # separation continuously and the instant the two drones are within
-        # capture_threshold it zeroes BOTH velocities (so they stop ~0.05 m apart)
+        # capture_threshold it zeroes BOTH velocities (so they stop ~0.15 m apart)
         # and latches a collision. The episode then ends as a catch.
         self._collision_event = threading.Event()
         self._safety_monitor_running = False
@@ -592,7 +592,7 @@ class SarlEvasion(DroneEnvironment):
         """Background guard: stop both drones on capture, and brake either drone
         that approaches the fatal boundary (3D).
 
-        Runs much faster than the RL step so neither drone can blow past the 0.05 m
+        Runs much faster than the RL step so neither drone can blow past the 0.15 m
         capture distance — nor coast into the internal kill boundary — inside a
         single 0.5 s step. Priorities each tick:
           1. If within capture_threshold: stop both drones and latch the collision.
