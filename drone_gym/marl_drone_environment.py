@@ -110,7 +110,10 @@ class MarlDroneEnvironment(ParallelEnv):
             agent: i for i, agent in enumerate(self.possible_agents)
         }
 
-        self.drone_uris = self._generate_default_sim_uris()
+        if self.use_simulator:
+            self.drone_uris = self._generate_default_sim_uris()
+        else:
+            self.drone_uris = self._generate_default_crazyflie_uris()
 
         # Per-agent drone objects and state containers
         self.drones: dict[str, Drone | DroneSim] = {}
@@ -488,6 +491,13 @@ class MarlDroneEnvironment(ParallelEnv):
         return {
             agent: f"udp://0.0.0.0:{19850 + i}"
             for i, agent in enumerate(self.possible_agents)
+        }
+
+    def _generate_default_crazyflie_uris(self) -> dict[str, str]:
+        """Generate default URIs for all physical drones."""
+        return {
+            agent: f"radio://0/100/2M/E7E7E7E7{index:02X}"
+            for index, agent in enumerate(self.possible_agents)
         }
 
     def _reset_all_drones(self) -> None:

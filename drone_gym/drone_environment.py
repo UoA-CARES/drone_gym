@@ -62,8 +62,8 @@ class DroneEnvironment(ABC):
         self.rl_drones: dict[str, Drone | DroneSim] = {}
         self.expert_drones: dict[str, Drone | DroneSim] = {}
 
-        self.drone_names = [RL_DRONE_NAME]
-        self.drone_names.extend(self.expert_drone_names)
+        self.possible_agents = [RL_DRONE_NAME]
+        self.possible_agents.extend(self.expert_drone_names)
 
         self._create_drones()
 
@@ -163,7 +163,14 @@ class DroneEnvironment(ABC):
         """Generate default simulator URIs for all drones."""
         return {
             agent: f"udp://0.0.0.0:{19850 + i}"
-            for i, agent in enumerate(self.drone_names)
+            for i, agent in enumerate(self.possible_agents)
+        }
+
+    def _generate_default_crazyflie_uris(self) -> dict[str, str]:
+        """Generate default URIs for all physical drones."""
+        return {
+            agent: f"radio://0/100/2M/E7E7E7E7{index:02X}"
+            for index, agent in enumerate(self.possible_agents)
         }
 
     def _get_sim_drone_id(
@@ -184,7 +191,11 @@ class DroneEnvironment(ABC):
     def _create_drones(self) -> None:
         """Create drone instances for all drones."""
 
-        self.drone_uris = self._generate_default_sim_uris()
+        if self.use_simulator:
+            self.drone_uris = self._generate_default_sim_uris()
+        else:
+            self.drone_uris = self._generate_default_crazyflie_uris()
+
         if self.use_simulator:
             self.rl_drones[RL_DRONE_NAME] = DroneSim(
                 uri=self.drone_uris[RL_DRONE_NAME],
