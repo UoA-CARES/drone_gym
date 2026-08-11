@@ -1229,7 +1229,13 @@ class DroneSetup:
     def _final_cleanup(self) -> None:
         """Delete big objects so garbage collection can reclaim them."""
         # These will be re-created if the user ever calls start() again
-        # TODO :close link first then remove the scf instance
+        if self.scf is not None:
+            try:
+                self.scf.close_link()
+            except Exception as exc:
+                print(
+                    f"[{self.agent_id}] Warning while closing link: {exc}"
+                )
         self.cf = None
         self.scf = None
         self.mc = None
