@@ -102,6 +102,7 @@ class Drone(DroneSetup):
 
                         # Store position with timestamp for velocity calculation
                         self.position_history.append((current_time, current_pos))
+                        self.last_position_update_time = current_time
 
                         # Calculate velocity at 20Hz (every 0.05s)
                         if (current_time - self.last_velocity_calculation_time) >= self.velocity_update_rate:

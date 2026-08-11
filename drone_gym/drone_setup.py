@@ -34,6 +34,7 @@ class DroneSetup:
         self.battery_lock = threading.Lock()
         self.battery_log_config = None
         self.battery_level = 5.0  # default value
+        self.battery_ready_event = Event()
         self.velocity_log_lock = threading.Lock()
         self.velocity_log_config = None
         self.internal_vx = 0.0
@@ -1078,6 +1079,7 @@ class DroneSetup:
         voltage = data["pm.vbat"]
         with self.battery_lock:
             self.battery_level = voltage
+        self.battery_ready_event.set()
 
     def _setup_velocity_logging(self) -> None:
         if self.cf is None:
@@ -1215,11 +1217,13 @@ class DroneSetup:
         self.is_flying_event.clear()
         self.is_landed_event.set()
         self.deck_attached_event.clear()
+        self.hardware_ready_event.clear()
         # Misc
         with self.velocity_lock:
             self.velocity = 0.0
         with self.battery_lock:
             self.battery_level = 5.0
+        self.battery_ready_event.clear()
         self.in_boundaries = True
 
     def _final_cleanup(self) -> None:
@@ -1231,11 +1235,51 @@ class DroneSetup:
         self.mc = None
 
     def pre_battery_change_cleanup(self) -> None:
+        """Prepare a physical Crazyflie for a battery change."""
 
-        if self.position_controller_active:
-            self.stop_position_control()
+        print(f"[{self.agent_id}] Preparing for battery change...")
+        # Clean up logging associated with the old connection
+        if self.battery_log_config is not None:
+            try:
+                self.battery_log_config.stop()
+                self.battery_log_config.delete()
+            except Exception:
+                pass
+
+            self.battery_log_config = None
+
+        if self.velocity_log_config is not None:
+            try:
+                self.velocity_log_config.stop()
+                self.velocity_log_config.delete()
+            except Exception:
+                pass
+
+            self.velocity_log_config = None
+
+        # Power down the physical Crazyflie
+        try:
+            self.ps.platform_power_down()
+        except Exception as exc:
+            print(
+                f"[{self.agent_id}] Warning while powering down: {exc}"
+            )
+
+        self.armed = False
+
+        # Cleanly release the old cflib connection
+        if self.scf is not None:
+            try:
+                self.scf.close_link()
+            except Exception as exc:
+                print(
+                    f"[{self.agent_id}] Warning while closing link: {exc}"
+                )
+
         self.cf = None
         self.scf = None
         self.mc = None
-        self.clear_command_queue()
+
         self._reset_shared_state()
+
+        print(f"[{self.agent_id}] Ready for battery replacement.")
