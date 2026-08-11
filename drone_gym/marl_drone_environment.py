@@ -13,11 +13,6 @@ from drone_gym.drone_sim import DroneSim
 from drone_gym.drone import Drone
 from drone_gym.sim_manager import SimManager, SimLaunchConfig
 
-########### NOTES ################
-# [ ] Need to update Drone class to work with multiple drones and probably 
-# have a shared vicon class or smth like above
-
-
 class MarlDroneEnvironment(ParallelEnv):
     metadata = {"name": "marl_drone_environment_v0", "render_modes": ["human"]}
 
@@ -128,7 +123,6 @@ class MarlDroneEnvironment(ParallelEnv):
         }
 
         self.prior_states: dict[str, dict[str, Any]] = {}
-        self.current_batteries: dict[str, float] = {}
 
         # Evaluation episode tracking
         self._is_evaluating = False
@@ -210,7 +204,16 @@ class MarlDroneEnvironment(ParallelEnv):
         # Clear episode data
         self.episode_positions = {agent: [] for agent in self.possible_agents}
         self.prior_states = {}
-        self.current_batteries = {}
+
+        # Check drone batteries and change if necessary
+        if not self.use_simulator:
+            low_battery_agents = self._get_low_battery_agents()
+
+            if low_battery_agents:
+                if not self.change_battery(low_battery_agents):
+                    raise RuntimeError(
+                        "Physical drone battery change failed."
+                    )
 
         # Reset each drone to its own separated reset position
         while True:
@@ -315,7 +318,6 @@ class MarlDroneEnvironment(ParallelEnv):
 
         for agent in self.agents:
             self.episode_positions[agent].append(new_positions[agent])
-            self.current_batteries[agent] = self.drones[agent].get_battery()
 
         state_dicts = self._generate_state_dicts(new_positions)
 
@@ -555,6 +557,228 @@ class MarlDroneEnvironment(ParallelEnv):
             for index, agent in enumerate(self.possible_agents)
         }
 
+    def _get_battery_levels(self) -> dict[str, float]:
+        """Return battery levels for all physical drones."""
+
+        if self.use_simulator:
+            return {}
+
+        battery_levels = {}
+
+        for agent in self.possible_agents:
+            drone = self.drones[agent]
+            if drone.battery_ready_event.wait(timeout=5.0):
+                battery_levels[agent] = drone.get_battery()
+            else:
+                print(f"[{agent}] No battery telemetry available.")
+
+        return battery_levels
+
+    def _get_low_battery_agents(self) -> list[str]:
+        """Return physical agents whose batteries are below the threshold."""
+
+        battery_levels = self._get_battery_levels()
+
+        return [
+            agent
+            for agent, battery_level in battery_levels.items()
+            if battery_level <= self.battery_threshold
+        ]
+
+    def change_battery(
+        self,
+        low_battery_agents: list[str],
+    ) -> bool:
+        """
+        Handle battery replacement for physical drones.
+
+        All physical drones are landed and disarmed before battery replacement.
+        Only drones with low batteries have their Crazyflie connection powered
+        down and reinitialised.
+
+        The drones are not taken off in this method. Normal reset behaviour
+        handles take-off and movement to reset positions afterwards.
+
+        Args:
+            low_battery_agents: Names of agents whose batteries need replacing.
+
+        Returns:
+            True if the battery-change process completes successfully.
+            False if landing, battery replacement, reconnection, or validation
+            fails.
+        """
+        if self.use_simulator:
+            return True
+
+        if not low_battery_agents:
+            return True
+
+        print("\n[BATTERY] Beginning battery change operation.")
+        print(f"[BATTERY] Batteries requiring replacement: {low_battery_agents}")
+
+        # Stop all drone controllers and land
+        for agent in self.possible_agents:
+            drone = self.drones[agent]
+
+            try:
+                drone.clear_command_queue()
+
+                if drone.velocity_controller_active:
+                    drone.stop_velocity_control()
+
+                if drone.position_controller_active:
+                    drone.stop_position_control()
+
+                drone.set_velocity_vector(
+                    0.0,
+                    0.0,
+                    0.0,
+                )
+
+                drone.land()
+
+            except Exception as exc:
+                print(f"[BATTERY] Failed to request landing for {agent}: {exc}")
+                return False
+
+        # Wait for every drone to finish landing
+        for agent in self.possible_agents:
+            drone = self.drones[agent]
+
+            if not drone.is_landed_event.wait(timeout=15):
+                print(f"[BATTERY] {agent} failed to confirm landing. Battery change aborted.")
+                return False
+
+        print("[BATTERY] All drones landed.")
+
+        # Disable boundary monitoring while drones may be handled/moved
+        for agent in self.possible_agents:
+            drone = self.drones[agent]
+
+            if drone.safety_thread_active:
+                try:
+                    drone.stop_boundary_monitoring()
+
+                except Exception as exc:
+                    print(f"[BATTERY] Failed to stop boundary monitoring for {agent}: {exc}")
+                    return False
+
+        # Disarm drones
+        for agent in self.possible_agents:
+            drone = self.drones[agent]
+
+            if drone.armed and drone.cf is not None:
+                try:
+                    print(f"[BATTERY] Disarming {agent}...")
+
+                    drone.cf.supervisor.send_arming_request(False)
+                    drone.armed = False
+
+                except Exception as exc:
+                    print(f"[BATTERY] Failed to disarm {agent}: {exc}")
+                    return False
+
+        # Power down and disconnect drones needing new batteries
+        for agent in low_battery_agents:
+            drone = self.drones[agent]
+
+            try:
+                drone.pre_battery_change_cleanup()
+
+            except Exception as exc:
+                print(f"[BATTERY] Failed to prepare {agent} for battery change: {exc}")
+                return False
+
+        print("[BATTERY] Low-battery drones are powered down and ready for battery replacement.")
+
+        # Wait for user to replace batteries
+        while True:
+            response = input(
+                "Are the batteries changed and the drones ready? (y/n): "
+            ).strip().lower()
+
+            if response == "y":
+                break
+
+            if response == "n":
+                raise RuntimeError("[BATTERY] Battery change aborted by user.")
+
+            print("[BATTERY] Invalid input. Please enter 'y' or 'n'.")
+
+        # Invalidate possible stale positions
+        for agent in low_battery_agents:
+            drone = self.drones[agent]
+
+            with drone.position_lock:
+                drone.last_position_update_time = None
+
+        # Reinitialise affected Crazyflies
+        for agent in low_battery_agents:
+            drone = self.drones[agent]
+
+            print(f"[BATTERY] Reinitialising {agent}...")
+
+            if not drone.initialise_crazyflie():
+                print(f"[BATTERY] Failed to reinitialise {agent}.")
+                return False
+
+        # Check fresh battery readings
+        for agent in low_battery_agents:
+            drone = self.drones[agent]
+
+            if not drone.battery_ready_event.wait(timeout=5.0):
+                print(f"[BATTERY] No battery telemetry received from {agent} after reconnect.")
+                return False
+
+            battery_level = drone.get_battery()
+
+            print(f"[BATTERY] {agent} battery: {battery_level:.2f} V")
+
+            if battery_level <= self.battery_threshold:
+                print(f"[BATTERY] Replacement battery for {agent} is still below the threshold ({self.battery_threshold:.2f} V).")
+                return False
+
+        # Wait for fresh position information after physical handling
+        for agent in low_battery_agents:
+            drone = self.drones[agent]
+
+            deadline = time.monotonic() + 5.0
+
+            while (
+                drone.last_position_update_time is None
+                and time.monotonic() < deadline
+            ):
+                time.sleep(0.05)
+
+            if drone.last_position_update_time is None:
+                print(f"[BATTERY] No fresh position received for {agent} after battery replacement.")
+                return False
+
+            print(f"[BATTERY] {agent} fresh position: {drone.get_position()}")
+
+        # Re-arm drones that remained connected
+        for agent in self.possible_agents:
+            if agent in low_battery_agents:
+                continue
+
+            drone = self.drones[agent]
+
+            try:
+                print(f"[BATTERY] Re-arming {agent}...")
+
+                drone.cf.platform.send_arming_request(True)
+                time.sleep(1.0)
+
+                drone.armed = True
+
+            except Exception as exc:
+                print(f"[BATTERY] Failed to re-arm {agent}: {exc}")
+                return False
+
+        print("[BATTERY] Battery change operation complete.")
+
+        return True
+    
     def _reset_all_drones(self) -> None:
         """
         Resets all drones at once to their respective reset positions.
@@ -1083,8 +1307,6 @@ class MarlDroneEnvironment(ParallelEnv):
             xy_limit=float(self.xy_limit),
             z_level=float(self.reset_height),
         )
-
-    # TODO Add support for real drones regarding battery changes  
     
     def _stop_drones(
         self,
