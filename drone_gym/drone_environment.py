@@ -327,6 +327,15 @@ class DroneEnvironment(ABC):
 
         print("DRONE RESET")
 
+        if not self.use_simulator:
+            low_battery_drones = self._get_low_battery_drones()
+
+            if low_battery_drones:
+                if not self.change_battery(low_battery_drones):
+                    raise RuntimeError(
+                        "Physical drone battery change failed."
+                    )
+
         self._reset_all_drones()
         for _, drone in self._iter_drones():
             if not drone.safety_thread_active:
@@ -878,53 +887,228 @@ class DroneEnvironment(ABC):
 
         return in_xy_range and in_height_range
 
-    def need_to_change_battery(self):
-        self.drone.battery_level = self.drone.get_battery()
-        if self.drone.battery_level <= self.battery_threshold:
-            return True
-        return False
+    def _get_battery_levels(self) -> dict[str, float]:
+        if self.use_simulator:
+            return {}
 
-    def change_battery(self):
-        """
-        Land the drone, wait for user confirmation of battery change, and then re-initialize and take off.
-        This method is intended for use with physical drones and will not perform any actions if the drone is a simulation instance.
-        """
-        if isinstance(self.drone, DroneSim):
-            return 
-        
-        if self.drone.velocity_controller_active:
-            self.drone.stop_velocity_control()
-        print("[Drone] Beginning battery change operation.")
-        self.drone.land()
-        self.drone.is_landed_event.wait(timeout=15)
+        battery_levels = {}
 
-        self.drone.pre_battery_change_cleanup()
-        time.sleep(2)
-        # loop until you get a clear 'y' or 'n' from the user
-        while True:
-            response = input("Is the battery changed and ready to fly? (y/n): ").lower()
-            if response == "y":
-                break  # Exit the loop and continue with take-off
-            elif response == "n":
-                print("[Drone] Operation aborted by user.")
-                return False  # Exit the function
+        for drone_name, drone in self._iter_drones():
+            if drone.battery_ready_event.wait(timeout=5.0):
+                battery_levels[drone_name] = drone.get_battery()
             else:
-                print(
-                    "[Drone] Invalid input. Please enter 'y' for yes or 'n' to abort."
+                print(f"[{drone_name}] No battery telemetry available.")
+
+        return battery_levels
+
+    def _get_low_battery_drones(self) -> list[str]:
+
+        battery_levels = self._get_battery_levels()
+
+        return [
+            drone_name
+            for drone_name, battery_level in battery_levels.items()
+            if battery_level <= self.battery_threshold
+        ]
+
+    def need_to_change_battery(self) -> bool:
+        if self.use_simulator:
+            return False
+
+        return bool(self._get_low_battery_drones())
+
+    def change_battery(
+        self,
+        low_battery_drones: list[str],
+    ) -> bool:
+        """
+        Handle battery replacement for physical drones.
+
+        All physical drones are landed and disarmed before battery replacement.
+        Only drones with low batteries have their Crazyflie connection powered
+        down and reinitialised.
+
+        The drones are not taken off in this method. Normal reset behaviour
+        handles take-off and movement to reset positions afterwards.
+
+        Args:
+            low_battery_drones: Names of drones whose batteries need replacing.
+
+        Returns:
+            True if the battery-change process completes successfully.
+            False if landing, battery replacement, reconnection, or validation
+            fails.
+        """
+        if self.use_simulator:
+            return True
+
+        if not low_battery_drones:
+            return True
+
+        drones = dict(self._iter_drones())
+
+        print("\n[BATTERY] Beginning battery change operation.")
+        print(f"[BATTERY] Batteries requiring replacement: {low_battery_drones}")
+
+        # Stop all drone controllers and land
+        for drone_name, drone in drones.items():
+            try:
+                drone.clear_command_queue()
+
+                if drone.velocity_controller_active:
+                    drone.stop_velocity_control()
+
+                if drone.position_controller_active:
+                    drone.stop_position_control()
+
+                drone.set_velocity_vector(
+                    0.0,
+                    0.0,
+                    0.0,
                 )
 
-        # re-initialize and take off
-        print("[Drone] Re-initializing...")
-        self.drone.initialise_crazyflie()
+                drone.land()
 
-        self.drone.take_off()
-        if not self.drone.is_flying_event.wait(timeout=15):
+            except Exception as exc:
+                print(f"[BATTERY] Failed to request landing for {drone_name}: {exc}")
+                return False
+
+        # Wait for every drone to finish landing.
+        for drone_name, drone in drones.items():
+            if not drone.is_landed_event.wait(timeout=15):
+                print(f"[BATTERY] {drone_name} failed to confirm landing. Battery change aborted.")
+                return False
+
+        print("[BATTERY] All drones landed.")
+
+        # Disable boundary monitoring while drones may be handled/moved
+        for drone_name, drone in drones.items():
+            if drone.safety_thread_active:
+                try:
+                    drone.stop_boundary_monitoring()
+                except Exception as exc:
+                    print(f"[BATTERY] Failed to stop boundary monitoring for {drone_name}: {exc}")
+                    return False
+
+        # Disarm healthy drones
+        for drone_name, drone in drones.items():
+            if drone.armed and drone.cf is not None:
+                try:
+                    print(f"[BATTERY] Disarming {drone_name}...")
+
+                    drone.cf.supervisor.send_arming_request(False)
+                    drone.armed = False
+
+                except Exception as exc:
+                    print(f"[BATTERY] Failed to disarm {drone_name}: {exc}")
+                    return False
+
+        # Power down and disconnect drones needing new batteries
+        for drone_name in low_battery_drones:
+            drone = drones[drone_name]
+            try:
+                drone.pre_battery_change_cleanup()
+
+            except Exception as exc:
+                print(f"[BATTERY] Failed to prepare {drone_name} for battery change: {exc}")
+                return False
+
+        print(
+            "\n[BATTERY] Low-battery drones are powered down and ready for battery replacement."
+        )
+
+        # Wait for user to replace batteries.
+        while True:
+            response = input(
+                "Are the batteries changed and the drones ready? (y/n): "
+            ).strip().lower()
+
+            if response == "y":
+                break
+
+            if response == "n":
+                raise RuntimeError("[BATTERY] Battery change aborted by user.")
+
             print(
-                "[ERROR] Drone failed to confirm take-off. MANUAL INTERVENTION REQUIRED."
+                "[BATTERY] Invalid input. "
+                "Please enter 'y' or 'n'."
             )
-            return False  # Exit because the drone is in an uncertain state
 
-        print("[Drone] Battery change operation complete.")
+        # Invalidate possible stale positions
+        for drone_name in low_battery_drones:
+            drone = drones[drone_name]
+
+            with drone.position_lock:
+                drone.last_position_update_time = None
+
+        # Reinitialise affected Crazyflies
+        for drone_name in low_battery_drones:
+            drone = drones[drone_name]
+
+            print(
+                f"[BATTERY] Reinitialising {drone_name}..."
+            )
+
+            if not drone.initialise_crazyflie():
+                print(f"[BATTERY] Failed to reinitialise {drone_name}.")    
+                return False
+
+        for drone_name in low_battery_drones:
+            drone = drones[drone_name]
+
+            if not drone.battery_ready_event.wait(timeout=5.0):
+                print(
+                    f"[BATTERY] No battery telemetry received "
+                    f"from {drone_name} after reconnect."
+                )
+                return False
+
+            battery_level = drone.get_battery()
+
+            print(f"[BATTERY] {drone_name} battery: {battery_level:.2f} V")
+
+            if battery_level <= self.battery_threshold:
+                print(
+                    f"[BATTERY] Replacement battery for {drone_name} is still below the threshold ({self.battery_threshold:.2f} V)."
+                )
+                return False
+
+        # Wait for fresh position information after physical handling
+        for drone_name in low_battery_drones:
+            drone = drones[drone_name]
+
+            deadline = time.monotonic() + 5.0
+
+            while (
+                drone.last_position_update_time is None
+                and time.monotonic() < deadline
+            ):
+                time.sleep(0.05)
+
+            if drone.last_position_update_time is None:
+                print(f"[BATTERY] No fresh position received for {drone_name} after battery replacement.")
+                return False
+
+            print(f"[BATTERY] {drone_name} fresh position: {drone.get_position()}")
+
+        # Re-arm drones that remained connected
+        for drone_name, drone in drones.items():
+            if drone_name in low_battery_drones:
+                continue
+            try:
+                print(f"[BATTERY] Re-arming {drone_name}...")
+
+                drone.cf.platform.send_arming_request(True)
+                time.sleep(1.0)
+
+                drone.armed = True
+
+            except Exception as exc:
+                print(f"[BATTERY] Failed to re-arm {drone_name}: {exc}")
+                return False
+
+        print("[BATTERY] Battery change operation complete.")
+
         return True
 
     def restart(self):
