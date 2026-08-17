@@ -112,12 +112,12 @@ class SarlEvasion(DroneEnvironment):
         self.interceptor_max_velocity_z = 0.030      # gentle vertical cap for the pursuer too
 
         # --- Interceptor speed curriculum (performance-gated ratchet) --------
-        # Start the interceptor slow so the runner can learn to survive at all,
-        # then raise its speed as the runner's evasion (full-episode-survival)
-        # rate climbs. Speed only ever increases, and stalls automatically if
-        # the runner stops improving.
+        # Start the interceptor fast enough to be a real threat from episode 1,
+        # then raise its speed further as the runner's evasion (full-episode-
+        # survival) rate climbs. Speed only ever increases, and stalls
+        # automatically if the runner stops improving.
         self.curriculum_enabled = True
-        self.interceptor_speed_min = 0.09                          # starting speed (m/s) — 36% of runner's max
+        self.interceptor_speed_min = 0.15                          # starting speed (m/s) — 75% of the ceiling
         self.interceptor_speed_max = self.interceptor_max_velocity  # ceiling = the ctor value
         self.curriculum_window = 50               # episodes judged per difficulty level
         self.curriculum_success_threshold = 0.6   # runner survival rate that earns a bump

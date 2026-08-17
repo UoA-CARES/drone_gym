@@ -7,6 +7,7 @@ from collections import deque
 from typing import Dict, List, Any, Literal
 
 from drone_gym.drone_environment import DroneEnvironment
+from drone_gym.drone_sim import DroneSim
 from drone_gym.agents.bodies import CrazyflieBody
 from drone_gym.agents.policies import CallablePolicy
 from drone_gym.agents.sim_agent import SimAgent
@@ -129,11 +130,12 @@ class SarlTag(DroneEnvironment):
         self.interceptor_max_velocity_z = 0.030      # gentle vertical cap for the pursuer too
 
         # --- Interceptor speed curriculum (performance-gated ratchet) --------
-        # Start the interceptor slow so the runner can learn to reach the goal,
-        # then raise its speed as the runner's success rate climbs. Speed only
-        # ever increases, and stalls automatically if the runner stops improving.
+        # Start the interceptor fast enough to be a real threat from episode 1,
+        # then raise its speed further as the runner's success rate climbs.
+        # Speed only ever increases, and stalls automatically if the runner
+        # stops improving.
         self.curriculum_enabled = True
-        self.interceptor_speed_min = 0.05                          # starting speed (m/s)
+        self.interceptor_speed_min = 0.12                          # starting speed (m/s) — 75% of the ceiling
         self.interceptor_speed_max = self.interceptor_max_velocity  # ceiling = the ctor value
         self.curriculum_window = 50               # episodes judged per difficulty level
         self.curriculum_success_threshold = 0.6   # runner success rate that earns a bump
@@ -458,6 +460,92 @@ class SarlTag(DroneEnvironment):
                 abs(position[1]) > self.xy_limit + tol or
                 position[2] < self.z_min - tol or
                 position[2] > self.z_max + tol)
+
+    # ------------------------------------------------------------------
+    # Fatal sim-link recovery (dead UDP link / firmware supervisor crash)
+    #
+    # This is distinct from a latched emergency_event: the base reset's
+    # _reset_all_drones() already clears an ordinary emergency latch and
+    # re-lands/teleports/re-arms the drone just fine. A DroneSim's
+    # fatal_error_event, however, means the underlying cf/scf link itself is
+    # gone (DroneSim._connection_lost / _handle_supervisor_crash) — no amount
+    # of land/teleport/EKF-reset fixes that, the sim process and drone
+    # interfaces have to be rebuilt. MarlDroneEnvironment already handles this
+    # (_get_fatal_sim_drone_agents / _recover_from_fatal_sim_error) for
+    # marl_tag; DroneEnvironment (this task's base) never grew the same
+    # handling, so it's covered here at the task level instead.
+    # ------------------------------------------------------------------
+
+    FATAL_SIM_RESTART_ATTEMPTS = 3
+    FATAL_SIM_RESTART_DELAY = 10.0
+
+    def _fatal_sim_drones(self) -> List[tuple]:
+        """Return (name, drone) for every owned DroneSim whose link has fatally failed."""
+        if self.sim_manager is None:
+            return []
+
+        candidates = [("runner", self.rl_drone)]
+        interceptor_drone = getattr(self.interceptor.body, "drone", None)
+        if interceptor_drone is not None:
+            candidates.append((self.INTERCEPTOR_NAME, interceptor_drone))
+
+        return [
+            (name, drone)
+            for name, drone in candidates
+            if isinstance(drone, DroneSim) and drone.fatal_error_event.is_set()
+        ]
+
+    def _recover_fatal_sim_link(self) -> bool:
+        """Restart the CrazySim/Gazebo process and rebuild both drone interfaces.
+
+        Mirrors MarlDroneEnvironment._recover_from_fatal_sim_error: stop the
+        old (dead) drone interfaces, restart the simulator process, and
+        recreate the DroneSim objects from scratch. The interceptor SimAgent
+        is then re-linked to the freshly created interceptor drone (its body
+        only holds a plain attribute reference), and the interceptor's
+        vertical-headroom boundary override — set once in __init__, lost on a
+        fresh DroneSim — is re-applied.
+        """
+        for attempt in range(1, self.FATAL_SIM_RESTART_ATTEMPTS + 1):
+            print(f"[SarlTag] Fatal sim link detected — restarting simulator "
+                  f"(attempt {attempt}/{self.FATAL_SIM_RESTART_ATTEMPTS})")
+
+            for _, drone in list(self.rl_drones.items()) + list(self.expert_drones.items()):
+                try:
+                    drone.stop()
+                except Exception as exc:
+                    print(f"[SarlTag] Error stopping drone during fatal recovery: {exc}")
+
+            if not self.sim_manager.restart_sim():
+                print(f"[SarlTag] Simulator restart failed on attempt {attempt}")
+                time.sleep(self.FATAL_SIM_RESTART_DELAY)
+                continue
+
+            self._create_drones()
+
+            interceptor_drone = self.expert_drones[self.INTERCEPTOR_NAME]
+            self.interceptor.body.drone = interceptor_drone
+            if hasattr(interceptor_drone, "boundaries"):
+                interceptor_drone.boundaries = {
+                    "x": 4, "y": 4, "z_min": -0.5, "z_max": 3.0,
+                }
+
+            failed = [
+                name
+                for name, drone in list(self.rl_drones.items()) + list(self.expert_drones.items())
+                if not drone.is_running()
+                or (isinstance(drone, DroneSim) and drone.fatal_error_event.is_set())
+            ]
+            if not failed:
+                print("[SarlTag] Simulator and drone interfaces recovered")
+                return True
+
+            print(f"[SarlTag] Drone interfaces still unhealthy after restart: {failed}")
+            time.sleep(self.FATAL_SIM_RESTART_DELAY)
+
+        print("[SarlTag] Failed to recover from fatal sim link after "
+              f"{self.FATAL_SIM_RESTART_ATTEMPTS} attempts")
+        return False
 
     # ------------------------------------------------------------------
     # Interceptor lifecycle / health (EKF blow-up / fell-to-the-floor recovery)
@@ -1112,6 +1200,16 @@ class SarlTag(DroneEnvironment):
         """
         Sample the task geometry and use the base environment to
         reset the runner and interceptor together.
+
+        Mirrors marl_tag's reset: sample geometry, populate reset_positions,
+        then delegate entirely to the base environment reset. The base
+        _reset_all_drones() (shared pattern with MarlDroneEnvironment) already
+        lands, teleports, clears a latched emergency, re-seeds the EKF and
+        takes off EVERY drone (runner and interceptor alike) EVERY episode —
+        that's what makes a dying drone recover. Layering task-level
+        pre/post "is it dead, call restart()" checks on top of that (the
+        previous approach here) fought with the base reset instead of
+        complementing it and was the source of the flaky recovery.
         """
 
         if not training and not self._is_evaluating:
@@ -1160,62 +1258,20 @@ class SarlTag(DroneEnvironment):
             list(interceptor_spawn),
         ]
 
-        # Keep specialised recovery before the general reset.
-        #
-        # The base reset can reposition healthy drones, but it does
-        # not necessarily recreate a dead link or relaunch terminated
-        # worker threads.
-        if self._episode_count > 1:
-            if self._runner_is_dead():
-                print(
-                    "[SarlTag] Runner dead at reset entry — "
-                    "recovering before coordinated reset"
-                )
-                self.restart()
-
-            interceptor_drone = self.expert_drones[
-                self.INTERCEPTOR_NAME
-            ]
-
-            if (
-                interceptor_drone.emergency_event.is_set()
-                or self._interceptor_is_dead()
-            ):
-                print(
-                    "[SarlTag] Interceptor dead at reset entry — "
-                    "recovering before coordinated reset"
-                )
-                self._recover_interceptor_if_dead(
-                    force=True
-                )
+        # A fatal sim link (dead UDP connection / firmware supervisor crash)
+        # can't be fixed by the base reset's land/teleport/EKF-reset cycle —
+        # the drone interface itself needs rebuilding. Check and recover
+        # BEFORE handing off, same point MarlDroneEnvironment checks at.
+        if self._fatal_sim_drones():
+            self._recover_fatal_sim_link()
 
         # Resets both the RL drone and interceptor using:
         #
         # self.reset_positions[0] -> rl_drone
         # self.reset_positions[1] -> interceptor_0
-        state = super().reset(training)
+        super().reset(training)
 
         runner_pos = self.rl_drone.get_position()
-
-        # Optional health check after the coordinated reset.
-        runner_off_spawn = (
-            math.dist(
-                runner_pos,
-                self.runner_spawn,
-            )
-            > 0.8
-        )
-
-        if self._runner_is_dead() or runner_off_spawn:
-            print(
-                "[SarlTag] Runner unhealthy after coordinated "
-                "reset — recovering and retrying once"
-            )
-
-            self.restart()
-
-            state = super().reset(training)
-            runner_pos = self.rl_drone.get_position()
 
         # The environment resets the drone lifecycle. The task still
         # resets the expert policy.
@@ -1651,6 +1707,12 @@ class SarlTag(DroneEnvironment):
             'caught': self.caught,
             'reached_goal': self.reached_goal,
             'success': self.reached_goal,
+            # Per-drone outcome flags (1/0), picked up automatically by the
+            # generic success-rate / time-to-outcome plots (any "*_success"
+            # column). Runner succeeds by reaching the goal; the interceptor
+            # succeeds by catching the runner first.
+            'runner_success': int(self.reached_goal),
+            'interceptor_success': int(self.caught),
             'out_of_bounds': self._is_out_of_task_bounds(position),
             'description': "3D navigate-to-goal under interception — RL runner vs expert interceptor",
         }
