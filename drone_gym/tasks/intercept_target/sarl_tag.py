@@ -50,7 +50,7 @@ class SarlTag(DroneEnvironment):
 
     def __init__(self, use_simulator: Literal[0, 1], max_velocity: float = 0.25, step_time: float = 0.5,
                  exploration_steps: int = 1000, episode_length: int = 80,
-                 interceptor_max_velocity: float = 0.16):
+                 interceptor_max_velocity: float = 0.14):
         super().__init__(
             use_simulator=use_simulator, 
             max_velocity=max_velocity, 
@@ -135,7 +135,7 @@ class SarlTag(DroneEnvironment):
         # Speed only ever increases, and stalls automatically if the runner
         # stops improving.
         self.curriculum_enabled = True
-        self.interceptor_speed_min = 0.12                          # starting speed (m/s) — 75% of the ceiling
+        self.interceptor_speed_min = 0.10                          # starting speed (m/s) — ~71% of the ceiling
         self.interceptor_speed_max = self.interceptor_max_velocity  # ceiling = the ctor value
         self.curriculum_window = 50               # episodes judged per difficulty level
         self.curriculum_success_threshold = 0.6   # runner success rate that earns a bump
