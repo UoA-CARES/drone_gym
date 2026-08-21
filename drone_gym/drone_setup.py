@@ -143,7 +143,7 @@ class DroneSetup:
         self.control_target_lock = threading.Lock()
 
         # Start threads in coordinated sequence
-        self.thread = threading.Thread(target=self._run)
+        self.thread = threading.Thread(target=self._run, daemon=True)
         self._start_threads_coordinated()
 
     def _start_threads_coordinated(self):
@@ -179,7 +179,7 @@ class DroneSetup:
 
         # Start safety monitoring last
         self.safety_thread_active = True
-        self.safety_thread = threading.Thread(target=self._check_boundaries)
+        self.safety_thread = threading.Thread(target=self._check_boundaries, daemon=True)
         self.safety_thread.start()
 
         print(f"[{self.agent_id}] All threads started successfully with coordination")
@@ -364,6 +364,7 @@ class DroneSetup:
             self.position_thread = threading.Thread(
                 target=self._update_position,
                 name=f"{self.agent_id}-legacy-position",
+                daemon=True,
             )
             self.position_thread.start()
             return True
@@ -682,7 +683,7 @@ class DroneSetup:
         if not self.safety_thread_active:
             self.safety_thread_active = True
             self.safety_thread = threading.Thread(
-                target=self._check_boundaries
+                target=self._check_boundaries, daemon=True
             )
             self.safety_thread.start()
             print(f"[{self.agent_id}] Boundary monitoring started")
@@ -706,7 +707,7 @@ class DroneSetup:
         if not self.position_controller_active:
             self.position_controller_active = True
             self.controller_thread = threading.Thread(
-                target=self._position_control_loop
+                target=self._position_control_loop, daemon=True
             )
             self.controller_thread.start()
             print(f"[{self.agent_id}] Position controller started")
@@ -728,7 +729,7 @@ class DroneSetup:
         if not self.velocity_controller_active:
             self.velocity_controller_active = True
             self.velocity_controller_thread = threading.Thread(
-                target=self._velocity_control_loop
+                target=self._velocity_control_loop, daemon=True
             )
             self.velocity_controller_thread.start()
             print(f"[{self.agent_id}] Velocity controller started")

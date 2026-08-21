@@ -177,6 +177,17 @@ class DroneSim(DroneSetup):
         print(f"[{self.agent_id}] Stopped")
         self._signal_stop_to_all_threads()
         self._join_all_threads()
+
+        # Explicitly close the cflib link before dropping the reference below.
+        # Without this, cflib's own internal driver thread for the connection
+        # has nothing telling it to stop, and — being non-daemon — can block
+        # the whole process from exiting even after training has finished.
+        try:
+            if getattr(self, "scf", None) is not None:
+                self.scf.close_link()
+        except Exception as exc:
+            print(f"[{self.agent_id}] close_link error during stop: {exc}")
+
         self._reset_shared_state()
         self._final_cleanup()
 

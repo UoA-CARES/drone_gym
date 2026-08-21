@@ -1093,7 +1093,7 @@ class SarlTag(DroneEnvironment):
 
         # 7. Relaunch the coordinated worker threads.
         drone.set_running(True)
-        drone.thread = threading.Thread(target=drone._run)
+        drone.thread = threading.Thread(target=drone._run, daemon=True)
         try:
             drone._start_threads_coordinated()
         except Exception as e:
