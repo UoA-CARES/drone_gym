@@ -90,9 +90,12 @@ class DroneSetup:
         self.max_velocity = {"x": 0.40, "y": 0.40, "z": 0.40} # Maximum velocity in m/s
         # overridden by environment and task max_vel when vel is set using set_velocity_vector and velocity controller is active
         self.position_deadband = (
-            0.05  # Position error below which velocity will be zero (in meters)
-            # Changed from 0.1 to 0.05 along with position control error
+            0.025  # Position error below which velocity will be zero (in meters)
+            # Changed from 0.1 to 0.025 along with position control error
         )
+        self.position_error_threshold = 0.05  
+        # Error threshold to consider position reached (meters)
+        # Changed from 0.17 to 0.05 along with position_deadband 
 
         # NEW: Velocity ramping for smooth transitions
         self.current_commanded_velocity = {"x": 0.0, "y": 0.0, "z": 0.0}
@@ -591,16 +594,7 @@ class DroneSetup:
                     self.velocity = command["velocity"]
                 # print(f"[{self.agent_id}] Velocity set to: {self.velocity}")
 
-            elif "position" in command:
-                # This is a position command
-                with self.position_lock:
-                    x = command["position"].get("x", self.position["x"])
-                    y = command["position"].get("y", self.position["y"])
-                    z = command["position"].get("z", self.position["z"])
-                    self.target_position = {"x": x, "y": y, "z": z}
-                    print(f"[{self.agent_id}] Target position set: x={x}, y={y}, z={z}")
-
-            if "take_off" in command:
+            elif "take_off" in command:
                 if not self.is_flying_event.is_set() and self.armed:
                     print(f"[{self.agent_id}] Taking off...")
                     self.mc = MotionCommander(self.scf, default_height=self.default_height)
@@ -750,10 +744,7 @@ class DroneSetup:
         
         Used for moving drone to reset positions
         """
-        # BUG Is control rate meant to be 0.5 (2Hz) or 0.05 (20Hz)??
-        control_rate = 0.5  # Control rate in seconds (20hz)
-        error_threshold = 0.05  # Error threshold to consider position reached (meters)
-                                # Changed from 0.17 to 0.05 along with position_deadband        
+        control_rate = 0.05  # Control rate in seconds (20hz)    
 
         print(f"[{self.agent_id}] Position control loop started")
         while (
@@ -790,7 +781,7 @@ class DroneSetup:
                 # print(error_magnitude)
                 # print(self.get_battery())
 
-                if error_magnitude < error_threshold:
+                if error_magnitude < self.position_error_threshold:
                     # print( f"[{self.agent_id}: Controller] Position reached! Error: {error_magnitude:.2f}m")
                     self.at_reset_position.set()
                 # Calculate velocity command using PID control
@@ -837,13 +828,13 @@ class DroneSetup:
                 with self.velocity_lock:
                     target_vel = self.target_velocity.copy()
 
-                actual_vel = self.get_calculated_velocity()
+                # actual_vel = self.get_calculated_velocity()
 
                 # Calculate corrected velocity command using PID
-                desired_velocity = self._calculate_velocity_pid(target_vel, actual_vel, self.velocity_control_rate)
+                # desired_velocity = self._calculate_velocity_pid(target_vel, actual_vel, self.velocity_control_rate)
 
                 # Apply gradual ramping to the velocity command
-                ramped_velocity = self.target_velocity.copy()
+                ramped_velocity = target_vel
 
                 # print(f"Target: ({target_vel['x']:.3f}, {target_vel['y']:.3f}), "
                 #     f"Actual: ({actual_vel['x']:.3f}, {actual_vel['y']:.3f}), "
@@ -924,6 +915,10 @@ class DroneSetup:
             # Apply deadband to reduce jitter when close to target
             if abs(error[axis]) < self.position_deadband:
                 velocity[axis] = 0.0
+
+                self.integral[axis] = 0.0
+                self.last_error[axis] = error[axis]
+
                 continue
 
             # Proportional term
@@ -935,10 +930,10 @@ class DroneSetup:
             # Anti-windup: reset integral when changing direction
             if (error[axis] * self.last_error[axis]) < 0:
                 self.integral[axis] = 0.0
-            # FIXME There is no limit applied to prevent integral windup 
             # Apply integral term with limits to prevent windup
             i_term = self.gains[axis]["ki"] * self.integral[axis]
-
+            i_term = max(-0.015, min(0.015, i_term))
+            # print(f"[{self.agent_id}] PID terms for axis {axis}: P={p_term:.3f}, I={i_term:.3f}, D={d_term:.3f}")
             # Calculate raw velocity command (sum of PID terms)
             raw_velocity = p_term + d_term + i_term
             # Apply velocity limits
@@ -991,27 +986,30 @@ class DroneSetup:
             velocity_command = {"velocity_vector": {"x": vx, "y": vy, "z": vz}}
             self.send_command(velocity_command)
 
-    def set_target_position(self, x: float, y: float, z: float) -> None:
-        """Set target position with boundary checking"""
-        # Check the target position is within boundaries
+    def set_target_position(
+        self,
+        x: float,
+        y: float,
+        z: float,
+    ) -> None:
+        """Set the position controller target."""
+
         if not (
             abs(x) <= self.boundaries["x"]
             and abs(y) <= self.boundaries["y"]
             # and self.boundaries["z_min"] <= z <= self.boundaries["z_max"]
             and z <= self.boundaries["z_max"]
-
         ):
-            print(
-                f"[{self.agent_id}] WARNING: Target position {x}, {y}, {z} is outside safe boundaries. Command rejected."
-            )
+            print(f"[{self.agent_id}] WARNING: Target position {x}, {y}, {z} is outside safe boundaries. Command rejected.")
             return
 
-        # Create and send a position command
-        position_command = {"position": {"x": x, "y": y, "z": z}}
+        with self.position_lock:
+            self.target_position = {"x": x, "y": y, "z": z}
 
-        # Send the command to the queue
-        self.send_command(position_command)
-        # print(f"[{self.agent_id}] Target position command sent: x={x}, y={y}, z={z}")
+            # Any previous 'position reached' state refers to the previous target
+            self.at_reset_position.clear()
+
+        print(f"[{self.agent_id}] Target position set: x={x}, y={y}, z={z}")
 
     def get_position(self) -> list[float]:
         """Get current position as list"""
@@ -1242,8 +1240,6 @@ class DroneSetup:
 
     def pre_battery_change_cleanup(self) -> None:
         """Prepare a physical Crazyflie for a battery change."""
-
-        print(f"[{self.agent_id}] Preparing for battery change...")
         # Clean up logging associated with the old connection
         if self.battery_log_config is not None:
             try:
@@ -1287,5 +1283,3 @@ class DroneSetup:
         self.mc = None
 
         self._reset_shared_state()
-
-        print(f"[{self.agent_id}] Ready for battery replacement.")
