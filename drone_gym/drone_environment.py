@@ -8,7 +8,6 @@ import time
 import numpy as np
 from typing import Dict, List, Any, Literal
 
-RL_DRONE_NAME = "rl_drone"
 
 class DroneEnvironment(ABC):
     """
@@ -22,6 +21,7 @@ class DroneEnvironment(ABC):
     creation, coordinated reset, stopping motion and shutdown.
     """
 
+    RL_DRONE_NAME = "rl_drone"
     def __init__(
             self, 
             use_simulator: Literal[0,1],
@@ -63,15 +63,14 @@ class DroneEnvironment(ABC):
         self.rl_drones: dict[str, Drone | DroneSim] = {}
         self.expert_drones: dict[str, Drone | DroneSim] = {}
 
-        self.possible_agents = [RL_DRONE_NAME]
+        self.possible_agents = [self.RL_DRONE_NAME]
         self.possible_agents.extend(self.expert_drone_names)
 
         self._create_drones()
 
-        # Initialize reset positions for RL drone followed by possible expert drones
-        # The reset_positions list must match the order of _iter_drones()
-        self.reset_positions: list[list[float]] = []
-        self.reset_position = [0, 0, 1]
+        # Initialize reset positions keyed by drone name.
+        self.reset_positions: dict[str, list[float]] = {}
+        self.reset_positions[self.RL_DRONE_NAME] = [0, 0, 1]
 
         self.max_velocity = max_velocity
         self.max_velocity_z = 0.5
@@ -102,7 +101,7 @@ class DroneEnvironment(ABC):
         """Return the environment's single RL-controlled drone."""
 
         try:
-            return self.rl_drones[RL_DRONE_NAME]
+            return self.rl_drones[self.RL_DRONE_NAME]
         except KeyError as exc:
             raise RuntimeError(
                 "The RL drone has not been created."
@@ -124,10 +123,9 @@ class DroneEnvironment(ABC):
         Return the RL drone's reset position.
 
         This compatibility property preserves the existing single-drone
-        SARL interface. The RL drone is always the first drone returned
-        by _iter_drones(), so its reset position is index zero.
+        SARL interface. 
         """
-        return self.reset_positions[0]
+        return self.reset_positions[self.RL_DRONE_NAME]
 
 
     @reset_position.setter
@@ -140,17 +138,7 @@ class DroneEnvironment(ABC):
 
         Existing SARL tasks may continue assigning self.reset_position.
         """
-        new_position = list(position)
-
-        if (
-            hasattr(self, "reset_positions")
-            and self.reset_positions
-        ):
-            self.reset_positions[0] = new_position
-        else:
-            self.reset_positions = [
-                new_position,
-            ]
+        self.reset_positions[self.RL_DRONE_NAME] = list(position)
 
     def _iter_drones(
         self,
@@ -203,23 +191,23 @@ class DroneEnvironment(ABC):
             self.vicon_provider = ViconProvider()
 
         if self.use_simulator:
-            self.rl_drones[RL_DRONE_NAME] = DroneSim(
-                uri=self.drone_uris[RL_DRONE_NAME],
-                agent_id=RL_DRONE_NAME,
+            self.rl_drones[self.RL_DRONE_NAME] = DroneSim(
+                uri=self.drone_uris[self.RL_DRONE_NAME],
+                agent_id=self.RL_DRONE_NAME,
             )
-            print(f"[SARL ENV] RL drone simulator created with URI: {self.drone_uris[RL_DRONE_NAME]}")
+            print(f"[SARL ENV] RL drone simulator created with URI: {self.drone_uris[self.RL_DRONE_NAME]}")
         else:
             
-            self.rl_drones[RL_DRONE_NAME] = Drone(
-                agent_id=RL_DRONE_NAME,
+            self.rl_drones[self.RL_DRONE_NAME] = Drone(
+                agent_id=self.RL_DRONE_NAME,
                 position_source= ViconPositionSource(
-                    object_name=self.vicon_object_names[RL_DRONE_NAME],
+                    object_name=self.vicon_object_names[self.RL_DRONE_NAME],
                     provider=self.vicon_provider,
-                    label=RL_DRONE_NAME,
+                    label=self.RL_DRONE_NAME,
                 ),
-                uri=self.drone_uris[RL_DRONE_NAME]
+                uri=self.drone_uris[self.RL_DRONE_NAME]
             )
-            print(f"[SARL ENV] RL drone physical instance created with agent ID: {RL_DRONE_NAME}")
+            print(f"[SARL ENV] RL drone physical instance created with agent ID: {self.RL_DRONE_NAME}")
 
         for expert_agent in self.expert_drone_names:
             if self.use_simulator:
@@ -504,9 +492,6 @@ class DroneEnvironment(ABC):
         """
         Reset all RL and expert drones to their corresponding
         reset positions.
-
-        reset_positions must follow the same order as _iter_drones():
-        the RL drone first, followed by expert drones.
         """
         drones = list(self._iter_drones())
 
@@ -536,10 +521,7 @@ class DroneEnvironment(ABC):
             if isinstance(drone, DroneSim):
                 drone.land()
 
-        for reset_index, (
-            drone_name,
-            drone,
-        ) in enumerate(drones):
+        for drone_name, drone in drones:
             if not isinstance(drone, DroneSim):
                 continue
 
@@ -555,7 +537,7 @@ class DroneEnvironment(ABC):
                     drone.start_boundary_monitoring()
 
             reset_position = self.reset_positions[
-                reset_index
+                drone_name
             ]
 
             self.sim_manager.set_drone_pose(
@@ -570,15 +552,12 @@ class DroneEnvironment(ABC):
 
         time.sleep(0.3)
 
-        for reset_index, (
-            _,
-            drone,
-        ) in enumerate(drones):
+        for drone_name, drone in drones:
             if not isinstance(drone, DroneSim):
                 continue
 
             reset_position = self.reset_positions[
-                reset_index
+                drone_name
             ]
 
             spawn_position = [
@@ -621,12 +600,9 @@ class DroneEnvironment(ABC):
                 "take-off during reset."
             )
 
-        for reset_index, (
-            _,
-            drone,
-        ) in enumerate(drones):
+        for drone_name, drone in drones:
             reset_position = self.reset_positions[
-                reset_index
+                drone_name
             ]
 
             drone.set_target_position(
@@ -660,10 +636,7 @@ class DroneEnvironment(ABC):
                 0.0,
             )
 
-        for reset_index, (
-            drone_name,
-            drone,
-        ) in enumerate(drones):
+        for drone_name, drone in drones:
             initial_position = (
                 drone.get_position()
             )
@@ -674,7 +647,7 @@ class DroneEnvironment(ABC):
             )
             print(
                 f"[{drone_name}] Desired reset target: "
-                f"{self.reset_positions[reset_index]}"
+                f"{self.reset_positions[drone_name]}"
             )
 
             drone.start_velocity_control()
