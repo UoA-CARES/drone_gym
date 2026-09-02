@@ -67,6 +67,7 @@ class SarlEvasion(DroneEnvironment):
         self.exploration_steps = exploration_steps
         self.total_steps = 0
         self.truncate_next = False
+        self._degraded_transition = False
         self.learning = True
 
         # --- Geometry / task parameters -------------------------------------
@@ -1036,6 +1037,13 @@ class SarlEvasion(DroneEnvironment):
 
         self.total_steps += 1
 
+        # Any step taken while a drone is already known-dead/stuck going in, or
+        # is found dead coming out, reflects simulator recovery artifacts (e.g.
+        # a crashed interceptor sitting inert on the ground) rather than real
+        # task dynamics. Flag it so the training loop can keep it out of the
+        # replay buffer while still logging it for visibility.
+        self._degraded_transition = self._interceptor_is_dead()
+
         if self.total_steps == self.exploration_steps and not self.learning:
             print("\nSWITCHING TO LEARNING PHASE...\n")
             self.truncate_next = True
@@ -1071,6 +1079,7 @@ class SarlEvasion(DroneEnvironment):
             self.restart()
             self._reset_stuck_tracker()
             self.truncate_next = True
+            self._degraded_transition = True
             runner_pos = self.drone.get_position()
 
         # Command the expert interceptor BEFORE super().step() so both drones fly
@@ -1133,6 +1142,13 @@ class SarlEvasion(DroneEnvironment):
                   f"pos={[round(p, 2) for p in ipos]} (z={ipos[2]:.2f}) — truncating. "
                   f"z>~2.0 here means a thrust-spike launch past its boundary.")
             self.truncate_next = True
+            self._degraded_transition = True
+
+        if self._degraded_transition:
+            _, _, _, _, info = result
+            info["discard_from_buffer"] = True
+            print(f"[SarlEvasion] Discarding this transition from the replay buffer "
+                  f"(degraded/recovering simulator state).")
 
         return result
 
@@ -1141,6 +1157,11 @@ class SarlEvasion(DroneEnvironment):
         self.done = False
         self.caught = False
         self.survived_full_episode = False
+        # A post-step interceptor-death check (see step()) can set this for
+        # the *next* call to step() and never get consumed if that call never
+        # comes because the episode ended on this very step. Left uncleared,
+        # it silently truncates the following episode after a single step.
+        self.truncate_next = False
 
     def _get_state(self) -> np.ndarray:
         """Runner-centric 3D observation: own state + interceptor block (no goal — there is none)."""
@@ -1282,6 +1303,10 @@ class SarlEvasion(DroneEnvironment):
             'success': self.survived_full_episode,
             'out_of_bounds': self._is_out_of_task_bounds(position),
             'description': "3D pure evasion — RL runner evading an expert interceptor indefinitely",
+            # Overwritten to True in step() when this transition happened while
+            # a drone was dead/stuck/recovering — training_runner.py skips
+            # adding those to the replay buffer.
+            'discard_from_buffer': False,
         }
         if self._is_evaluating:
             info['success_count'] = self.successful_episodes_count
