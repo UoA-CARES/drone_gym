@@ -4,6 +4,7 @@ from drone_gym.utils.vicon_position_source import ViconPositionSource, ViconProv
 from drone_gym.sim_manager import SimManager, SimLaunchConfig
 from drone_gym.drone_sim import DroneSim
 from drone_gym.drone import Drone
+from drone_gym.reset_planner import ResetPlanner
 import time
 import numpy as np
 from typing import Dict, List, Any, Literal
@@ -27,7 +28,14 @@ class DroneEnvironment(ABC):
             use_simulator: Literal[0,1],
             max_velocity: float = 0.5,
             step_time: float = 0.5,
-            expert_drone_names: list[str] | None = None
+            expert_drone_names: list[str] | None = None,
+            xy_limit: float = 1.0,
+            z_min: float = 0.5,
+            z_max: float = 1.5,
+            reset_height: float = 1.0,
+            reset_safety_distance: float = 0.25,
+            position_max_age: float | None = 0.05,
+            
         ) -> None:
         """
         Args:
@@ -66,12 +74,6 @@ class DroneEnvironment(ABC):
         self.possible_agents = [self.RL_DRONE_NAME]
         self.possible_agents.extend(self.expert_drone_names)
 
-        self._create_drones()
-
-        # Initialize reset positions keyed by drone name.
-        self.reset_positions: dict[str, list[float]] = {}
-        self.reset_positions[self.RL_DRONE_NAME] = [0, 0, 1]
-
         self.max_velocity = max_velocity
         self.max_velocity_z = 0.5
         self.step_time = step_time
@@ -82,8 +84,19 @@ class DroneEnvironment(ABC):
         self.observation_space = 12
 
         # Movement Boundary - can be overridden by tasks
-        self.xy_limit = 1.0
-        self.z_limit = 0.5
+        self.xy_limit = xy_limit
+        self.z_min = z_min
+        self.z_max = z_max
+        self.z_limit = z_min
+
+        self.reset_height = reset_height
+        self.reset_hover_height = reset_height
+        self.reset_safety_distance = reset_safety_distance
+        self.position_max_age = position_max_age
+
+        # Initialize reset positions keyed by drone name.
+        self.reset_positions: dict[str, list[float]] = {}
+        self.reset_positions[self.RL_DRONE_NAME] = [0, 0, self.reset_height]
 
         # Reset target position optimization
         self._reset_target_set = False
@@ -95,6 +108,18 @@ class DroneEnvironment(ABC):
 
         # Success tracking for learning phase
         self.success_count = 0
+
+        self._create_drones()
+
+        self.reset_planner = ResetPlanner(
+            self._get_drone_mapping,
+            hover_height=lambda: self.reset_hover_height,
+            xy_limit=lambda: self.xy_limit,
+            z_min=lambda: self.z_min,
+            z_max=lambda: self.z_max,
+            safety_distance=self.reset_safety_distance,
+            position_max_age=self.position_max_age,
+        )
 
     @property
     def rl_drone(self) -> Drone | DroneSim:
@@ -147,6 +172,11 @@ class DroneEnvironment(ABC):
 
         yield from self.rl_drones.items()
         yield from self.expert_drones.items()
+
+    def _get_drone_mapping(
+        self,
+    ) -> dict[str, Drone | DroneSim]:
+        return dict(self._iter_drones())
 
     def _generate_default_sim_uris(self) -> dict[str, str]:
         """Generate default simulator URIs for all drones."""
