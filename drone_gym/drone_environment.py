@@ -93,6 +93,9 @@ class DroneEnvironment(ABC):
         self.reset_hover_height = reset_height
         self.reset_safety_distance = reset_safety_distance
         self.position_max_age = position_max_age
+        self.max_manual_interventions = 2
+        self.battery_reset_margin = 0.2
+        self.battery_episode_margin = 0.2
 
         # Initialize reset positions keyed by drone name.
         self.reset_positions: dict[str, list[float]] = {}
@@ -345,15 +348,6 @@ class DroneEnvironment(ABC):
 
         print("DRONE RESET")
 
-        if not self.use_simulator:
-            low_battery_drones = self._get_low_battery_drones()
-
-            if low_battery_drones:
-                if not self.change_battery(low_battery_drones):
-                    raise RuntimeError(
-                        "Physical drone battery change failed."
-                    )
-
         self._reset_all_drones()
         for _, drone in self._iter_drones():
             if not drone.safety_thread_active:
@@ -523,15 +517,19 @@ class DroneEnvironment(ABC):
         Reset all RL and expert drones to their corresponding
         reset positions.
         """
+        print("Resetting all drones to initial positions...")
+        print(f"Reset positions: {self.reset_positions}")
+
+        if self.use_simulator:
+            self._reset_all_sim_drones()
+        else:
+            self._reset_all_physical_drones()
+
+    def _reset_all_sim_drones(self) -> None:
+        """Reset all simulated drones using the Gazebo reset process."""
         drones = list(self._iter_drones())
 
-        print(
-            "Resetting all drones to initial positions..."
-        )
-        print(
-            f"Reset positions: {self.reset_positions}"
-        )
-
+        # Stop controllers and land.
         for _, drone in drones:
             if drone.velocity_controller_active:
                 drone.stop_velocity_control()
@@ -548,19 +546,16 @@ class DroneEnvironment(ABC):
                 0.0,
             )
 
-            if isinstance(drone, DroneSim):
-                drone.land()
+            drone.land()
 
         for drone_name, drone in drones:
-            if not isinstance(drone, DroneSim):
-                continue
-
             drone.is_landed_event.wait(
                 timeout=10
             )
 
             if drone.emergency_event.is_set():
                 drone.clear_emergency_event()
+
                 if drone.safety_thread_active:
                     drone.stop_boundary_monitoring()
                     time.sleep(0.2)
@@ -579,12 +574,9 @@ class DroneEnvironment(ABC):
                 z=0.02,
                 orientation=(0.0, 0.0, 0.0),
             )
-
         time.sleep(0.3)
 
         for drone_name, drone in drones:
-            if not isinstance(drone, DroneSim):
-                continue
 
             reset_position = self.reset_positions[
                 drone_name
@@ -600,9 +592,8 @@ class DroneEnvironment(ABC):
                 drone=drone,
                 position=spawn_position,
             )
-        if self.use_simulator:
-            time.sleep(0.5)
 
+        time.sleep(0.5)
         for drone_name, drone in drones:
             if not drone.is_flying_event.is_set():
                 print(
@@ -618,13 +609,6 @@ class DroneEnvironment(ABC):
                 timeout=15
             ):
                 continue
-
-            if isinstance(drone, Drone):
-                raise RuntimeError(
-                    f"[{drone_name}] Failed to confirm "
-                    "take-off during reset."
-                )
-
             print(
                 f"[{drone_name}] Failed to confirm "
                 "take-off during reset."
@@ -681,6 +665,561 @@ class DroneEnvironment(ABC):
             )
 
             drone.start_velocity_control()
+
+    def _reset_all_physical_drones(
+        self,
+    ) -> None:
+        """Reset all physical drones using ResetPlanner."""
+
+        self.reset_planner.validate_reset_positions(
+            self.reset_positions
+        )
+
+        manual_interventions = 0
+
+        while True:
+            # Before taking off, ensure there is enough battery
+            # headroom to safely complete the reset procedure.
+            self._change_batteries_if_needed(
+                margin=self.battery_reset_margin
+            )
+
+            while True:
+                try:
+                    # Must be repeated after manual intervention or
+                    # battery servicing because all drones are grounded.
+                    self._prepare_drones_for_physical_reset()
+
+                    outcome = self.reset_planner.execute(
+                        self.reset_positions
+                    )
+
+                    break
+
+                except ResetPlanner.InterventionRequired as escalation:
+                    print(
+                        "[RESET] Automatic reset requires "
+                        "manual intervention."
+                    )
+                    print(
+                        f"[RESET] Affected drones: "
+                        f"{escalation.agents}"
+                    )
+                    print(
+                        f"[RESET] Reason: "
+                        f"{escalation.reason}"
+                    )
+
+                    if not self._land_all_drones(
+                        label="RESET"
+                    ):
+                        raise RuntimeError(
+                            "Could not safely land all drones "
+                            "for manual reset intervention."
+                        ) from escalation
+
+                    if self.use_simulator:
+                        raise RuntimeError(
+                            "ResetPlanner requested manual intervention "
+                            "while using the simulator: "
+                            f"{escalation}"
+                        ) from escalation
+
+                    if (
+                        manual_interventions
+                        >= self.max_manual_interventions
+                    ):
+                        raise RuntimeError(
+                            "Automatic reset still failed after "
+                            f"{manual_interventions} manual "
+                            "intervention(s): {escalation}"
+                        ) from escalation
+
+                    recovery_success = (
+                        self._manual_reset_intervention(
+                            escalation.agents,
+                            escalation.reason,
+                        )
+                    )
+
+                    if not recovery_success:
+                        raise RuntimeError(
+                            "Manual reset recovery failed."
+                        ) from escalation
+
+                    manual_interventions += 1
+
+                    # Physical geometry has changed, so restart
+                    # ResetPlanner completely.
+                    continue
+
+                except Exception:
+                    print(
+                        "[RESET] Physical reset failed unexpectedly. "
+                        "Landing all drones."
+                    )
+
+                    self._land_all_drones(
+                        label="RESET"
+                    )
+
+                    raise
+
+            # Preserve any reset-slot assignment produced by
+            # ResetPlanner before doing the episode battery check.
+            self.reset_positions = outcome[
+                "assigned_positions"
+            ]
+
+            # The reset may have taken significant time.
+            # Check again before starting the episode.
+            battery_changed = (
+                self._change_batteries_if_needed(
+                    margin=self.battery_episode_margin
+                )
+            )
+
+            if battery_changed:
+                print(
+                    "[RESET] Battery changed after reset. "
+                    "Restarting the full physical reset before "
+                    "starting the episode."
+                )
+
+                # change_battery() landed/disarmed the drones and they
+                # may have been physically moved. The previous planner
+                # result is therefore no longer a valid episode start.
+                continue
+
+            # No battery servicing was needed after the reset, so
+            # the fleet is still at the positions produced by
+            # ResetPlanner and is ready to begin the episode.
+            print(
+                f"Reset: "
+                f"{ResetPlanner.summarise(outcome)}"
+            )
+
+            for drone_name, error in sorted(
+                outcome["final_errors"].items()
+            ):
+                if (
+                    error
+                    > self.reset_planner.hold_error * 2
+                ):
+                    print(
+                        f"{drone_name} started "
+                        f"{error:.3f}m from its reset slot"
+                    )
+
+            self._switch_to_velocity_control()
+
+            return
+
+    def _prepare_drones_for_physical_reset(
+        self,
+    ) -> None:
+        """Prepare all owned drones for a ResetPlanner reset."""
+
+        drones = list(self._iter_drones())
+
+        # Stop old controllers and commands.
+        for _, drone in drones:
+            if drone.velocity_controller_active:
+                drone.stop_velocity_control()
+
+            if drone.position_controller_active:
+                drone.stop_position_control()
+
+            self._reset_control_properties(
+                drone=drone,
+            )
+
+            drone.set_velocity_vector(
+                0.0,
+                0.0,
+                0.0,
+            )
+
+        # Take off.
+        for drone_name, drone in drones:
+            if not drone.is_flying_event.is_set():
+                print(
+                    f"{drone_name} taking off before reset"
+                )
+                drone.take_off()
+
+        grounded_drones = [
+            drone_name
+            for drone_name, drone in drones
+            if not drone.is_flying_event.wait(
+                timeout=15
+            )
+        ]
+
+        if grounded_drones:
+            raise ResetPlanner.InterventionRequired(
+                grounded_drones,
+                "failed to confirm take-off",
+            )
+
+        # Hold each drone where it currently is.
+        for _, drone in drones:
+            drone.set_target_position(
+                *drone.get_position()
+            )
+
+        for _, drone in drones:
+            drone.start_position_control()
+
+        time.sleep(1.0)
+
+    def _land_all_drones(
+        self,
+        timeout: float = 15.0,
+        label: str = "",
+    ) -> bool:
+        """Land all owned drones and return whether all confirmed landing."""
+
+        drones = list(self._iter_drones())
+        success = True
+
+        for drone_name, drone in drones:
+            try:
+                drone.clear_command_queue()
+
+                if drone.position_controller_active:
+                    drone.stop_position_control()
+
+                if drone.velocity_controller_active:
+                    drone.stop_velocity_control()
+
+                drone.set_velocity_vector(
+                    0.0,
+                    0.0,
+                    0.0,
+                )
+
+                drone.land()
+
+            except Exception as exc:
+                print(
+                    f"[{label}] Failed to request landing "
+                    f"for {drone_name}: {exc}"
+                )
+                success = False
+
+        for drone_name, drone in drones:
+            try:
+                if not drone.is_landed_event.wait(
+                    timeout=timeout
+                ):
+                    print(
+                        f"[{label}] {drone_name} "
+                        "did not confirm landing."
+                    )
+                    success = False
+
+            except Exception as exc:
+                print(
+                    f"[{label}] Error waiting for "
+                    f"{drone_name} to land: {exc}"
+                )
+                success = False
+
+        return success
+
+    def _land_all_drones_and_disable_safety(
+        self,
+        label: str,
+    ) -> bool:
+        """
+        Land all drones, stop boundary monitoring, and disarm them
+        before a physical service operation.
+        """
+
+        if not self._land_all_drones(
+            label=label
+        ):
+            return False
+
+        drones = self._get_drone_mapping()
+
+        # Disable boundary monitoring while drones may be
+        # physically handled or moved.
+        for drone_name, drone in drones.items():
+            if not drone.safety_thread_active:
+                continue
+
+            try:
+                drone.stop_boundary_monitoring()
+
+            except Exception as exc:
+                print(
+                    f"[{label}] Failed to stop boundary "
+                    f"monitoring for {drone_name}: {exc}"
+                )
+                return False
+
+        # Disarm every connected drone.
+        for drone_name, drone in drones.items():
+            if not drone.armed or drone.cf is None:
+                continue
+
+            try:
+                print(
+                    f"[{label}] Disarming {drone_name}..."
+                )
+
+                drone.cf.supervisor.send_arming_request(
+                    False
+                )
+
+                drone.armed = False
+
+            except Exception as exc:
+                print(
+                    f"[{label}] Failed to disarm "
+                    f"{drone_name}: {exc}"
+                )
+                return False
+
+        return True
+
+    def _switch_to_velocity_control(
+        self,
+    ) -> None:
+        """Switch all owned drones from position to velocity control."""
+
+        for _, drone in self._iter_drones():
+            drone.stop_position_control()
+            drone.clear_reset_position_event()
+
+            drone.set_velocity_vector(
+                0.0,
+                0.0,
+                0.0,
+            )
+
+            drone.start_velocity_control()
+
+    def _recover_service_drones(
+        self,
+        drones_to_service: list[str],
+        label: str,
+        prompt_text: str,
+    ) -> bool:
+        """
+        Wait for physical servicing of selected drones, reconnect them,
+        confirm fresh position data, and re-arm drones that remained
+        connected.
+        """
+
+        drones = self._get_drone_mapping()
+
+        print(
+            f"\n[{label}] {prompt_text}"
+        )
+
+        while True:
+            response = input(
+                f"{prompt_text} (y/n): "
+            ).strip().lower()
+
+            if response == "y":
+                break
+
+            if response == "n":
+                raise RuntimeError(
+                    f"[{label}] Service aborted by user."
+                )
+
+            print(
+                f"[{label}] Invalid input. "
+                "Please enter 'y' or 'n'."
+            )
+
+        # Serviced drones may have physically moved.
+        # Their previous position information is invalid.
+        for drone_name in drones_to_service:
+            drone = drones[drone_name]
+
+            with drone.position_lock:
+                drone.last_position_update_time = None
+
+        # Reconnect/reinitialise serviced drones.
+        for drone_name in drones_to_service:
+            drone = drones[drone_name]
+
+            print(
+                f"[{label}] Reinitialising "
+                f"{drone_name}..."
+            )
+
+            if not drone.initialise_crazyflie():
+                print(
+                    f"[{label}] Failed to reinitialise "
+                    f"{drone_name}."
+                )
+                return False
+
+        # Require fresh position information.
+        for drone_name in drones_to_service:
+            drone = drones[drone_name]
+
+            deadline = (
+                time.monotonic()
+                + 5.0
+            )
+
+            while (
+                drone.last_position_update_time is None
+                and time.monotonic() < deadline
+            ):
+                time.sleep(0.05)
+
+            if drone.last_position_update_time is None:
+                print(
+                    f"[{label}] No fresh position "
+                    f"received for {drone_name}."
+                )
+                return False
+
+            print(
+                f"[{label}] {drone_name} fresh position: "
+                f"{drone.get_position()}"
+            )
+
+        # Serviced drones are armed by initialise_crazyflie().
+        # Re-arm drones that remained connected.
+        for drone_name, drone in drones.items():
+            if drone_name in drones_to_service:
+                continue
+
+            try:
+                print(
+                    f"[{label}] Re-arming "
+                    f"{drone_name}..."
+                )
+
+                drone.cf.supervisor.send_arming_request(
+                    True
+                )
+
+                time.sleep(1.0)
+
+                drone.armed = True
+
+            except Exception as exc:
+                print(
+                    f"[{label}] Failed to re-arm "
+                    f"{drone_name}: {exc}"
+                )
+                return False
+
+        return True
+
+    def _manual_reset_intervention(
+        self,
+        failed_drones: list[str],
+        reason: str | None = None,
+    ) -> bool:
+        """
+        Allow manual repositioning when automatic physical reset fails.
+
+        All drones are landed and disarmed before the flight area is
+        entered. Only failed drones are powered down and reinitialised.
+        """
+        if self.use_simulator:
+            return False
+
+        if not failed_drones:
+            return True
+
+        drones = self._get_drone_mapping()
+
+        unknown_drones = [
+            drone_name
+            for drone_name in failed_drones
+            if drone_name not in drones
+        ]
+
+        if unknown_drones:
+            print(
+                "[RESET RECOVERY] Unknown failed drones: "
+                f"{unknown_drones}"
+            )
+            return False
+
+        print(
+            "\n[RESET RECOVERY] Manual intervention required."
+        )
+        print(
+            "[RESET RECOVERY] Automatic reset failed for: "
+            f"{failed_drones}"
+        )
+
+        if reason is not None:
+            print(
+                f"[RESET RECOVERY] Reason: {reason}"
+            )
+
+        for drone_name in failed_drones:
+            print(
+                f"[RESET RECOVERY] {drone_name} reset target: "
+                f"{self.reset_positions[drone_name]}"
+            )
+
+        if not self._land_all_drones_and_disable_safety(
+            label="RESET RECOVERY"
+        ):
+            return False
+
+        # Only failed drones are powered down/disconnected.
+        for drone_name in failed_drones:
+            try:
+                drones[
+                    drone_name
+                ].pre_battery_change_cleanup()
+
+                print(
+                    f"[RESET RECOVERY] {drone_name} "
+                    "powered down."
+                )
+
+            except Exception as exc:
+                print(
+                    f"[RESET RECOVERY] Failed to prepare "
+                    f"{drone_name}: {exc}"
+                )
+                return False
+
+        print(
+            "\n[RESET RECOVERY] It is now safe to enter "
+            "the flight area."
+        )
+
+        if not self._recover_service_drones(
+            drones_to_service=failed_drones,
+            label="RESET RECOVERY",
+            prompt_text=(
+                "Please reposition and power on the failed drones, "
+                "clear the flight area, then confirm when done."
+            ),
+        ):
+            return False
+
+        # Manual handling is finished. Reinstate monitoring before
+        # starting the complete automatic reset again.
+        for _, drone in drones.items():
+            if not drone.safety_thread_active:
+                drone.start_boundary_monitoring()
+
+        print(
+            "[RESET RECOVERY] Manual intervention complete. "
+            "Restarting automatic reset."
+        )
+
+        return True
 
     def step(self, action):
         """Execute one step in the environment"""
@@ -923,24 +1462,25 @@ class DroneEnvironment(ABC):
     def change_battery(
         self,
         low_battery_drones: list[str],
+        minimum_voltage: float | None = None,
     ) -> bool:
         """
         Handle battery replacement for physical drones.
 
-        All physical drones are landed and disarmed before battery replacement.
-        Only drones with low batteries have their Crazyflie connection powered
-        down and reinitialised.
-
-        The drones are not taken off in this method. Normal reset behaviour
-        handles take-off and movement to reset positions afterwards.
+        All drones are landed and disarmed before battery replacement.
+        Only drones requiring new batteries are powered down and
+        reinitialised.
 
         Args:
-            low_battery_drones: Names of drones whose batteries need replacing.
+            low_battery_drones:
+                Names of drones whose batteries need replacing.
+            minimum_voltage:
+                Minimum acceptable voltage for the replacement batteries.
+                Defaults to battery_threshold.
 
         Returns:
-            True if the battery-change process completes successfully.
-            False if landing, battery replacement, reconnection, or validation
-            fails.
+            True if battery replacement completes successfully.
+            False otherwise.
         """
         if self.use_simulator:
             return True
@@ -948,118 +1488,70 @@ class DroneEnvironment(ABC):
         if not low_battery_drones:
             return True
 
-        drones = dict(self._iter_drones())
+        if minimum_voltage is None:
+            minimum_voltage = self.battery_threshold
 
-        print("\n[BATTERY] Beginning battery change operation.")
-        print(f"[BATTERY] Batteries requiring replacement: {low_battery_drones}")
+        drones = self._get_drone_mapping()
 
-        # Stop all drone controllers and land
-        for drone_name, drone in drones.items():
+        print(
+            "\n[BATTERY] Beginning battery change operation."
+        )
+        print(
+            "[BATTERY] Batteries requiring replacement: "
+            f"{low_battery_drones}"
+        )
+        print(
+            "[BATTERY] Required replacement voltage: "
+            f"{minimum_voltage:.2f} V"
+        )
+
+        if not self._land_all_drones_and_disable_safety(
+            label="BATTERY"
+        ):
+            return False
+
+        # Only affected drones are powered down/disconnected.
+        for drone_name in low_battery_drones:
             try:
-                drone.clear_command_queue()
+                drones[
+                    drone_name
+                ].pre_battery_change_cleanup()
 
-                if drone.velocity_controller_active:
-                    drone.stop_velocity_control()
-
-                if drone.position_controller_active:
-                    drone.stop_position_control()
-
-                drone.set_velocity_vector(
-                    0.0,
-                    0.0,
-                    0.0,
+                print(
+                    f"[BATTERY] {drone_name} ready "
+                    "for battery replacement."
                 )
 
-                drone.land()
-
             except Exception as exc:
-                print(f"[BATTERY] Failed to request landing for {drone_name}: {exc}")
-                return False
-
-        # Wait for every drone to finish landing.
-        for drone_name, drone in drones.items():
-            if not drone.is_landed_event.wait(timeout=15):
-                print(f"[BATTERY] {drone_name} failed to confirm landing. Battery change aborted.")
-                return False
-
-        print("[BATTERY] All drones landed.")
-
-        # Disable boundary monitoring while drones may be handled/moved
-        for drone_name, drone in drones.items():
-            if drone.safety_thread_active:
-                try:
-                    drone.stop_boundary_monitoring()
-                except Exception as exc:
-                    print(f"[BATTERY] Failed to stop boundary monitoring for {drone_name}: {exc}")
-                    return False
-
-        # Disarm healthy drones
-        for drone_name, drone in drones.items():
-            if drone.armed and drone.cf is not None:
-                try:
-                    print(f"[BATTERY] Disarming {drone_name}...")
-
-                    drone.cf.supervisor.send_arming_request(False)
-                    drone.armed = False
-
-                except Exception as exc:
-                    print(f"[BATTERY] Failed to disarm {drone_name}: {exc}")
-                    return False
-
-        # Power down and disconnect drones needing new batteries
-        for drone_name in low_battery_drones:
-            drone = drones[drone_name]
-            try:
-                drone.pre_battery_change_cleanup()
-
-            except Exception as exc:
-                print(f"[BATTERY] Failed to prepare {drone_name} for battery change: {exc}")
+                print(
+                    f"[BATTERY] Failed to prepare "
+                    f"{drone_name} for battery change: {exc}"
+                )
                 return False
 
         print(
-            "\n[BATTERY] Low-battery drones are powered down and ready for battery replacement."
+            "[BATTERY] Low-battery drones are powered down "
+            "and ready for battery replacement."
         )
 
-        # Wait for user to replace batteries.
-        while True:
-            response = input(
-                "Are the batteries changed and the drones ready? (y/n): "
-            ).strip().lower()
+        if not self._recover_service_drones(
+            drones_to_service=low_battery_drones,
+            label="BATTERY",
+            prompt_text=(
+                "Please replace the batteries for the above "
+                "drones and confirm when done."
+            ),
+        ):
+            return False
 
-            if response == "y":
-                break
-
-            if response == "n":
-                raise RuntimeError("[BATTERY] Battery change aborted by user.")
-
-            print(
-                "[BATTERY] Invalid input. "
-                "Please enter 'y' or 'n'."
-            )
-
-        # Invalidate possible stale positions
+        # Verify every replacement battery is suitable for the
+        # operation that triggered the battery change.
         for drone_name in low_battery_drones:
             drone = drones[drone_name]
 
-            with drone.position_lock:
-                drone.last_position_update_time = None
-
-        # Reinitialise affected Crazyflies
-        for drone_name in low_battery_drones:
-            drone = drones[drone_name]
-
-            print(
-                f"[BATTERY] Reinitialising {drone_name}..."
-            )
-
-            if not drone.initialise_crazyflie():
-                print(f"[BATTERY] Failed to reinitialise {drone_name}.")    
-                return False
-
-        for drone_name in low_battery_drones:
-            drone = drones[drone_name]
-
-            if not drone.battery_ready_event.wait(timeout=5.0):
+            if not drone.battery_ready_event.wait(
+                timeout=5.0
+            ):
                 print(
                     f"[BATTERY] No battery telemetry received "
                     f"from {drone_name} after reconnect."
@@ -1068,49 +1560,93 @@ class DroneEnvironment(ABC):
 
             battery_level = drone.get_battery()
 
-            print(f"[BATTERY] {drone_name} battery: {battery_level:.2f} V")
+            print(
+                f"[BATTERY] {drone_name} battery: "
+                f"{battery_level:.2f} V"
+            )
 
-            if battery_level <= self.battery_threshold:
+            if battery_level <= minimum_voltage:
                 print(
-                    f"[BATTERY] Replacement battery for {drone_name} is still below the threshold ({self.battery_threshold:.2f} V)."
+                    f"[BATTERY] Replacement battery for "
+                    f"{drone_name} is still below the required "
+                    f"voltage ({minimum_voltage:.2f} V)."
                 )
+
+                # _recover_service_drones() has re-armed the fleet.
+                # Make sure everything is returned to a safe,
+                # landed/disarmed state before reporting failure.
+                self._land_all_drones_and_disable_safety(
+                    label="BATTERY"
+                )
+
                 return False
+        for _, drone in drones.items():
+            if not drone.safety_thread_active:
+                drone.start_boundary_monitoring()
 
-        # Wait for fresh position information after physical handling
-        for drone_name in low_battery_drones:
-            drone = drones[drone_name]
+        print(
+            "[BATTERY] Battery change operation complete."
+        )
 
-            deadline = time.monotonic() + 5.0
+        return True
+    
+    def _change_batteries_if_needed(
+        self,
+        margin: float = 0.0,
+    ) -> bool:
+        """
+        Replace batteries below the required operating voltage.
 
-            while (
-                drone.last_position_update_time is None
-                and time.monotonic() < deadline
-            ):
-                time.sleep(0.05)
+        The required voltage is battery_threshold + margin.
 
-            if drone.last_position_update_time is None:
-                print(f"[BATTERY] No fresh position received for {drone_name} after battery replacement.")
-                return False
+        Args:
+            margin:
+                Additional voltage required above battery_threshold.
 
-            print(f"[BATTERY] {drone_name} fresh position: {drone.get_position()}")
+        Returns:
+            True if one or more batteries were changed.
+            False if no battery change was required.
 
-        # Re-arm drones that remained connected
-        for drone_name, drone in drones.items():
-            if drone_name in low_battery_drones:
-                continue
-            try:
-                print(f"[BATTERY] Re-arming {drone_name}...")
+        Raises:
+            RuntimeError:
+                If a required battery change fails.
+        """
+        if self.use_simulator:
+            return False
 
-                drone.cf.platform.send_arming_request(True)
-                time.sleep(1.0)
+        minimum_voltage = (
+            self.battery_threshold
+            + margin
+        )
 
-                drone.armed = True
+        battery_levels = (
+            self._get_battery_levels()
+        )
 
-            except Exception as exc:
-                print(f"[BATTERY] Failed to re-arm {drone_name}: {exc}")
-                return False
+        low_battery_drones = [
+            drone_name
+            for drone_name, battery_level
+            in battery_levels.items()
+            if battery_level <= minimum_voltage
+        ]
 
-        print("[BATTERY] Battery change operation complete.")
+        if not low_battery_drones:
+            return False
+
+        print(
+            "[BATTERY] Drones below required voltage "
+            f"({minimum_voltage:.2f} V): "
+            f"{low_battery_drones}"
+        )
+
+        if not self.change_battery(
+            low_battery_drones,
+            minimum_voltage=minimum_voltage,
+        ):
+            raise RuntimeError(
+                "Battery change failed for "
+                f"{low_battery_drones}"
+            )
 
         return True
 
