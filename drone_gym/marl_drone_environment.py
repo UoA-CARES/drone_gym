@@ -81,6 +81,7 @@ class MarlDroneEnvironment(ParallelEnv):
 
         # Battery threshold
         self.battery_threshold = 3.25
+        self.battery_reset_margin = 0.2
 
         # PettingZoo agent lists
         self.possible_agents = [f"drone_{i}" for i in range(self.num_agents_config)]
@@ -1022,6 +1023,7 @@ class MarlDroneEnvironment(ParallelEnv):
     def _manual_reset_intervention(
         self,
         failed_agents: list[str],
+        reason: str | None = None,
     ) -> bool:
         """
         Allow manual repositioning when automatic physical reset fails.
@@ -1045,6 +1047,8 @@ class MarlDroneEnvironment(ParallelEnv):
             f"[RESET RECOVERY] Automatic reset failed for: "
             f"{failed_agents}"
         )
+        if reason is not None:
+            print(f"[RESET RECOVERY] Reason: {reason}")
 
         for agent in failed_agents:
             print(
