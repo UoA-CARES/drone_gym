@@ -1002,11 +1002,11 @@ class MarlDroneEnvironment(ParallelEnv):
                     break
 
                 except ResetPlanner.InterventionRequired as escalation:
-                    print("[RESET] Automatic reset requires " "manual intervention.")
+                    print("[RESET] Automatic reset requires manual intervention.")
 
-                    print(f"[RESET] Affected drones: " f"{escalation.agents}")
+                    print(f"[RESET] Affected drones: {escalation.agents}")
 
-                    print(f"[RESET] Reason: " f"{escalation.reason}")
+                    print(f"[RESET] Reason: {escalation.reason}")
 
                     if not self._land_all_drones(label="RESET"):
                         raise RuntimeError(
@@ -1016,9 +1016,7 @@ class MarlDroneEnvironment(ParallelEnv):
 
                     if interventions >= self.max_manual_interventions:
                         raise RuntimeError(
-                            f"Reset failed after "
-                            f"{interventions} interventions: "
-                            f"{escalation}"
+                            f"Reset failed after {interventions} interventions: {escalation}"
                         ) from escalation
 
                     if not self._manual_reset_intervention(
@@ -1061,7 +1059,7 @@ class MarlDroneEnvironment(ParallelEnv):
                 # may have physically moved serviced drones.
                 continue
 
-            print(f"Reset: " f"{ResetPlanner.summarise(outcome)}")
+            print(f"Reset: {ResetPlanner.summarise(outcome)}")
 
             self._log_initial_state_error(outcome)
 
