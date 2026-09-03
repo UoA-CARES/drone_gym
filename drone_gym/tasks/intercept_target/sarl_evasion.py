@@ -6,6 +6,7 @@ from collections import deque
 from typing import Dict, List, Any, Literal
 
 from drone_gym.drone_environment import DroneEnvironment
+from drone_gym.drone_sim import DroneSim
 from drone_gym.agents.bodies import CrazyflieBody
 from drone_gym.agents.policies import CallablePolicy
 from drone_gym.agents.sim_agent import SimAgent
@@ -67,7 +68,6 @@ class SarlEvasion(DroneEnvironment):
         self.exploration_steps = exploration_steps
         self.total_steps = 0
         self.truncate_next = False
-        self._degraded_transition = False
         self.learning = True
 
         # --- Geometry / task parameters -------------------------------------
@@ -126,6 +126,16 @@ class SarlEvasion(DroneEnvironment):
         if self.curriculum_enabled:
             self.interceptor_max_velocity = self.interceptor_speed_min
         self._recent_runner_outcomes = deque(maxlen=self.curriculum_window)
+
+        # Slew-rate limit for the interceptor's commanded velocity — same
+        # tilt/thrust-spike mechanism as max_action_delta below (see its
+        # comment), but for the pursuer: PN pursuit can reverse direction
+        # instantly step-to-step, which is exactly the hard direction change
+        # that tilts the drone and has been triggering its firmware crash
+        # latch. Capped as a fraction of the speed ceiling so it stays
+        # meaningful across the curriculum.
+        self.interceptor_max_velocity_delta = 0.2 * self.interceptor_speed_max
+        self._prev_interceptor_velocity = [0.0, 0.0, 0.0]
 
         # Brake margins: the per-step clamp zeroes a velocity component before the
         # actual boundary, leaving room for the drone to coast to a stop instead of
@@ -300,7 +310,16 @@ class SarlEvasion(DroneEnvironment):
         if (pos[2] <= self.z_min and vz < 0) or (pos[2] >= self.z_max and vz > 0):
             vz = 0.0
 
-        return [vx, vy, vz]
+        # Slew-limit the commanded velocity so no single step can reverse it
+        # outright (see interceptor_max_velocity_delta above).
+        limited = list(self._prev_interceptor_velocity)
+        for i, target in enumerate((vx, vy, vz)):
+            delta = target - limited[i]
+            delta = max(-self.interceptor_max_velocity_delta, min(self.interceptor_max_velocity_delta, delta))
+            limited[i] = limited[i] + delta
+        self._prev_interceptor_velocity = limited
+
+        return limited
 
     # ------------------------------------------------------------------
     # Geometry sampling (3D)
@@ -411,6 +430,90 @@ class SarlEvasion(DroneEnvironment):
             return True
         if abs(pos[0]) > self.INTERCEPTOR_DEAD_XY or abs(pos[1]) > self.INTERCEPTOR_DEAD_XY:
             return True
+        return False
+
+    # ------------------------------------------------------------------
+    # Fatal sim-link recovery (dead UDP link / firmware supervisor crash)
+    #
+    # This is distinct from a latched emergency_event: the base reset's
+    # _reset_all_drones() already clears an ordinary emergency latch and
+    # re-lands/teleports/re-arms the drone just fine. A DroneSim's
+    # fatal_error_event, however, means the underlying cf/scf link itself is
+    # gone (DroneSim._connection_lost / _handle_supervisor_crash) — no amount
+    # of land/teleport/EKF-reset fixes that, the sim process and drone
+    # interfaces have to be rebuilt. Mirrors sarl_tag.py's handling of the
+    # same gap in this shared DroneEnvironment base.
+    # ------------------------------------------------------------------
+
+    FATAL_SIM_RESTART_ATTEMPTS = 3
+    FATAL_SIM_RESTART_DELAY = 10.0
+
+    def _fatal_sim_drones(self) -> List[tuple]:
+        """Return (name, drone) for every owned DroneSim whose link has fatally failed."""
+        if self.sim_manager is None:
+            return []
+
+        candidates = [("runner", self.rl_drone)]
+        interceptor_drone = getattr(self.interceptor.body, "drone", None)
+        if interceptor_drone is not None:
+            candidates.append((self.INTERCEPTOR_NAME, interceptor_drone))
+
+        return [
+            (name, drone)
+            for name, drone in candidates
+            if isinstance(drone, DroneSim) and drone.fatal_error_event.is_set()
+        ]
+
+    def _recover_fatal_sim_link(self) -> bool:
+        """Restart the CrazySim/Gazebo process and rebuild both drone interfaces.
+
+        Mirrors MarlDroneEnvironment._recover_from_fatal_sim_error: stop the
+        old (dead) drone interfaces, restart the simulator process, and
+        recreate the DroneSim objects from scratch. The interceptor SimAgent
+        is then re-linked to the freshly created interceptor drone (its body
+        only holds a plain attribute reference), and the interceptor's
+        vertical-headroom boundary override — set once in __init__, lost on a
+        fresh DroneSim — is re-applied.
+        """
+        for attempt in range(1, self.FATAL_SIM_RESTART_ATTEMPTS + 1):
+            print(f"[SarlEvasion] Fatal sim link detected — restarting simulator "
+                  f"(attempt {attempt}/{self.FATAL_SIM_RESTART_ATTEMPTS})")
+
+            for _, drone in list(self.rl_drones.items()) + list(self.expert_drones.items()):
+                try:
+                    drone.stop()
+                except Exception as exc:
+                    print(f"[SarlEvasion] Error stopping drone during fatal recovery: {exc}")
+
+            if not self.sim_manager.restart_sim():
+                print(f"[SarlEvasion] Simulator restart failed on attempt {attempt}")
+                time.sleep(self.FATAL_SIM_RESTART_DELAY)
+                continue
+
+            self._create_drones()
+
+            interceptor_drone = self.expert_drones[self.INTERCEPTOR_NAME]
+            self.interceptor.body.drone = interceptor_drone
+            if hasattr(interceptor_drone, "boundaries"):
+                interceptor_drone.boundaries = {
+                    "x": 4, "y": 4, "z_min": -0.5, "z_max": 3.0,
+                }
+
+            failed = [
+                name
+                for name, drone in list(self.rl_drones.items()) + list(self.expert_drones.items())
+                if not drone.is_running()
+                or (isinstance(drone, DroneSim) and drone.fatal_error_event.is_set())
+            ]
+            if not failed:
+                print("[SarlEvasion] Simulator and drone interfaces recovered")
+                return True
+
+            print(f"[SarlEvasion] Drone interfaces still unhealthy after restart: {failed}")
+            time.sleep(self.FATAL_SIM_RESTART_DELAY)
+
+        print("[SarlEvasion] Failed to recover from fatal sim link after "
+              f"{self.FATAL_SIM_RESTART_ATTEMPTS} attempts")
         return False
 
     def _proactive_ekf_reset(self, drone, position: List[float] | None = None) -> None:
@@ -910,6 +1013,16 @@ class SarlEvasion(DroneEnvironment):
         """
         Sample the interceptor spawn and use the base environment to
         reset the runner and interceptor together.
+
+        Mirrors sarl_tag's reset: sample geometry, populate reset_positions,
+        then delegate entirely to the base environment reset. The base
+        _reset_all_drones() already lands, teleports, clears a latched
+        emergency, re-seeds the EKF and takes off EVERY drone (runner and
+        interceptor alike) EVERY episode — that's what makes a dying drone
+        recover. Layering task-level pre/post "is it dead, call restart()"
+        checks on top of that fights with the base reset instead of
+        complementing it and was the source of flaky recovery in sarl_tag
+        before it was cleaned up the same way.
         """
 
         if not training and not self._is_evaluating:
@@ -948,62 +1061,34 @@ class SarlEvasion(DroneEnvironment):
             list(interceptor_spawn),
         ]
 
-        # Keep specialised recovery before the general reset.
-        #
-        # The base reset can reposition healthy drones, but it does
-        # not necessarily recreate a dead link or relaunch terminated
-        # worker threads.
-        if self._episode_count > 1:
-            if self._runner_is_dead():
-                print(
-                    "[SarlEvasion] Runner dead at reset entry — "
-                    "recovering before coordinated reset"
-                )
-                self.restart()
-
-            interceptor_drone = self.expert_drones[
-                self.INTERCEPTOR_NAME
-            ]
-
-            if (
-                interceptor_drone.emergency_event.is_set()
-                or self._interceptor_is_dead()
-            ):
-                print(
-                    "[SarlEvasion] Interceptor dead at reset entry — "
-                    "recovering before coordinated reset"
-                )
-                self._recover_interceptor_if_dead(
-                    force=True
-                )
+        # A fatal sim link (dead UDP connection / firmware supervisor crash)
+        # can't be fixed by the base reset's land/teleport/EKF-reset cycle —
+        # the drone interface itself needs rebuilding. Check and recover
+        # BEFORE handing off, same point sarl_tag checks at.
+        if self._fatal_sim_drones():
+            self._recover_fatal_sim_link()
 
         # Resets both the RL drone and interceptor using:
         #
         # self.reset_positions[0] -> rl_drone
         # self.reset_positions[1] -> interceptor_0
-        state = super().reset(training)
+        super().reset(training)
+
+        # The land/teleport/take-off cycle just run above can ITSELF trip a
+        # drone's firmware crash latch (e.g. a hard stop-then-land while the
+        # interceptor was still carrying pursuit speed) — the supervisor
+        # telemetry confirming that arrives asynchronously, sometimes only
+        # after the pre-reset _fatal_sim_drones() check above already ran
+        # and found nothing. Left unchecked, the episode starts with a drone
+        # that never actually re-armed and dies within its first couple of
+        # steps. Re-check here, after the fact, and redo the reset once if
+        # recovery was needed so the episode never starts on that state.
+        if self._fatal_sim_drones():
+            print("[SarlEvasion] Fatal sim link detected after reset — recovering and retrying")
+            self._recover_fatal_sim_link()
+            super().reset(training)
 
         runner_pos = self.rl_drone.get_position()
-
-        # Optional health check after the coordinated reset.
-        runner_off_spawn = (
-            math.dist(
-                runner_pos,
-                self.runner_spawn,
-            )
-            > 0.8
-        )
-
-        if self._runner_is_dead() or runner_off_spawn:
-            print(
-                "[SarlEvasion] Runner unhealthy after coordinated "
-                "reset — recovering and retrying once"
-            )
-
-            self.restart()
-
-            state = super().reset(training)
-            runner_pos = self.rl_drone.get_position()
 
         # The environment resets the drone lifecycle. The task still
         # resets the expert policy.
@@ -1024,6 +1109,7 @@ class SarlEvasion(DroneEnvironment):
             0.0,
             0.0,
         ]
+        self._prev_interceptor_velocity = [0.0, 0.0, 0.0]
 
         time.sleep(0.5)
 
@@ -1036,13 +1122,6 @@ class SarlEvasion(DroneEnvironment):
         """One env step: command the expert interceptor, then move the learner (3D)."""
 
         self.total_steps += 1
-
-        # Any step taken while a drone is already known-dead/stuck going in, or
-        # is found dead coming out, reflects simulator recovery artifacts (e.g.
-        # a crashed interceptor sitting inert on the ground) rather than real
-        # task dynamics. Flag it so the training loop can keep it out of the
-        # replay buffer while still logging it for visibility.
-        self._degraded_transition = self._interceptor_is_dead()
 
         if self.total_steps == self.exploration_steps and not self.learning:
             print("\nSWITCHING TO LEARNING PHASE...\n")
@@ -1079,7 +1158,6 @@ class SarlEvasion(DroneEnvironment):
             self.restart()
             self._reset_stuck_tracker()
             self.truncate_next = True
-            self._degraded_transition = True
             runner_pos = self.drone.get_position()
 
         # Command the expert interceptor BEFORE super().step() so both drones fly
@@ -1142,13 +1220,6 @@ class SarlEvasion(DroneEnvironment):
                   f"pos={[round(p, 2) for p in ipos]} (z={ipos[2]:.2f}) — truncating. "
                   f"z>~2.0 here means a thrust-spike launch past its boundary.")
             self.truncate_next = True
-            self._degraded_transition = True
-
-        if self._degraded_transition:
-            _, _, _, _, info = result
-            info["discard_from_buffer"] = True
-            print(f"[SarlEvasion] Discarding this transition from the replay buffer "
-                  f"(degraded/recovering simulator state).")
 
         return result
 
@@ -1303,10 +1374,6 @@ class SarlEvasion(DroneEnvironment):
             'success': self.survived_full_episode,
             'out_of_bounds': self._is_out_of_task_bounds(position),
             'description': "3D pure evasion — RL runner evading an expert interceptor indefinitely",
-            # Overwritten to True in step() when this transition happened while
-            # a drone was dead/stuck/recovering — training_runner.py skips
-            # adding those to the replay buffer.
-            'discard_from_buffer': False,
         }
         if self._is_evaluating:
             info['success_count'] = self.successful_episodes_count

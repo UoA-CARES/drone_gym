@@ -71,7 +71,6 @@ class SarlTag(DroneEnvironment):
         self.exploration_steps = exploration_steps
         self.total_steps = 0
         self.truncate_next = False
-        self._degraded_transition = False
         self.learning = True
 
         # --- Geometry / task parameters -------------------------------------
@@ -144,6 +143,16 @@ class SarlTag(DroneEnvironment):
         if self.curriculum_enabled:
             self.interceptor_max_velocity = self.interceptor_speed_min
         self._recent_runner_outcomes = deque(maxlen=self.curriculum_window)
+
+        # Slew-rate limit for the interceptor's commanded velocity — same
+        # tilt/thrust-spike mechanism as max_action_delta above (see its
+        # comment), but for the pursuer: PN pursuit can reverse direction
+        # instantly step-to-step, which is exactly the hard direction change
+        # that tilts the drone and has been triggering its firmware crash
+        # latch. Capped as a fraction of the speed ceiling so it stays
+        # meaningful across the curriculum.
+        self.interceptor_max_velocity_delta = 0.2 * self.interceptor_speed_max
+        self._prev_interceptor_velocity = [0.0, 0.0, 0.0]
 
         # Brake margins: the per-step clamp zeroes a velocity component before the
         # actual boundary, leaving room for the drone to coast to a stop instead of
@@ -342,7 +351,16 @@ class SarlTag(DroneEnvironment):
         if (pos[2] <= self.z_min and vz < 0) or (pos[2] >= self.z_max and vz > 0):
             vz = 0.0
 
-        return [vx, vy, vz]
+        # Slew-limit the commanded velocity so no single step can reverse it
+        # outright (see interceptor_max_velocity_delta above).
+        limited = list(self._prev_interceptor_velocity)
+        for i, target in enumerate((vx, vy, vz)):
+            delta = target - limited[i]
+            delta = max(-self.interceptor_max_velocity_delta, min(self.interceptor_max_velocity_delta, delta))
+            limited[i] = limited[i] + delta
+        self._prev_interceptor_velocity = limited
+
+        return limited
 
     # ------------------------------------------------------------------
     # Geometry sampling (3D)
@@ -1272,6 +1290,20 @@ class SarlTag(DroneEnvironment):
         # self.reset_positions[1] -> interceptor_0
         super().reset(training)
 
+        # The land/teleport/take-off cycle just run above can ITSELF trip a
+        # drone's firmware crash latch (e.g. a hard stop-then-land while the
+        # interceptor was still carrying pursuit speed) — the supervisor
+        # telemetry confirming that arrives asynchronously, sometimes only
+        # after the pre-reset _fatal_sim_drones() check above already ran
+        # and found nothing. Left unchecked, the episode starts with a drone
+        # that never actually re-armed and dies within its first couple of
+        # steps. Re-check here, after the fact, and redo the reset once if
+        # recovery was needed so the episode never starts on that state.
+        if self._fatal_sim_drones():
+            print("[SarlTag] Fatal sim link detected after reset — recovering and retrying")
+            self._recover_fatal_sim_link()
+            super().reset(training)
+
         runner_pos = self.rl_drone.get_position()
 
         # The environment resets the drone lifecycle. The task still
@@ -1305,6 +1337,7 @@ class SarlTag(DroneEnvironment):
             0.0,
             0.0,
         ]
+        self._prev_interceptor_velocity = [0.0, 0.0, 0.0]
 
         time.sleep(0.5)
 
@@ -1443,13 +1476,6 @@ class SarlTag(DroneEnvironment):
 
         self.total_steps += 1
 
-        # Any step taken while a drone is already known-dead/stuck going in, or
-        # is found dead coming out, reflects simulator recovery artifacts (e.g.
-        # a crashed interceptor sitting inert on the ground) rather than real
-        # task dynamics. Flag it so the training loop can keep it out of the
-        # replay buffer while still logging it for visibility.
-        self._degraded_transition = self._interceptor_is_dead()
-
         if self.total_steps == self.exploration_steps and not self.learning:
             print("\nSWITCHING TO LEARNING PHASE...\n")
             self.truncate_next = True
@@ -1485,7 +1511,6 @@ class SarlTag(DroneEnvironment):
             self.restart()
             self._reset_stuck_tracker()
             self.truncate_next = True
-            self._degraded_transition = True
             runner_pos = self.drone.get_position()
 
         # Command the expert interceptor BEFORE super().step() so both drones fly
@@ -1548,13 +1573,6 @@ class SarlTag(DroneEnvironment):
                   f"pos={[round(p, 2) for p in ipos]} (z={ipos[2]:.2f}) — truncating. "
                   f"z>~2.0 here means a thrust-spike launch past its boundary.")
             self.truncate_next = True
-            self._degraded_transition = True
-
-        if self._degraded_transition:
-            _, _, _, _, info = result
-            info["discard_from_buffer"] = True
-            print(f"[SarlTag] Discarding this transition from the replay buffer "
-                  f"(degraded/recovering simulator state).")
 
         return result
 
@@ -1736,10 +1754,6 @@ class SarlTag(DroneEnvironment):
             'interceptor_success': int(self.caught),
             'out_of_bounds': self._is_out_of_task_bounds(position),
             'description': "3D navigate-to-goal under interception — RL runner vs expert interceptor",
-            # Overwritten to True in step() when this transition happened while
-            # a drone was dead/stuck/recovering — training_runner.py skips
-            # adding those to the replay buffer.
-            'discard_from_buffer': False,
         }
         if self._is_evaluating:
             info['success_count'] = self.successful_episodes_count
