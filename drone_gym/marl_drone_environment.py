@@ -586,9 +586,9 @@ class MarlDroneEnvironment(ParallelEnv):
 
         return True
 
-    def _recover_service_agents(
+    def _recover_service_drones(
         self,
-        agents_to_service: list[str],
+        drones_to_service: list[str],
         label: str,
         prompt_text: str,
     ) -> bool:
@@ -612,14 +612,14 @@ class MarlDroneEnvironment(ParallelEnv):
             print(f"[{label}] Invalid input. " "Please enter 'y' or 'n'.")
 
         # Serviced drones may have physically moved.
-        for agent in agents_to_service:
+        for agent in drones_to_service:
             drone = self.drones[agent]
 
             with drone.position_lock:
                 drone.last_position_update_time = None
 
         # Reconnect serviced drones.
-        for agent in agents_to_service:
+        for agent in drones_to_service:
             drone = self.drones[agent]
 
             print(f"[{label}] Reinitialising {agent}...")
@@ -630,7 +630,7 @@ class MarlDroneEnvironment(ParallelEnv):
                 return False
 
         # Require fresh position information.
-        for agent in agents_to_service:
+        for agent in drones_to_service:
             drone = self.drones[agent]
 
             deadline = time.monotonic() + 5.0
@@ -649,7 +649,7 @@ class MarlDroneEnvironment(ParallelEnv):
 
         # Re-arm drones which remained connected.
         for agent in self.possible_agents:
-            if agent in agents_to_service:
+            if agent in drones_to_service:
                 continue
 
             drone = self.drones[agent]
@@ -730,14 +730,15 @@ class MarlDroneEnvironment(ParallelEnv):
             "and ready for battery replacement."
         )
 
-        if not self._recover_service_agents(
-            agents_to_service=low_battery_agents,
+        if not self._recover_service_drones(
+            drones_to_service=low_battery_agents,
             label="BATTERY",
             prompt_text=(
                 "Please replace the batteries for the above "
                 "drones and confirm when done."
             ),
         ):
+            self._land_all_drones_and_disable_safety(label="BATTERY")
             return False
 
         # Validate replacement batteries.
@@ -1287,12 +1288,13 @@ class MarlDroneEnvironment(ParallelEnv):
 
         # Wait for user confirmation that the failed drones have been repositioned
         # and powered back on.
-        if not self._recover_service_agents(
-            agents_to_service=failed_agents,
+        if not self._recover_service_drones(
+            drones_to_service=failed_agents,
             label="RESET RECOVERY",
             prompt_text="Please reposition and power on the failed drones, "
             "then confirm when done.",
         ):
+            self._land_all_drones_and_disable_safety(label="RESET RECOVERY")
             return False
 
         print(

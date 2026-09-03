@@ -1,13 +1,14 @@
 from abc import ABC, abstractmethod
 from collections.abc import Iterator
+import time
+from typing import Dict, List, Any, Literal
+import numpy as np
+
 from drone_gym.utils.vicon_position_source import ViconPositionSource, ViconProvider
 from drone_gym.sim_manager import SimManager, SimLaunchConfig
 from drone_gym.drone_sim import DroneSim
 from drone_gym.drone import Drone
 from drone_gym.reset_planner import ResetPlanner
-import time
-import numpy as np
-from typing import Dict, List, Any, Literal
 
 
 class DroneEnvironment(ABC):
@@ -23,27 +24,27 @@ class DroneEnvironment(ABC):
     """
 
     RL_DRONE_NAME = "rl_drone"
+
     def __init__(
-            self, 
-            use_simulator: Literal[0,1],
-            max_velocity: float = 0.5,
-            step_time: float = 0.5,
-            expert_drone_names: list[str] | None = None,
-            xy_limit: float = 1.0,
-            z_min: float = 0.5,
-            z_max: float = 1.5,
-            reset_height: float = 1.0,
-            reset_safety_distance: float = 0.25,
-            position_max_age: float | None = 0.05,
-            
-        ) -> None:
+        self,
+        use_simulator: Literal[0, 1],
+        max_velocity: float = 0.5,
+        step_time: float = 0.5,
+        expert_drone_names: list[str] | None = None,
+        xy_limit: float = 1.0,
+        z_min: float = 0.5,
+        z_max: float = 1.5,
+        reset_height: float = 1.0,
+        reset_safety_distance: float = 0.25,
+        position_max_age: float | None = 0.05,
+    ) -> None:
         """
         Args:
             use_simulator: Use simulated drones when 1, or physical drones when 0.
             max_velocity: Maximum x and y velocity in metres per second.
             step_time: Duration each action is applied, in seconds.
             expert_drone_names: Ordered names of optional expert drones.
-        """        
+        """
         self._closed = False  # Track if the environment has been closed
         # Set the appropriate drone instance based on use_simulator flag
         print("use_simulator", use_simulator)
@@ -54,16 +55,14 @@ class DroneEnvironment(ABC):
 
         if self.use_simulator:
             self.sim_manager = SimManager(
-                sim_launch_config=SimLaunchConfig(
-                    num_agents=self.num_drones_config
-                )
+                sim_launch_config=SimLaunchConfig(num_agents=self.num_drones_config)
             )
             time.sleep(1)  # Allow time for the sim manager to initialize
             print("Starting simulator...")
             sim_started = self.sim_manager.start_sim()
             if not sim_started:
                 raise RuntimeError("Failed to start CrazySim/Gazebo simulator.")
-  
+
         else:
             self.sim_manager = None
 
@@ -88,6 +87,8 @@ class DroneEnvironment(ABC):
         self.z_min = z_min
         self.z_max = z_max
         self.z_limit = z_min
+        # Task-specific environments may replace this with their boundary.
+        self.boundary: list[float] | None = None
 
         self.reset_height = reset_height
         self.reset_hover_height = reset_height
@@ -108,6 +109,7 @@ class DroneEnvironment(ABC):
         self._is_evaluating = False
         self.episode_positions = []
         self._log_path = None
+        self.prior_state: dict[str, Any] = []
 
         # Success tracking for learning phase
         self.success_count = 0
@@ -131,10 +133,7 @@ class DroneEnvironment(ABC):
         try:
             return self.rl_drones[self.RL_DRONE_NAME]
         except KeyError as exc:
-            raise RuntimeError(
-                "The RL drone has not been created."
-            ) from exc
-
+            raise RuntimeError("The RL drone has not been created.") from exc
 
     @property
     def drone(self) -> Drone | DroneSim:
@@ -151,10 +150,9 @@ class DroneEnvironment(ABC):
         Return the RL drone's reset position.
 
         This compatibility property preserves the existing single-drone
-        SARL interface. 
+        SARL interface.
         """
         return self.reset_positions[self.RL_DRONE_NAME]
-
 
     @reset_position.setter
     def reset_position(
@@ -206,10 +204,8 @@ class DroneEnvironment(ABC):
         index 0 corresponds to crazyflie_0 and port 19850,
         index 1 corresponds to crazyflie_1 and port 19851, and so on.
         """
-        return list(
-            self.drone_uris.keys()
-        ).index(drone_name)
-    
+        return list(self.drone_uris.keys()).index(drone_name)
+
     def _create_drones(self) -> None:
         """Create drone instances for all drones."""
 
@@ -217,9 +213,8 @@ class DroneEnvironment(ABC):
             self.drone_uris = self._generate_default_sim_uris()
         else:
             self.drone_uris = self._generate_default_crazyflie_uris()
-            self.vicon_object_names = { 
-                agent: f"Crzayme_{i}" 
-                for i, agent in enumerate(self.possible_agents)
+            self.vicon_object_names = {
+                agent: f"Crzayme_{i}" for i, agent in enumerate(self.possible_agents)
             }
             self.vicon_provider = ViconProvider()
 
@@ -228,19 +223,25 @@ class DroneEnvironment(ABC):
                 uri=self.drone_uris[self.RL_DRONE_NAME],
                 agent_id=self.RL_DRONE_NAME,
             )
-            print(f"[SARL ENV] RL drone simulator created with URI: {self.drone_uris[self.RL_DRONE_NAME]}")
+            print(
+                f"[SARL ENV] RL drone simulator created with URI: "
+                f"{self.drone_uris[self.RL_DRONE_NAME]}"
+            )
         else:
-            
+
             self.rl_drones[self.RL_DRONE_NAME] = Drone(
                 agent_id=self.RL_DRONE_NAME,
-                position_source= ViconPositionSource(
+                position_source=ViconPositionSource(
                     object_name=self.vicon_object_names[self.RL_DRONE_NAME],
                     provider=self.vicon_provider,
                     label=self.RL_DRONE_NAME,
                 ),
-                uri=self.drone_uris[self.RL_DRONE_NAME]
+                uri=self.drone_uris[self.RL_DRONE_NAME],
             )
-            print(f"[SARL ENV] RL drone physical instance created with agent ID: {self.RL_DRONE_NAME}")
+            print(
+                f"[SARL ENV] RL drone physical instance created "
+                f"with agent ID: {self.RL_DRONE_NAME}"
+            )
 
         for expert_agent in self.expert_drone_names:
             if self.use_simulator:
@@ -248,7 +249,10 @@ class DroneEnvironment(ABC):
                     uri=self.drone_uris[expert_agent],
                     agent_id=expert_agent,
                 )
-                print(f"[SARL ENV] Expert drone simulator created with URI: {self.drone_uris[expert_agent]}")
+                print(
+                    f"[SARL ENV] Expert drone simulator created with "
+                    f"URI: {self.drone_uris[expert_agent]}"
+                )
             else:
                 self.expert_drones[expert_agent] = Drone(
                     agent_id=expert_agent,
@@ -257,9 +261,12 @@ class DroneEnvironment(ABC):
                         provider=self.vicon_provider,
                         label=expert_agent,
                     ),
-                    uri=self.drone_uris[expert_agent]
+                    uri=self.drone_uris[expert_agent],
                 )
-                print(f"[SARL ENV] Expert drone physical instance created with agent ID: {expert_agent}")
+                print(
+                    f"[SARL ENV] Expert drone physical instance created "
+                    f"with agent ID: {expert_agent}"
+                )
 
     def _update_visual_boundaries(self) -> None:
         """
@@ -274,11 +281,7 @@ class DroneEnvironment(ABC):
         xy_limit = float(self.xy_limit)
         z_level = float(self.z_limit)
 
-        if (
-            hasattr(self, "boundary")
-            and isinstance(self.boundary, list)
-            and len(self.boundary) >= 4
-        ):
+        if self.boundary is not None and len(self.boundary) >= 4:
             xy_limit = float(self.boundary[0])
             z_level = float(self.boundary[2])
 
@@ -302,9 +305,7 @@ class DroneEnvironment(ABC):
             return
 
         if len(position) != 3:
-            raise ValueError(
-                "Target marker position must contain [x, y, z]."
-            )
+            raise ValueError("Target marker position must contain [x, y, z].")
 
         self.sim_manager.set_visual_target_marker_position(
             x=float(position[0]),
@@ -314,9 +315,9 @@ class DroneEnvironment(ABC):
         )
 
     def _reset_control_properties(
-            self,
-            drone: Drone | DroneSim,
-        ) -> None:
+        self,
+        drone: Drone | DroneSim,
+    ) -> None:
         drone.clear_command_queue()
         time.sleep(0.5)  # Allow any in-flight commands to be processed
         drone.last_error = {"x": 0.0, "y": 0.0, "z": 0.0}
@@ -331,13 +332,8 @@ class DroneEnvironment(ABC):
     ):
         """Reset all owned drones and task state."""
 
-        if (
-            not training
-            and not self._is_evaluating
-        ):
-            print(
-                "--- STARTING NEW EVALUATION BLOCK ---"
-            )
+        if not training and not self._is_evaluating:
+            print("--- STARTING NEW EVALUATION BLOCK ---")
             self._is_evaluating = True
 
         elif training:
@@ -359,15 +355,11 @@ class DroneEnvironment(ABC):
 
         self._update_visual_boundaries()
 
-        initial_position = (
-            self.rl_drone.get_position()
-        )
-        self.episode_positions.append(
-            initial_position
-        )
+        initial_position = self.rl_drone.get_position()
+        self.episode_positions.append(initial_position)
 
         return self._get_state()
-        
+
     def _reset_ekf(
         self,
         drone: DroneSim,
@@ -413,16 +405,13 @@ class DroneEnvironment(ABC):
             time.sleep(0.4)
 
         except Exception as exc:
-            print(
-                f"[{getattr(drone, 'agent_id', '?')}] "
-                f"EKF reset warning: {exc}"
-            )
+            print(f"[{getattr(drone, 'agent_id', '?')}] " f"EKF reset warning: {exc}")
 
     def _stop_drone_motion(
-            self,
-            drone: Drone | DroneSim,
-            reason: str = "",
-        ) -> None:
+        self,
+        drone: Drone | DroneSim,
+        reason: str = "",
+    ) -> None:
         """
         Cancel the drone's current commanded motion.
 
@@ -433,16 +422,10 @@ class DroneEnvironment(ABC):
             drone.set_velocity_vector(0.0, 0.0, 0.0)
 
             if reason:
-                print(
-                    "[SARL ENV] Zero velocity command sent: "
-                    f"{reason}"
-                )
+                print("[SARL ENV] Zero velocity command sent: " f"{reason}")
 
         except Exception as exc:
-            print(
-                "[SARL ENV] Failed to send zero velocity command: "
-                f"{exc}"
-            )
+            print("[SARL ENV] Failed to send zero velocity command: " f"{exc}")
 
     def _stop_all_drone_motion(
         self,
@@ -479,10 +462,7 @@ class DroneEnvironment(ABC):
             ]
 
             if len(reached_drones) == len(drones):
-                print(
-                    "[RESET] All drones reached their "
-                    "reset targets."
-                )
+                print("[RESET] All drones reached their " "reset targets.")
                 return True
 
             waiting_drones = [
@@ -505,10 +485,7 @@ class DroneEnvironment(ABC):
             if not drone.at_reset_position.is_set()
         ]
 
-        print(
-            "[RESET] Timeout waiting for drones: "
-            f"{timed_out_drones}"
-        )
+        print("[RESET] Timeout waiting for drones: " f"{timed_out_drones}")
 
         return False
 
@@ -549,9 +526,7 @@ class DroneEnvironment(ABC):
             drone.land()
 
         for drone_name, drone in drones:
-            drone.is_landed_event.wait(
-                timeout=10
-            )
+            drone.is_landed_event.wait(timeout=10)
 
             if drone.emergency_event.is_set():
                 drone.clear_emergency_event()
@@ -561,14 +536,10 @@ class DroneEnvironment(ABC):
                     time.sleep(0.2)
                     drone.start_boundary_monitoring()
 
-            reset_position = self.reset_positions[
-                drone_name
-            ]
+            reset_position = self.reset_positions[drone_name]
 
             self.sim_manager.set_drone_pose(
-                drone_id=self._get_sim_drone_id(
-                    drone_name
-                ),
+                drone_id=self._get_sim_drone_id(drone_name),
                 x=float(reset_position[0]),
                 y=float(reset_position[1]),
                 z=0.02,
@@ -578,9 +549,7 @@ class DroneEnvironment(ABC):
 
         for drone_name, drone in drones:
 
-            reset_position = self.reset_positions[
-                drone_name
-            ]
+            reset_position = self.reset_positions[drone_name]
 
             spawn_position = [
                 float(reset_position[0]),
@@ -596,47 +565,34 @@ class DroneEnvironment(ABC):
         time.sleep(0.5)
         for drone_name, drone in drones:
             if not drone.is_flying_event.is_set():
-                print(
-                    f"[{drone_name}] "
-                    "Taking off before reset..."
-                )
+                print(f"[{drone_name}] " "Taking off before reset...")
                 drone.take_off()
 
         time.sleep(1)
 
         for drone_name, drone in drones:
-            if drone.is_flying_event.wait(
-                timeout=15
-            ):
+            if drone.is_flying_event.wait(timeout=15):
                 continue
-            print(
-                f"[{drone_name}] Failed to confirm "
-                "take-off during reset."
-            )
+            print(f"[{drone_name}] Failed to confirm " "take-off during reset.")
 
         for drone_name, drone in drones:
-            reset_position = self.reset_positions[
-                drone_name
-            ]
+            reset_position = self.reset_positions[drone_name]
 
-            drone.set_target_position(
-                *reset_position
-            )
+            drone.set_target_position(*reset_position)
 
         time.sleep(0.1)
 
         for _, drone in drones:
             drone.start_position_control()
 
-        reset_success = (
-            self._wait_for_all_reset_events(
-                timeout=10,
-            )
+        reset_success = self._wait_for_all_reset_events(
+            timeout=10,
         )
 
         if not reset_success:
             print(
-                "[ERROR] Not all drones reached reset positions in time. Check drone states and reset position configuration."
+                "[ERROR] Not all drones reached reset positions in time. "
+                "Check drone states and reset position configuration."
             )
 
         time.sleep(1)
@@ -651,13 +607,10 @@ class DroneEnvironment(ABC):
             )
 
         for drone_name, drone in drones:
-            initial_position = (
-                drone.get_position()
-            )
+            initial_position = drone.get_position()
 
             print(
-                f"[{drone_name}] Current position "
-                f"after reset: {initial_position}"
+                f"[{drone_name}] Current position " f"after reset: {initial_position}"
             )
             print(
                 f"[{drone_name}] Desired reset target: "
@@ -671,18 +624,14 @@ class DroneEnvironment(ABC):
     ) -> None:
         """Reset all physical drones using ResetPlanner."""
 
-        self.reset_planner.validate_reset_positions(
-            self.reset_positions
-        )
+        self.reset_planner.validate_reset_positions(self.reset_positions)
 
         manual_interventions = 0
 
         while True:
             # Before taking off, ensure there is enough battery
             # headroom to safely complete the reset procedure.
-            self._change_batteries_if_needed(
-                margin=self.battery_reset_margin
-            )
+            self._change_batteries_if_needed(margin=self.battery_reset_margin)
 
             while True:
                 try:
@@ -690,29 +639,16 @@ class DroneEnvironment(ABC):
                     # battery servicing because all drones are grounded.
                     self._prepare_drones_for_physical_reset()
 
-                    outcome = self.reset_planner.execute(
-                        self.reset_positions
-                    )
+                    outcome = self.reset_planner.execute(self.reset_positions)
 
                     break
 
                 except ResetPlanner.InterventionRequired as escalation:
-                    print(
-                        "[RESET] Automatic reset requires "
-                        "manual intervention."
-                    )
-                    print(
-                        f"[RESET] Affected drones: "
-                        f"{escalation.agents}"
-                    )
-                    print(
-                        f"[RESET] Reason: "
-                        f"{escalation.reason}"
-                    )
+                    print("[RESET] Automatic reset requires " "manual intervention.")
+                    print(f"[RESET] Affected drones: " f"{escalation.agents}")
+                    print(f"[RESET] Reason: " f"{escalation.reason}")
 
-                    if not self._land_all_drones(
-                        label="RESET"
-                    ):
+                    if not self._land_all_drones(label="RESET"):
                         raise RuntimeError(
                             "Could not safely land all drones "
                             "for manual reset intervention."
@@ -725,21 +661,16 @@ class DroneEnvironment(ABC):
                             f"{escalation}"
                         ) from escalation
 
-                    if (
-                        manual_interventions
-                        >= self.max_manual_interventions
-                    ):
+                    if manual_interventions >= self.max_manual_interventions:
                         raise RuntimeError(
                             "Automatic reset still failed after "
                             f"{manual_interventions} manual "
                             "intervention(s): {escalation}"
                         ) from escalation
 
-                    recovery_success = (
-                        self._manual_reset_intervention(
-                            escalation.agents,
-                            escalation.reason,
-                        )
+                    recovery_success = self._manual_reset_intervention(
+                        escalation.agents,
+                        escalation.reason,
                     )
 
                     if not recovery_success:
@@ -759,24 +690,18 @@ class DroneEnvironment(ABC):
                         "Landing all drones."
                     )
 
-                    self._land_all_drones(
-                        label="RESET"
-                    )
+                    self._land_all_drones(label="RESET")
 
                     raise
 
             # Preserve any reset-slot assignment produced by
             # ResetPlanner before doing the episode battery check.
-            self.reset_positions = outcome[
-                "assigned_positions"
-            ]
+            self.reset_positions = outcome["assigned_positions"]
 
             # The reset may have taken significant time.
             # Check again before starting the episode.
-            battery_changed = (
-                self._change_batteries_if_needed(
-                    margin=self.battery_episode_margin
-                )
+            battery_changed = self._change_batteries_if_needed(
+                margin=self.battery_episode_margin
             )
 
             if battery_changed:
@@ -794,22 +719,11 @@ class DroneEnvironment(ABC):
             # No battery servicing was needed after the reset, so
             # the fleet is still at the positions produced by
             # ResetPlanner and is ready to begin the episode.
-            print(
-                f"Reset: "
-                f"{ResetPlanner.summarise(outcome)}"
-            )
+            print(f"Reset: " f"{ResetPlanner.summarise(outcome)}")
 
-            for drone_name, error in sorted(
-                outcome["final_errors"].items()
-            ):
-                if (
-                    error
-                    > self.reset_planner.hold_error * 2
-                ):
-                    print(
-                        f"{drone_name} started "
-                        f"{error:.3f}m from its reset slot"
-                    )
+            for drone_name, error in sorted(outcome["final_errors"].items()):
+                if error > self.reset_planner.hold_error * 2:
+                    print(f"{drone_name} started " f"{error:.3f}m from its reset slot")
 
             self._switch_to_velocity_control()
 
@@ -843,17 +757,13 @@ class DroneEnvironment(ABC):
         # Take off.
         for drone_name, drone in drones:
             if not drone.is_flying_event.is_set():
-                print(
-                    f"{drone_name} taking off before reset"
-                )
+                print(f"{drone_name} taking off before reset")
                 drone.take_off()
 
         grounded_drones = [
             drone_name
             for drone_name, drone in drones
-            if not drone.is_flying_event.wait(
-                timeout=15
-            )
+            if not drone.is_flying_event.wait(timeout=15)
         ]
 
         if grounded_drones:
@@ -864,9 +774,7 @@ class DroneEnvironment(ABC):
 
         # Hold each drone where it currently is.
         for _, drone in drones:
-            drone.set_target_position(
-                *drone.get_position()
-            )
+            drone.set_target_position(*drone.get_position())
 
         for _, drone in drones:
             drone.start_position_control()
@@ -903,27 +811,18 @@ class DroneEnvironment(ABC):
 
             except Exception as exc:
                 print(
-                    f"[{label}] Failed to request landing "
-                    f"for {drone_name}: {exc}"
+                    f"[{label}] Failed to request landing " f"for {drone_name}: {exc}"
                 )
                 success = False
 
         for drone_name, drone in drones:
             try:
-                if not drone.is_landed_event.wait(
-                    timeout=timeout
-                ):
-                    print(
-                        f"[{label}] {drone_name} "
-                        "did not confirm landing."
-                    )
+                if not drone.is_landed_event.wait(timeout=timeout):
+                    print(f"[{label}] {drone_name} " "did not confirm landing.")
                     success = False
 
             except Exception as exc:
-                print(
-                    f"[{label}] Error waiting for "
-                    f"{drone_name} to land: {exc}"
-                )
+                print(f"[{label}] Error waiting for " f"{drone_name} to land: {exc}")
                 success = False
 
         return success
@@ -937,9 +836,7 @@ class DroneEnvironment(ABC):
         before a physical service operation.
         """
 
-        if not self._land_all_drones(
-            label=label
-        ):
+        if not self._land_all_drones(label=label):
             return False
 
         drones = self._get_drone_mapping()
@@ -966,21 +863,14 @@ class DroneEnvironment(ABC):
                 continue
 
             try:
-                print(
-                    f"[{label}] Disarming {drone_name}..."
-                )
+                print(f"[{label}] Disarming {drone_name}...")
 
-                drone.cf.supervisor.send_arming_request(
-                    False
-                )
+                drone.cf.supervisor.send_arming_request(False)
 
                 drone.armed = False
 
             except Exception as exc:
-                print(
-                    f"[{label}] Failed to disarm "
-                    f"{drone_name}: {exc}"
-                )
+                print(f"[{label}] Failed to disarm " f"{drone_name}: {exc}")
                 return False
 
         return True
@@ -1016,27 +906,18 @@ class DroneEnvironment(ABC):
 
         drones = self._get_drone_mapping()
 
-        print(
-            f"\n[{label}] {prompt_text}"
-        )
+        print(f"\n[{label}] {prompt_text}")
 
         while True:
-            response = input(
-                f"{prompt_text} (y/n): "
-            ).strip().lower()
+            response = input(f"{prompt_text} (y/n): ").strip().lower()
 
             if response == "y":
                 break
 
             if response == "n":
-                raise RuntimeError(
-                    f"[{label}] Service aborted by user."
-                )
+                raise RuntimeError(f"[{label}] Service aborted by user.")
 
-            print(
-                f"[{label}] Invalid input. "
-                "Please enter 'y' or 'n'."
-            )
+            print(f"[{label}] Invalid input. " "Please enter 'y' or 'n'.")
 
         # Serviced drones may have physically moved.
         # Their previous position information is invalid.
@@ -1050,44 +931,28 @@ class DroneEnvironment(ABC):
         for drone_name in drones_to_service:
             drone = drones[drone_name]
 
-            print(
-                f"[{label}] Reinitialising "
-                f"{drone_name}..."
-            )
+            print(f"[{label}] Reinitialising " f"{drone_name}...")
 
             if not drone.initialise_crazyflie():
-                print(
-                    f"[{label}] Failed to reinitialise "
-                    f"{drone_name}."
-                )
+                print(f"[{label}] Failed to reinitialise " f"{drone_name}.")
                 return False
 
         # Require fresh position information.
         for drone_name in drones_to_service:
             drone = drones[drone_name]
 
-            deadline = (
-                time.monotonic()
-                + 5.0
-            )
+            deadline = time.monotonic() + 5.0
 
             while (
-                drone.last_position_update_time is None
-                and time.monotonic() < deadline
+                drone.last_position_update_time is None and time.monotonic() < deadline
             ):
                 time.sleep(0.05)
 
             if drone.last_position_update_time is None:
-                print(
-                    f"[{label}] No fresh position "
-                    f"received for {drone_name}."
-                )
+                print(f"[{label}] No fresh position " f"received for {drone_name}.")
                 return False
 
-            print(
-                f"[{label}] {drone_name} fresh position: "
-                f"{drone.get_position()}"
-            )
+            print(f"[{label}] {drone_name} fresh position: " f"{drone.get_position()}")
 
         # Serviced drones are armed by initialise_crazyflie().
         # Re-arm drones that remained connected.
@@ -1096,24 +961,16 @@ class DroneEnvironment(ABC):
                 continue
 
             try:
-                print(
-                    f"[{label}] Re-arming "
-                    f"{drone_name}..."
-                )
+                print(f"[{label}] Re-arming " f"{drone_name}...")
 
-                drone.cf.supervisor.send_arming_request(
-                    True
-                )
+                drone.cf.supervisor.send_arming_request(True)
 
                 time.sleep(1.0)
 
                 drone.armed = True
 
             except Exception as exc:
-                print(
-                    f"[{label}] Failed to re-arm "
-                    f"{drone_name}: {exc}"
-                )
+                print(f"[{label}] Failed to re-arm " f"{drone_name}: {exc}")
                 return False
 
         return True
@@ -1138,30 +995,18 @@ class DroneEnvironment(ABC):
         drones = self._get_drone_mapping()
 
         unknown_drones = [
-            drone_name
-            for drone_name in failed_drones
-            if drone_name not in drones
+            drone_name for drone_name in failed_drones if drone_name not in drones
         ]
 
         if unknown_drones:
-            print(
-                "[RESET RECOVERY] Unknown failed drones: "
-                f"{unknown_drones}"
-            )
+            print("[RESET RECOVERY] Unknown failed drones: " f"{unknown_drones}")
             return False
 
-        print(
-            "\n[RESET RECOVERY] Manual intervention required."
-        )
-        print(
-            "[RESET RECOVERY] Automatic reset failed for: "
-            f"{failed_drones}"
-        )
+        print("\n[RESET RECOVERY] Manual intervention required.")
+        print("[RESET RECOVERY] Automatic reset failed for: " f"{failed_drones}")
 
         if reason is not None:
-            print(
-                f"[RESET RECOVERY] Reason: {reason}"
-            )
+            print(f"[RESET RECOVERY] Reason: {reason}")
 
         for drone_name in failed_drones:
             print(
@@ -1169,34 +1014,21 @@ class DroneEnvironment(ABC):
                 f"{self.reset_positions[drone_name]}"
             )
 
-        if not self._land_all_drones_and_disable_safety(
-            label="RESET RECOVERY"
-        ):
+        if not self._land_all_drones_and_disable_safety(label="RESET RECOVERY"):
             return False
 
         # Only failed drones are powered down/disconnected.
         for drone_name in failed_drones:
             try:
-                drones[
-                    drone_name
-                ].pre_battery_change_cleanup()
+                drones[drone_name].pre_battery_change_cleanup()
 
-                print(
-                    f"[RESET RECOVERY] {drone_name} "
-                    "powered down."
-                )
+                print(f"[RESET RECOVERY] {drone_name} " "powered down.")
 
             except Exception as exc:
-                print(
-                    f"[RESET RECOVERY] Failed to prepare "
-                    f"{drone_name}: {exc}"
-                )
+                print(f"[RESET RECOVERY] Failed to prepare " f"{drone_name}: {exc}")
                 return False
 
-        print(
-            "\n[RESET RECOVERY] It is now safe to enter "
-            "the flight area."
-        )
+        print("\n[RESET RECOVERY] It is now safe to enter " "the flight area.")
 
         if not self._recover_service_drones(
             drones_to_service=failed_drones,
@@ -1206,6 +1038,7 @@ class DroneEnvironment(ABC):
                 "clear the flight area, then confirm when done."
             ),
         ):
+            self._land_all_drones_and_disable_safety(label="RESET RECOVERY")
             return False
 
         # Manual handling is finished. Reinstate monitoring before
@@ -1224,11 +1057,6 @@ class DroneEnvironment(ABC):
     def step(self, action):
         """Execute one step in the environment"""
 
-        # print(self.episode_positions)
-        # Check that the current drone battery is above the threshold
-        self.current_battery = self.drone.get_battery()
-        print(f"Battery level: {self.current_battery}")
-
         self.steps += 1
 
         if len(action) != 3:
@@ -1237,7 +1065,9 @@ class DroneEnvironment(ABC):
         # Denormalize action from [-1, 1] to [-max_velocity, max_velocity]
         vx = action[0] * self.max_velocity
         vy = action[1] * self.max_velocity
-        vz = action[2] * self.max_velocity_z # topples when moving up --> limit z velocity
+        vz = (
+            action[2] * self.max_velocity_z
+        )  # topples when moving up --> limit z velocity
         # vz = 0
 
         print("Normalised action aka velocity is:", [vx, vy, vz])
@@ -1360,34 +1190,26 @@ class DroneEnvironment(ABC):
                     drone.land()
 
                 except Exception as exc:
-                    print(
-                        f"[SARL ENV] Error while landing "
-                        f"{drone_name!r}: {exc}"
-                    )
+                    print(f"[SARL ENV] Error while landing " f"{drone_name!r}: {exc}")
 
             for drone_name, drone in drones:
-                        try:
-                            if not drone.is_landed_event.wait(
-                                timeout=30
-                            ):
-                                print(
-                                    f"[SARL ENV] {drone_name!r} failed "
-                                    "to confirm landing. Forcing shutdown."
-                                )
-                        except Exception as exc:
-                            print(
-                                f"[SARL ENV] Error while waiting for "
-                                f"{drone_name!r} to land: {exc}"
-                            )
+                try:
+                    if not drone.is_landed_event.wait(timeout=30):
+                        print(
+                            f"[SARL ENV] {drone_name!r} failed "
+                            "to confirm landing. Forcing shutdown."
+                        )
+                except Exception as exc:
+                    print(
+                        f"[SARL ENV] Error while waiting for "
+                        f"{drone_name!r} to land: {exc}"
+                    )
         finally:
             for drone_name, drone in drones:
                 try:
                     drone.stop()
                 except Exception as exc:
-                    print(
-                        f"[SARL ENV] Error while stopping "
-                        f"{drone_name!r}: {exc}"
-                    )
+                    print(f"[SARL ENV] Error while stopping " f"{drone_name!r}: {exc}")
 
             self.rl_drones.clear()
             self.expert_drones.clear()
@@ -1493,34 +1315,19 @@ class DroneEnvironment(ABC):
 
         drones = self._get_drone_mapping()
 
-        print(
-            "\n[BATTERY] Beginning battery change operation."
-        )
-        print(
-            "[BATTERY] Batteries requiring replacement: "
-            f"{low_battery_drones}"
-        )
-        print(
-            "[BATTERY] Required replacement voltage: "
-            f"{minimum_voltage:.2f} V"
-        )
+        print("\n[BATTERY] Beginning battery change operation.")
+        print("[BATTERY] Batteries requiring replacement: " f"{low_battery_drones}")
+        print("[BATTERY] Required replacement voltage: " f"{minimum_voltage:.2f} V")
 
-        if not self._land_all_drones_and_disable_safety(
-            label="BATTERY"
-        ):
+        if not self._land_all_drones_and_disable_safety(label="BATTERY"):
             return False
 
         # Only affected drones are powered down/disconnected.
         for drone_name in low_battery_drones:
             try:
-                drones[
-                    drone_name
-                ].pre_battery_change_cleanup()
+                drones[drone_name].pre_battery_change_cleanup()
 
-                print(
-                    f"[BATTERY] {drone_name} ready "
-                    "for battery replacement."
-                )
+                print(f"[BATTERY] {drone_name} ready " "for battery replacement.")
 
             except Exception as exc:
                 print(
@@ -1542,6 +1349,7 @@ class DroneEnvironment(ABC):
                 "drones and confirm when done."
             ),
         ):
+            self._land_all_drones_and_disable_safety(label="BATTERY")
             return False
 
         # Verify every replacement battery is suitable for the
@@ -1549,9 +1357,7 @@ class DroneEnvironment(ABC):
         for drone_name in low_battery_drones:
             drone = drones[drone_name]
 
-            if not drone.battery_ready_event.wait(
-                timeout=5.0
-            ):
+            if not drone.battery_ready_event.wait(timeout=5.0):
                 print(
                     f"[BATTERY] No battery telemetry received "
                     f"from {drone_name} after reconnect."
@@ -1560,10 +1366,7 @@ class DroneEnvironment(ABC):
 
             battery_level = drone.get_battery()
 
-            print(
-                f"[BATTERY] {drone_name} battery: "
-                f"{battery_level:.2f} V"
-            )
+            print(f"[BATTERY] {drone_name} battery: " f"{battery_level:.2f} V")
 
             if battery_level <= minimum_voltage:
                 print(
@@ -1575,21 +1378,17 @@ class DroneEnvironment(ABC):
                 # _recover_service_drones() has re-armed the fleet.
                 # Make sure everything is returned to a safe,
                 # landed/disarmed state before reporting failure.
-                self._land_all_drones_and_disable_safety(
-                    label="BATTERY"
-                )
+                self._land_all_drones_and_disable_safety(label="BATTERY")
 
                 return False
         for _, drone in drones.items():
             if not drone.safety_thread_active:
                 drone.start_boundary_monitoring()
 
-        print(
-            "[BATTERY] Battery change operation complete."
-        )
+        print("[BATTERY] Battery change operation complete.")
 
         return True
-    
+
     def _change_batteries_if_needed(
         self,
         margin: float = 0.0,
@@ -1614,19 +1413,13 @@ class DroneEnvironment(ABC):
         if self.use_simulator:
             return False
 
-        minimum_voltage = (
-            self.battery_threshold
-            + margin
-        )
+        minimum_voltage = self.battery_threshold + margin
 
-        battery_levels = (
-            self._get_battery_levels()
-        )
+        battery_levels = self._get_battery_levels()
 
         low_battery_drones = [
             drone_name
-            for drone_name, battery_level
-            in battery_levels.items()
+            for drone_name, battery_level in battery_levels.items()
             if battery_level <= minimum_voltage
         ]
 
@@ -1643,22 +1436,21 @@ class DroneEnvironment(ABC):
             low_battery_drones,
             minimum_voltage=minimum_voltage,
         ):
-            raise RuntimeError(
-                "Battery change failed for "
-                f"{low_battery_drones}"
-            )
+            raise RuntimeError("Battery change failed for " f"{low_battery_drones}")
 
         return True
 
     def restart(self):
         """
-        Restart the drone after it has landed or crashed, ensuring it is ready for flight. 
-        Does the necessary cleanup, waits for user confirmation, and does re-initialization steps before take-off.
-        This method is intended for use with physical drones and will not perform any actions if the drone is a simulation instance.
+        Restart the drone after it has landed or crashed, ensuring it is ready for
+        flight. Does the necessary cleanup, waits for user confirmation, and does
+        re-initialization steps before take-off. This method is intended for use
+        with physical drones and will not perform any actions if the drone is a
+        simulation instance.
         """
         if isinstance(self.drone, DroneSim):
-            return 
-        
+            return
+
         self.drone.pre_battery_change_cleanup()
         time.sleep(2)
 
@@ -1679,7 +1471,8 @@ class DroneEnvironment(ABC):
         self.drone.take_off()
         if not self.drone.is_flying_event.wait(timeout=15):
             print(
-                "[ERROR] Drone failed to confirm take-off. MANUAL INTERVENTION REQUIRED."
+                "[ERROR] Drone failed to confirm take-off. "
+                "MANUAL INTERVENTION REQUIRED."
             )
             return False  # Exit because the drone is in an uncertain state
         return True
@@ -1707,34 +1500,27 @@ class DroneEnvironment(ABC):
     @abstractmethod
     def _reset_task_state(self):
         """Reset task-specific state variables"""
-        pass
 
     @abstractmethod
     def _get_state(self) -> np.ndarray:
         """Get the current state representation"""
-        pass
 
     @abstractmethod
     def _calculate_reward(self, current_state: Dict[str, Any]) -> float:
         """Calculate reward based on current state"""
-        pass
 
     @abstractmethod
     def _check_if_done(self, current_state: Dict[str, Any]) -> bool:
         """Check if episode is done"""
-        pass
 
     @abstractmethod
     def _check_if_truncated(self, current_state: Dict[str, Any]) -> bool:
         """Check if episode should be truncated"""
-        pass
 
     @abstractmethod
     def _get_additional_info(self, current_state: Dict[str, Any]) -> Dict[str, Any]:
         """Get additional task-specific info for the info dict"""
-        pass
 
     @abstractmethod
     def _render_task_specific_info(self):
         """Render task-specific information during rendering"""
-        pass
