@@ -22,13 +22,14 @@ class Drone(DroneSetup):
         agent_id (str): Unique identifier for the drone instance.
         boundaries (dict[str, float] | None): Optional dictionary defining the safe operational boundaries for the drone. If not provided, default boundaries will be used. (e.g. {"x": 2.5, "y": 2.5, "z_min": 0.1, "z_max": 3.0})
         uri (str | None): The URI for the Crazyflie drone.
+        position_source (PositionSource): The source for obtaining the drone's position.
     """
     def __init__(
             self, 
+            position_source: PositionSource,
             agent_id: str = "Drone",
             boundaries: dict[str, float] | None = None,
-            uri: str | None = None,
-            position_source: PositionSource | None = None,
+            uri: str = "radio://0/100/2M/E7E7E7E700",
         ) -> None:
         # Use either legacy_vicon or source_vicon
         # source_vicon is the new implementation that abstracts position source 
@@ -39,11 +40,6 @@ class Drone(DroneSetup):
             self.vicon = vi()
         elif self.position_tracking_mode == "source_vicon":
             self.vicon = None
-            if position_source is None:
-                position_source = ViconPositionSource(
-                    object_name=f"Crzayme_{agent_id}",
-                    label=agent_id,
-                )
         else:
             raise ValueError(
                 f"Invalid position_tracking_mode: {self.position_tracking_mode}. "
@@ -59,14 +55,9 @@ class Drone(DroneSetup):
             uri=uri, 
             position_source=position_source
         )
-        # Drone Properties
-        self.URI = uri_helper.uri_from_env(
-            default="radio://0/100/2M/E7E7E7E7E7"
-        )  # changed radio channel in 22/9
 
-        self.ps = PowerSwitch(
-            "radio://0/100/2M/E7E7E7E7E7"
-        )  # changed radio channel in 22/9
+        # Drone Properties
+        self.ps = PowerSwitch(self.URI)
 
         self.agent_id = agent_id
 
@@ -111,6 +102,7 @@ class Drone(DroneSetup):
 
                         # Store position with timestamp for velocity calculation
                         self.position_history.append((current_time, current_pos))
+                        self.last_position_update_time = current_time
 
                         # Calculate velocity at 20Hz (every 0.05s)
                         if (current_time - self.last_velocity_calculation_time) >= self.velocity_update_rate:

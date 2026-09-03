@@ -407,12 +407,6 @@ class MarlMoveToTargets2D(MarlDroneEnvironment):
         """
         time_limit_reached = self.steps >= self.episode_length
 
-        # TODO: Add proper handling of low battery state such as landing for battery swap
-        any_low_battery = any(
-            state_dicts[agent]["battery"] < self.battery_threshold
-            for agent in self.agents
-        )
-
         z_violation_agents = self._agents_with_z_boundary_violation(state_dicts)
         any_z_violation = len(z_violation_agents) > 0
 
@@ -424,7 +418,6 @@ class MarlMoveToTargets2D(MarlDroneEnvironment):
 
         truncate_all = (
             time_limit_reached
-            or any_low_battery
             or any_z_violation
         )
 
@@ -442,10 +435,9 @@ class MarlMoveToTargets2D(MarlDroneEnvironment):
         new_positions: dict[str, list[float]] | None = None,
         action_filter_infos: dict[str, dict[str, Any]] | None = None,
     ) -> dict[str, dict[str, Any]]:
+
         infos = {}
 
-
-        # TODO: Check this function in SARL and see what .get_position() is
         if state_dicts is None:
             positions = {
                 agent: self.drones[agent].get_position()

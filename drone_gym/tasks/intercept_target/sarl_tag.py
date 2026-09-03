@@ -1153,12 +1153,10 @@ class SarlTag(DroneEnvironment):
             )
         )
 
-        # Match the base _iter_drones() order:
-        # rl_drone, then interceptor_0.
-        self.reset_positions = [
-            list(self.runner_spawn),
-            list(interceptor_spawn),
-        ]
+        self.reset_positions = {
+            self.RL_DRONE_NAME: list(self.runner_spawn),
+            self.INTERCEPTOR_NAME: list(interceptor_spawn),
+        }
 
         # Keep specialised recovery before the general reset.
         #
