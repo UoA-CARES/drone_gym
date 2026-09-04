@@ -124,22 +124,13 @@ class DroneSim(DroneSetup):
             self.cf.param.set_value("kalman.resetEstimation", "1")
             time.sleep(0.5)
 
-            # Arm the drone. Prefer the modern Supervisor API, but fall back to the
-            # legacy platform request on cflib builds without it (e.g. the
-            # SITL-compatible fork, which predates the Supervisor class).
-            print(f"[{self.agent_id}] Arming Crazyflie...")
-            supervisor = getattr(self.cf, "supervisor", None)
-            if supervisor is not None:
-                supervisor.send_arming_request(True)
-            else:
-                self.cf.platform.send_arming_request(True)
+            self.cf.supervisor.send_arming_request(True)
             time.sleep(1.5)
             self.armed = True
             print(f"[{self.agent_id}] Crazyflie armed.")
 
             self._setup_battery_logging()
             self._setup_velocity_logging()
-            # self.cf.disconnected.add_callback(self._disconnected)
 
             # Signal that hardware is ready
             self.hardware_ready_event.set()
@@ -167,17 +158,6 @@ class DroneSim(DroneSetup):
         print(f"[{self.agent_id}] Stopped")
         self._signal_stop_to_all_threads()
         self._join_all_threads()
-
-        # Explicitly close the cflib link before dropping the reference below.
-        # Without this, cflib's own internal driver thread for the connection
-        # has nothing telling it to stop, and — being non-daemon — can block
-        # the whole process from exiting even after training has finished.
-        try:
-            if getattr(self, "scf", None) is not None:
-                self.scf.close_link()
-        except Exception as exc:
-            print(f"[{self.agent_id}] close_link error during stop: {exc}")
-
         self._reset_shared_state()
         self._final_cleanup()
 
