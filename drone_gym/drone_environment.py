@@ -580,19 +580,14 @@ class DroneEnvironment(ABC):
 
                         drone.take_off()
 
-                time.sleep(1.0)
-
-                grounded_drones = [
-                    drone_name
-                    for drone_name, drone in drones
-                    if not drone.is_flying_event.wait(timeout=15)
-                ]
-
-                if grounded_drones:
-                    raise RuntimeError(
-                        "Drones failed to confirm take-off "
-                        f"during sim reset: {grounded_drones}"
-                    )
+                for drone_name, drone in drones:
+                    if not drone.wait_for_takeoff_confirmation(
+                        minimum_height=0.2,
+                        timeout=10.0,
+                    ):
+                        raise RuntimeError(
+                            f"{drone_name} failed functional " "take-off verification."
+                        )
 
                 # Move all drones to their actual reset positions.
                 for drone_name, drone in drones:
@@ -640,7 +635,7 @@ class DroneEnvironment(ABC):
                 raise RuntimeError("Drones unsafe after reset: " f"{unsafe_drones}")
 
             except Exception as exc:
-                if attempt >= self.max_sim_reset_attempts:
+                if attempt > self.max_sim_reset_attempts:
                     raise RuntimeError(
                         "Sim reset failed after "
                         f"{self.max_sim_reset_attempts} "
@@ -666,8 +661,7 @@ class DroneEnvironment(ABC):
         for drone_name, drone in self._iter_drones():
             if drone.emergency_event.is_set():
                 unsafe.append(drone_name)
-
-            elif isinstance(drone, DroneSim) and drone.fatal_error_event.is_set():
+            if isinstance(drone, DroneSim) and drone.fatal_error_event.is_set():
                 unsafe.append(drone_name)
 
         return unsafe

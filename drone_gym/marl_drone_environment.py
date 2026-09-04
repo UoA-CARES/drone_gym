@@ -893,19 +893,16 @@ class MarlDroneEnvironment(ParallelEnv):
 
                         drone.take_off()
 
-                time.sleep(1.0)
+                for agent in self.possible_agents:
+                    drone = self.drones[agent]
 
-                grounded = [
-                    agent
-                    for agent in self.possible_agents
-                    if not self.drones[agent].is_flying_event.wait(timeout=15)
-                ]
-
-                if grounded:
-                    raise RuntimeError(
-                        "Drones failed to confirm take-off "
-                        f"during sim reset: {grounded}"
-                    )
+                    if not drone.wait_for_takeoff_confirmation(
+                        minimum_height=0.2,
+                        timeout=10.0,
+                    ):
+                        raise RuntimeError(
+                            f"{agent} failed functional " "take-off verification."
+                        )
 
                 # Send all drones to their actual reset positions.
                 for agent in self.possible_agents:
@@ -954,7 +951,7 @@ class MarlDroneEnvironment(ParallelEnv):
                 raise RuntimeError("Drones unsafe after reset: " f"{unsafe}")
 
             except Exception as exc:
-                if attempt >= self.max_sim_reset_attempts:
+                if attempt > self.max_sim_reset_attempts:
                     raise RuntimeError(
                         "Sim reset failed after "
                         f"{self.max_sim_reset_attempts} attempts."
@@ -1085,7 +1082,7 @@ class MarlDroneEnvironment(ParallelEnv):
 
             if drone.emergency_event.is_set():
                 unsafe.append(agent)
-            elif isinstance(drone, DroneSim) and drone.fatal_error_event.is_set():
+            if isinstance(drone, DroneSim) and drone.fatal_error_event.is_set():
                 unsafe.append(agent)
 
         return unsafe

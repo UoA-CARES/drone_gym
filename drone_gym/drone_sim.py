@@ -362,6 +362,57 @@ class DroneSim(DroneSetup):
                 f"{state_name}: {previous_value} -> {current_value}"
             )
 
+    def wait_for_takeoff_confirmation(
+        self,
+        minimum_height: float = 0.2,
+        timeout: float = 10.0,
+    ) -> bool:
+        """
+        Confirm that the simulated drone is airborne using fresh
+        position telemetry.
+        """
+
+        check_started = time.monotonic()
+        deadline = check_started + timeout
+
+        while time.monotonic() < deadline:
+            with self.position_lock:
+                last_update = self.last_position_update_time
+                current_z = self.position["z"]
+
+            fresh_position = last_update is not None and last_update >= check_started
+
+            if fresh_position and current_z >= minimum_height:
+                print(
+                    f"[{self.agent_id}] Take-off confirmed "
+                    f"from fresh telemetry at z={current_z:.2f} m."
+                )
+                return True
+
+            time.sleep(0.05)
+
+        with self.position_lock:
+            last_update = self.last_position_update_time
+            current_z = self.position["z"]
+
+        if last_update is None:
+            position_age = "no position received"
+        else:
+            position_age = f"{time.monotonic() - last_update:.2f}s old"
+
+        print(
+            f"[{self.agent_id}] FATAL: Take-off could not be "
+            f"confirmed. z={current_z:.2f} m, "
+            f"position telemetry={position_age}."
+        )
+
+        with self.fatal_error_lock:
+            self.fatal_error_event.set()
+
+        self.emergency_event.set()
+
+        return False
+
     @staticmethod
     def _is_supervisor_bit_set(
         bitfield: int,
