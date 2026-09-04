@@ -10,7 +10,6 @@ import cv2
 from matplotlib.markers import MarkerStyle
 
 from drone_gym.drone_environment import DroneEnvironment
-from drone_gym.drone_sim import DroneSim
 from drone_gym.agents.bodies import CrazyflieBody
 from drone_gym.agents.policies import CallablePolicy
 from drone_gym.agents.sim_agent import SimAgent
@@ -155,11 +154,13 @@ class SarlTag(DroneEnvironment):
         # Speed only ever increases, and stalls automatically if the runner
         # stops improving.
         self.curriculum_enabled = True
-        self.interceptor_speed_min = 0.10                          # starting speed (m/s) — ~71% of the ceiling
-        self.interceptor_speed_max = self.interceptor_max_velocity  # ceiling = the ctor value
-        self.curriculum_window = 50               # episodes judged per difficulty level
-        self.curriculum_success_threshold = 0.6   # runner success rate that earns a bump
-        self.curriculum_speed_step = 0.01         # speed added per bump (m/s)
+        self.interceptor_speed_min = 0.10  # starting speed (m/s) — ~71% of the ceiling
+        self.interceptor_speed_max = (
+            self.interceptor_max_velocity
+        )  # ceiling = the ctor value
+        self.curriculum_window = 50  # episodes judged per difficulty level
+        self.curriculum_success_threshold = 0.6  # runner success rate that earns a bump
+        self.curriculum_speed_step = 0.01  # speed added per bump (m/s)
         if self.curriculum_enabled:
             self.interceptor_max_velocity = self.interceptor_speed_min
         self._recent_runner_outcomes = deque(maxlen=self.curriculum_window)
@@ -180,8 +181,10 @@ class SarlTag(DroneEnvironment):
         self.boundary_brake_margin = 0.25  # xy: start braking this far inside xy_limit
         self.z_brake_margin = 0.10  # z: start braking this far inside the z band
 
-        self.capture_threshold = 0.20      # metres (3D) — interceptor "catches" the runner (no real collision)
-        self.goal_threshold = 0.20         # metres (3D) — runner has reached the goal
+        self.capture_threshold = (
+            0.20  # metres (3D) — interceptor "catches" the runner (no real collision)
+        )
+        self.goal_threshold = 0.20  # metres (3D) — runner has reached the goal
 
         self.max_xy_range = self.xy_limit * 2
         self.max_z_range = self.z_max - self.z_min
@@ -392,7 +395,10 @@ class SarlTag(DroneEnvironment):
         limited = list(self._prev_interceptor_velocity)
         for i, target in enumerate((vx, vy, vz)):
             delta = target - limited[i]
-            delta = max(-self.interceptor_max_velocity_delta, min(self.interceptor_max_velocity_delta, delta))
+            delta = max(
+                -self.interceptor_max_velocity_delta,
+                min(self.interceptor_max_velocity_delta, delta),
+            )
             limited[i] = limited[i] + delta
         self._prev_interceptor_velocity = limited
 
@@ -590,6 +596,8 @@ class SarlTag(DroneEnvironment):
         self,
     ) -> None:
         """Apply SarlTag-specific safety limits to the interceptor drone."""
+        if not self.use_simulator:
+            return
 
         interceptor_drone = self.expert_drones[self.INTERCEPTOR_NAME]
 
@@ -1165,21 +1173,21 @@ class SarlTag(DroneEnvironment):
     def _get_additional_info(self, current_state: Dict[str, Any]) -> Dict[str, Any]:
         position = current_state["position"]
         info = {
-            'goal_position': self.goal_position[:],
-            'interceptor_position': self.interceptor_position[:],
-            'distance_to_goal': self._distance_to_target(position),
-            'distance_to_interceptor': self._distance_to_interceptor(position),
-            'caught': self.caught,
-            'reached_goal': self.reached_goal,
-            'success': self.reached_goal,
+            "goal_position": self.goal_position[:],
+            "interceptor_position": self.interceptor_position[:],
+            "distance_to_goal": self._distance_to_target(position),
+            "distance_to_interceptor": self._distance_to_interceptor(position),
+            "caught": self.caught,
+            "reached_goal": self.reached_goal,
+            "success": self.reached_goal,
             # Per-drone outcome flags (1/0), picked up automatically by the
             # generic success-rate / time-to-outcome plots (any "*_success"
             # column). Runner succeeds by reaching the goal; the interceptor
             # succeeds by catching the runner first.
-            'runner_success': int(self.reached_goal),
-            'interceptor_success': int(self.caught),
-            'out_of_bounds': self._is_out_of_task_bounds(position),
-            'description': "3D navigate-to-goal under interception — RL runner vs expert interceptor",
+            "runner_success": int(self.reached_goal),
+            "interceptor_success": int(self.caught),
+            "out_of_bounds": self._is_out_of_task_bounds(position),
+            "description": "3D navigate-to-goal under interception — RL runner vs expert interceptor",
         }
         if self._is_evaluating:
             info["success_count"] = self.successful_episodes_count
