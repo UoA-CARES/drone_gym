@@ -1,18 +1,17 @@
-import numpy as np
+import io
 import math
 import time
 import threading
 from collections import deque
 from typing import Dict, List, Any, Literal
+import numpy as np
+import matplotlib.pyplot as plt
+import cv2
 
 from drone_gym.drone_environment import DroneEnvironment
-from drone_gym.drone_sim import DroneSim
 from drone_gym.agents.bodies import CrazyflieBody
 from drone_gym.agents.policies import CallablePolicy
 from drone_gym.agents.sim_agent import SimAgent
-import matplotlib.pyplot as plt
-import io
-import cv2
 
 
 class SarlEvasion(DroneEnvironment):
@@ -43,11 +42,18 @@ class SarlEvasion(DroneEnvironment):
 
         ./sitl_multiagent_square.sh -m crazyflie -n 2   # 19850 (runner), 19851 (interceptor)
     """
+
     INTERCEPTOR_NAME = "interceptor_0"
 
-    def __init__(self, use_simulator: Literal[0, 1], max_velocity: float = 0.25, step_time: float = 0.5,
-                 exploration_steps: int = 1000, episode_length: int = 160,
-                 interceptor_max_velocity: float = 0.20):
+    def __init__(
+        self,
+        use_simulator: Literal[0, 1],
+        max_velocity: float = 0.25,
+        step_time: float = 0.5,
+        exploration_steps: int = 1000,
+        episode_length: int = 160,
+        interceptor_max_velocity: float = 0.20,
+    ):
         super().__init__(
             use_simulator=use_simulator,
             max_velocity=max_velocity,
@@ -81,13 +87,17 @@ class SarlEvasion(DroneEnvironment):
         # firmware kill boundary (|z| 2.25).
         self.z_min = 0.6
         self.z_max = 1.4
-        self.fixed_z = 1.0                  # centre of the z band (default altitude)
+        self.fixed_z = 1.0  # centre of the z band (default altitude)
         # Runner spawn altitude — resampled every episode. Kept a notch inside the
         # z band so vertical variety stays reachable at max_velocity_z within the
         # episode length.
         self.runner_spawn_z_range = (0.8, 1.2)
-        self.spawn_margin = 0.5             # keep spawns clear of the xy wall (PID overshoot safety)
-        self.z_margin = 0.1                 # keep interceptor spawn off the z floor/ceiling (tight band)
+        self.spawn_margin = (
+            0.5  # keep spawns clear of the xy wall (PID overshoot safety)
+        )
+        self.z_margin = (
+            0.1  # keep interceptor spawn off the z floor/ceiling (tight band)
+        )
         self.out_of_bounds_tolerance = 0.05  # small grace for PID overshoot at the wall
 
         # The runner always spawns at the xy centre (0, 0) — lateral diversity
@@ -107,10 +117,14 @@ class SarlEvasion(DroneEnvironment):
         # is on in earnest.
         self.interceptor_spawn_min_distance = 1.0
         self.interceptor_spawn_max_distance = 2.0
-        self.interceptor_z_jitter = 0.25     # vertical variety for the interceptor spawn
+        self.interceptor_z_jitter = 0.25  # vertical variety for the interceptor spawn
 
-        self.interceptor_max_velocity = interceptor_max_velocity     # > max_velocity so capture is feasible
-        self.interceptor_max_velocity_z = 0.030      # gentle vertical cap for the pursuer too
+        self.interceptor_max_velocity = (
+            interceptor_max_velocity  # > max_velocity so capture is feasible
+        )
+        self.interceptor_max_velocity_z = (
+            0.030  # gentle vertical cap for the pursuer too
+        )
 
         # --- Interceptor speed curriculum (performance-gated ratchet) --------
         # Start the interceptor fast enough to be a real threat from episode 1,
@@ -118,11 +132,15 @@ class SarlEvasion(DroneEnvironment):
         # survival) rate climbs. Speed only ever increases, and stalls
         # automatically if the runner stops improving.
         self.curriculum_enabled = True
-        self.interceptor_speed_min = 0.15                          # starting speed (m/s) — 75% of the ceiling
-        self.interceptor_speed_max = self.interceptor_max_velocity  # ceiling = the ctor value
-        self.curriculum_window = 50               # episodes judged per difficulty level
-        self.curriculum_success_threshold = 0.6   # runner survival rate that earns a bump
-        self.curriculum_speed_step = 0.01         # speed added per bump (m/s)
+        self.interceptor_speed_min = 0.15  # starting speed (m/s) — 75% of the ceiling
+        self.interceptor_speed_max = (
+            self.interceptor_max_velocity
+        )  # ceiling = the ctor value
+        self.curriculum_window = 50  # episodes judged per difficulty level
+        self.curriculum_success_threshold = (
+            0.6  # runner survival rate that earns a bump
+        )
+        self.curriculum_speed_step = 0.01  # speed added per bump (m/s)
         if self.curriculum_enabled:
             self.interceptor_max_velocity = self.interceptor_speed_min
         self._recent_runner_outcomes = deque(maxlen=self.curriculum_window)
@@ -140,14 +158,18 @@ class SarlEvasion(DroneEnvironment):
         # Brake margins: the per-step clamp zeroes a velocity component before the
         # actual boundary, leaving room for the drone to coast to a stop instead of
         # sailing through the wall/ceiling on momentum (the out-of-bounds loop).
-        self.boundary_brake_margin = 0.25   # xy: start braking this far inside xy_limit
-        self.z_brake_margin = 0.10          # z: start braking this far inside the z band
+        self.boundary_brake_margin = 0.25  # xy: start braking this far inside xy_limit
+        self.z_brake_margin = 0.10  # z: start braking this far inside the z band
 
-        self.capture_threshold = 0.20      # metres (3D) — interceptor "catches" the runner (no real collision)
+        self.capture_threshold = (
+            0.20  # metres (3D) — interceptor "catches" the runner (no real collision)
+        )
 
         self.max_xy_range = self.xy_limit * 2
         self.max_z_range = self.z_max - self.z_min
-        self.max_distance = math.sqrt(self.max_xy_range ** 2 + self.max_xy_range ** 2 + self.max_z_range ** 2)
+        self.max_distance = math.sqrt(
+            self.max_xy_range**2 + self.max_xy_range**2 + self.max_z_range**2
+        )
         self.time_tolerance = 0.15
 
         # boundary = (xy, xy, z_low, z_high) — used by the base visual boundary + step clamp
@@ -160,17 +182,23 @@ class SarlEvasion(DroneEnvironment):
         # No goal-progress term: the objective is pure survival, so the runner is
         # rewarded for every step it stays alive, shaped by staying clear of the
         # interceptor, with a bonus for surviving the whole episode.
-        self.survival_reward = 1.0             # reward for each step survived
-        self.full_evasion_bonus = 100.0        # bonus for surviving the full episode uncaught
-        self.intercepted_penalty = -100.0      # caught by the interceptor — clearly the worst
+        self.survival_reward = 1.0  # reward for each step survived
+        self.full_evasion_bonus = 100.0  # bonus for surviving the full episode uncaught
+        self.intercepted_penalty = (
+            -100.0
+        )  # caught by the interceptor — clearly the worst
         self.out_of_bounds_penalty = -100.0
-        self.danger_radius = 0.6               # within this of the interceptor, apply evasion shaping
-        self.danger_penalty = 5.0              # max shaping penalty at zero separation
+        self.danger_radius = (
+            0.6  # within this of the interceptor, apply evasion shaping
+        )
+        self.danger_penalty = 5.0  # max shaping penalty at zero separation
 
         # --- Task state ------------------------------------------------------
         self.done = False
-        self.caught = False                  # True when the interceptor caught the runner
-        self.survived_full_episode = False   # True when the runner evaded for the whole episode
+        self.caught = False  # True when the interceptor caught the runner
+        self.survived_full_episode = (
+            False  # True when the runner evaded for the whole episode
+        )
 
         self.interceptor_position: List[float] = [0.0, 0.0, self.fixed_z]
         self.interceptor_velocity: List[float] = [0.0, 0.0, 0.0]
@@ -205,9 +233,7 @@ class SarlEvasion(DroneEnvironment):
         # boundaries uses the post-#28 z_min/z_max schema (the boundary monitor now
         # checks z_min <= z <= z_max, not abs(z) <= z). A bare "z" key here would
         # KeyError in the interceptor's boundary thread.
-        interceptor_drone = getattr(self.interceptor.body, "drone", None)
-        if interceptor_drone is not None and hasattr(interceptor_drone, "boundaries"):
-            interceptor_drone.boundaries = {"x": 4, "y": 4, "z_min": -0.5, "z_max": 3.0}
+        self._configure_interceptor_drone()
 
         # --- Collision safety monitor ----------------------------------------
         # The RL step is 0.5 s, but a faster interceptor can close >0.25 m within
@@ -288,11 +314,17 @@ class SarlEvasion(DroneEnvironment):
             if d < 1e-6:
                 break
             t_go = d / self.interceptor_max_velocity
-            pip = np.array([
-                float(np.clip(target_pos[0] + runner_vel[0] * t_go, -soft, soft)),
-                float(np.clip(target_pos[1] + runner_vel[1] * t_go, -soft, soft)),
-                float(np.clip(target_pos[2] + runner_vel[2] * t_go, self.z_min, self.z_max)),
-            ])
+            pip = np.array(
+                [
+                    float(np.clip(target_pos[0] + runner_vel[0] * t_go, -soft, soft)),
+                    float(np.clip(target_pos[1] + runner_vel[1] * t_go, -soft, soft)),
+                    float(
+                        np.clip(
+                            target_pos[2] + runner_vel[2] * t_go, self.z_min, self.z_max
+                        )
+                    ),
+                ]
+            )
 
         aim = pip - pos
         aim_dist = float(np.linalg.norm(aim))
@@ -301,7 +333,11 @@ class SarlEvasion(DroneEnvironment):
 
         scale = self.interceptor_max_velocity / aim_dist
         vx, vy, vz = scale * aim[0], scale * aim[1], scale * aim[2]
-        vz = float(np.clip(vz, -self.interceptor_max_velocity_z, self.interceptor_max_velocity_z))
+        vz = float(
+            np.clip(
+                vz, -self.interceptor_max_velocity_z, self.interceptor_max_velocity_z
+            )
+        )
 
         if (pos[0] <= -soft and vx < 0) or (pos[0] >= soft and vx > 0):
             vx = 0.0
@@ -315,7 +351,10 @@ class SarlEvasion(DroneEnvironment):
         limited = list(self._prev_interceptor_velocity)
         for i, target in enumerate((vx, vy, vz)):
             delta = target - limited[i]
-            delta = max(-self.interceptor_max_velocity_delta, min(self.interceptor_max_velocity_delta, delta))
+            delta = max(
+                -self.interceptor_max_velocity_delta,
+                min(self.interceptor_max_velocity_delta, delta),
+            )
             limited[i] = limited[i] + delta
         self._prev_interceptor_velocity = limited
 
@@ -337,25 +376,36 @@ class SarlEvasion(DroneEnvironment):
         z_lo, z_hi = self.z_min + self.z_margin, self.z_max - self.z_margin
 
         for _ in range(400):
-            distance = float(np.random.uniform(
-                self.interceptor_spawn_min_distance,
-                self.interceptor_spawn_max_distance,
-            ))
+            distance = float(
+                np.random.uniform(
+                    self.interceptor_spawn_min_distance,
+                    self.interceptor_spawn_max_distance,
+                )
+            )
             azimuth = float(np.random.uniform(0, 2 * math.pi))
             ix = runner_pos[0] + distance * math.cos(azimuth)
             iy = runner_pos[1] + distance * math.sin(azimuth)
-            iz = float(np.clip(
-                runner_pos[2] + float(np.random.uniform(-self.interceptor_z_jitter,
-                                                          self.interceptor_z_jitter)),
-                z_lo, z_hi,
-            ))
+            iz = float(
+                np.clip(
+                    runner_pos[2]
+                    + float(
+                        np.random.uniform(
+                            -self.interceptor_z_jitter, self.interceptor_z_jitter
+                        )
+                    ),
+                    z_lo,
+                    z_hi,
+                )
+            )
 
             if abs(ix) <= xy and abs(iy) <= xy:
                 return [ix, iy, iz]
 
         # Last resort: due east at the minimum clearance distance.
         return [
-            float(np.clip(runner_pos[0] + self.interceptor_spawn_min_distance, -xy, xy)),
+            float(
+                np.clip(runner_pos[0] + self.interceptor_spawn_min_distance, -xy, xy)
+            ),
             runner_pos[1],
             float(np.clip(runner_pos[2], z_lo, z_hi)),
         ]
@@ -365,9 +415,11 @@ class SarlEvasion(DroneEnvironment):
     # ------------------------------------------------------------------
 
     def _distance_to_interceptor(self, position: List[float]) -> float:
-        return math.sqrt((position[0] - self.interceptor_position[0]) ** 2 +
-                         (position[1] - self.interceptor_position[1]) ** 2 +
-                         (position[2] - self.interceptor_position[2]) ** 2)
+        return math.sqrt(
+            (position[0] - self.interceptor_position[0]) ** 2
+            + (position[1] - self.interceptor_position[1]) ** 2
+            + (position[2] - self.interceptor_position[2]) ** 2
+        )
 
     def _is_out_of_task_bounds(self, position: List[float]) -> bool:
         """Out of the task's 3D boundary (with a small grace for PID overshoot).
@@ -376,10 +428,34 @@ class SarlEvasion(DroneEnvironment):
         in_boundaries flag, which is computed against a different internal limit.
         """
         tol = self.out_of_bounds_tolerance
-        return (abs(position[0]) > self.xy_limit + tol or
-                abs(position[1]) > self.xy_limit + tol or
-                position[2] < self.z_min - tol or
-                position[2] > self.z_max + tol)
+        return (
+            abs(position[0]) > self.xy_limit + tol
+            or abs(position[1]) > self.xy_limit + tol
+            or position[2] < self.z_min - tol
+            or position[2] > self.z_max + tol
+        )
+
+    def _drones_with_z_boundary_violation(
+        self,
+        current_state: Dict[str, Any],
+    ) -> list[str]:
+        """
+        Return owned drones whose altitude is outside
+        the task's allowed z range.
+        """
+
+        violating_drones = []
+
+        for drone_name, drone in self._iter_drones():
+            if drone_name == self.RL_DRONE_NAME:
+                position = current_state["position"]
+            else:
+                position = drone.get_position()
+
+            if not (self.z_min <= position[2] <= self.z_max):
+                violating_drones.append(drone_name)
+
+        return violating_drones
 
     # ------------------------------------------------------------------
     # Interceptor lifecycle / health (EKF blow-up / fell-to-the-floor recovery)
@@ -403,35 +479,6 @@ class SarlEvasion(DroneEnvironment):
         ]
         self.interceptor.act({"runner_pos": runner_pos, "runner_vel": runner_vel})
 
-    INTERCEPTOR_DEAD_XY = 2.4
-
-    def _interceptor_is_dead(self) -> bool:
-        """Detect an interceptor whose EKF blew up, that has fallen, or that has
-        drifted clean out of the arena.
-
-        Detection is POSITION-based only, deliberately. We do NOT key off the
-        drone's emergency_event: that flag is set by transient connection
-        blips during a recovery/reconnect, and reacting to it triggers yet another
-        recovery — a feedback loop that turns one death into an unrecoverable
-        restart storm across both drones. A real out-of-arena divergence shows up
-        as a bad POSITION, which is unambiguous and self-clearing once recovery
-        repositions the drone.
-
-        Guard against the (0,0,0) placeholder a drone reports mid-recovery: it is
-        NOT a real position.
-        """
-        try:
-            pos = self.interceptor.body.get_position()
-        except Exception:
-            return False
-        if pos[0] == 0.0 and pos[1] == 0.0 and pos[2] == 0.0:
-            return False  # placeholder during (re)init — not a real reading
-        if self._drone_is_dead(pos):
-            return True
-        if abs(pos[0]) > self.INTERCEPTOR_DEAD_XY or abs(pos[1]) > self.INTERCEPTOR_DEAD_XY:
-            return True
-        return False
-
     # ------------------------------------------------------------------
     # Fatal sim-link recovery (dead UDP link / firmware supervisor crash)
     #
@@ -445,194 +492,14 @@ class SarlEvasion(DroneEnvironment):
     # same gap in this shared DroneEnvironment base.
     # ------------------------------------------------------------------
 
-    FATAL_SIM_RESTART_ATTEMPTS = 3
-    FATAL_SIM_RESTART_DELAY = 10.0
-
-    def _fatal_sim_drones(self) -> List[tuple]:
-        """Return (name, drone) for every owned DroneSim whose link has fatally failed."""
-        if self.sim_manager is None:
-            return []
-
-        candidates = [("runner", self.rl_drone)]
-        interceptor_drone = getattr(self.interceptor.body, "drone", None)
-        if interceptor_drone is not None:
-            candidates.append((self.INTERCEPTOR_NAME, interceptor_drone))
-
-        return [
-            (name, drone)
-            for name, drone in candidates
-            if isinstance(drone, DroneSim) and drone.fatal_error_event.is_set()
-        ]
-
-    def _recover_fatal_sim_link(self) -> bool:
-        """Restart the CrazySim/Gazebo process and rebuild both drone interfaces.
-
-        Mirrors MarlDroneEnvironment._recover_from_fatal_sim_error: stop the
-        old (dead) drone interfaces, restart the simulator process, and
-        recreate the DroneSim objects from scratch. The interceptor SimAgent
-        is then re-linked to the freshly created interceptor drone (its body
-        only holds a plain attribute reference), and the interceptor's
-        vertical-headroom boundary override — set once in __init__, lost on a
-        fresh DroneSim — is re-applied.
-        """
-        for attempt in range(1, self.FATAL_SIM_RESTART_ATTEMPTS + 1):
-            print(f"[SarlEvasion] Fatal sim link detected — restarting simulator "
-                  f"(attempt {attempt}/{self.FATAL_SIM_RESTART_ATTEMPTS})")
-
-            for _, drone in list(self.rl_drones.items()) + list(self.expert_drones.items()):
-                try:
-                    drone.stop()
-                except Exception as exc:
-                    print(f"[SarlEvasion] Error stopping drone during fatal recovery: {exc}")
-
-            if not self.sim_manager.restart_sim():
-                print(f"[SarlEvasion] Simulator restart failed on attempt {attempt}")
-                time.sleep(self.FATAL_SIM_RESTART_DELAY)
-                continue
-
-            self._create_drones()
-
-            interceptor_drone = self.expert_drones[self.INTERCEPTOR_NAME]
-            self.interceptor.body.drone = interceptor_drone
-            if hasattr(interceptor_drone, "boundaries"):
-                interceptor_drone.boundaries = {
-                    "x": 4, "y": 4, "z_min": -0.5, "z_max": 3.0,
-                }
-
-            failed = [
-                name
-                for name, drone in list(self.rl_drones.items()) + list(self.expert_drones.items())
-                if not drone.is_running()
-                or (isinstance(drone, DroneSim) and drone.fatal_error_event.is_set())
-            ]
-            if not failed:
-                print("[SarlEvasion] Simulator and drone interfaces recovered")
-                return True
-
-            print(f"[SarlEvasion] Drone interfaces still unhealthy after restart: {failed}")
-            time.sleep(self.FATAL_SIM_RESTART_DELAY)
-
-        print("[SarlEvasion] Failed to recover from fatal sim link after "
-              f"{self.FATAL_SIM_RESTART_ATTEMPTS} attempts")
-        return False
-
-    def _proactive_ekf_reset(self, drone, position: List[float] | None = None) -> None:
-        """Kalman-filter reset. DANGEROUS while airborne — DO NOT call in flight.
-
-        Resetting the EKF mid-air makes the estimator emit a brief burst of garbage
-        state, and the onboard controller responds with a thrust spike that
-        "launches" the drone to the ceiling and out of the arena before it stalls
-        and falls. EKF resets must happen on the ground, via the recovery path
-        (_recover_drone re-inits the link and resets the filter safely). This helper
-        is retained only for that ground-level use.
-
-        When ``position`` is given, the filter is seeded with it (via the
-        kalman.initialX/Y/Z firmware params) before the reset, so the estimate
-        STARTS at the drone's new true position instead of having to converge
-        onto it from sensor data — this is how we "tell" a just-teleported
-        drone where it now is. (Velocity needs no seeding: the reset zeroes the
-        velocity state, and a landed drone's true velocity IS zero.)
-        """
-        try:
-            if getattr(drone, "cf", None) is None:
-                return
-            if position is not None:
-                try:
-                    drone.cf.param.set_value("kalman.initialX", f"{float(position[0])}")
-                    drone.cf.param.set_value("kalman.initialY", f"{float(position[1])}")
-                    drone.cf.param.set_value("kalman.initialZ", f"{float(position[2])}")
-                except Exception as exc:
-                    print(f"[SarlEvasion] EKF position seed warning "
-                          f"(continuing with plain reset): {exc}")
-            drone.cf.param.set_value("kalman.resetEstimation", "1")
-            time.sleep(0.4)
-        except Exception as exc:
-            print(f"[SarlEvasion] EKF reset warning: {exc}")
-
-    def _recover_interceptor_if_dead(self, force: bool = False):
-        """Re-initialise + take off the interceptor if it has died, before an episode.
-
-        force=True skips the death heuristics and recovers unconditionally
-        used when the caller already has proof the interceptor is unusable (e.g.
-        the spawn-reposition move kept diverging past containment).
-        """
-        if not force and not self._interceptor_is_dead():
-            return
-        drone = getattr(self.interceptor.body, "drone", None)
-        if drone is None:
-            return
-        print("[SarlEvasion] Interceptor appears dead — recovering it")
-        # Never recover airborne: _recover_drone's re-init resets the EKF, and an
-        # airborne EKF reset is the thrust-spike launch. A drift past the death
-        # line leaves the interceptor flying, so land it first (best-effort — a
-        # dead link just falls through to the recovery below).
-        try:
-            if drone.is_flying_event.is_set():
-                drone.land()
-                drone.is_landed_event.wait(timeout=10)
-        except Exception:
-            pass
-        try:
-            # Same survivable-recovery path as the runner: clears the latched
-            # emergency, relaunches threads, re-inits the link + resets the EKF.
-            if self._recover_drone(drone):
-                drone.take_off()
-                if not drone.is_flying_event.wait(timeout=15):
-                    print("[SarlEvasion] WARNING: interceptor did not confirm takeoff after recovery")
-        except Exception as exc:
-            print(f"[SarlEvasion] Interceptor recovery exception: {exc}")
-
     def _position_past_containment(self, pos) -> bool:
         """True if `pos` has drifted past the containment lines (toward the kill)."""
-        return (abs(pos[0]) > self.CONTAINMENT_XY or
-                abs(pos[1]) > self.CONTAINMENT_XY or
-                pos[2] > self.CONTAINMENT_Z_HIGH or
-                pos[2] < self.CONTAINMENT_Z_LOW)
-
-    def _await_interceptor_reset_safely(self, spawn: List[float], timeout: float = 15.0) -> bool:
-        """Wait for the interceptor to reach its spawn, aborting + re-centering if it drifts.
-
-        The position-control move to spawn is the one interceptor motion not covered
-        by the per-step velocity clamp, so a diverging EKF can drive it toward the
-        fatal kill boundary during the move. Poll the reset event; if the drone
-        drifts past a containment line before arriving, abort the move and let it
-        settle, then retry from the same target. We do NOT reset the EKF in the air
-        here — an airborne Kalman reset triggers the thrust-spike "launch". After a
-        few failed attempts, hand off to ground recovery (which resets the EKF
-        safely) rather than looping into the kill.
-        """
-        deadline = time.time() + timeout
-        attempts = 0
-        max_attempts = 3
-        while time.time() < deadline:
-            if self.interceptor.await_reset(timeout=0.2):
-                return True
-            try:
-                pos = self.interceptor.body.get_position()
-            except Exception:
-                continue
-            if self._position_past_containment(pos):
-                attempts += 1
-                print(f"[SarlEvasion] Interceptor drifting during spawn move "
-                      f"(pos={[round(p, 2) for p in pos]}) — aborting move + letting it settle "
-                      f"(attempt {attempts}/{max_attempts})")
-                drone = getattr(self.interceptor.body, "drone", None)
-                if drone is not None:
-                    try:
-                        drone.stop_position_control()
-                        drone.set_velocity_vector(0, 0, 0)
-                    except Exception:
-                        pass
-                if attempts >= max_attempts:
-                    print("[SarlEvasion] Interceptor spawn move kept diverging — ground recovery")
-                    # Force it: the move diverging past containment IS the proof it
-                    # needs re-init, even if a jumped EKF estimate happens not to
-                    # trip the position/emergency death checks.
-                    self._recover_interceptor_if_dead(force=True)
-                    return False
-                time.sleep(0.3)  # let it settle in place before retrying the move
-                self.interceptor.prepare_reset(spawn)
-        return False
+        return (
+            abs(pos[0]) > self.CONTAINMENT_XY
+            or abs(pos[1]) > self.CONTAINMENT_XY
+            or pos[2] > self.CONTAINMENT_Z_HIGH
+            or pos[2] < self.CONTAINMENT_Z_LOW
+        )
 
     # ------------------------------------------------------------------
     # Collision safety monitor — zeroes both drones within capture_threshold
@@ -683,7 +550,9 @@ class SarlEvasion(DroneEnvironment):
         if self._safety_monitor_running:
             return
         self._safety_monitor_running = True
-        self._safety_thread = threading.Thread(target=self._safety_monitor_loop, daemon=True)
+        self._safety_thread = threading.Thread(
+            target=self._safety_monitor_loop, daemon=True
+        )
         self._safety_thread.start()
 
     def _stop_safety_monitor(self):
@@ -741,15 +610,19 @@ class SarlEvasion(DroneEnvironment):
 
             captured = False
             if rp_ok and ip_ok:
-                separation = math.sqrt((rp[0] - ip[0]) ** 2 + (rp[1] - ip[1]) ** 2 + (rp[2] - ip[2]) ** 2)
+                separation = math.sqrt(
+                    (rp[0] - ip[0]) ** 2 + (rp[1] - ip[1]) ** 2 + (rp[2] - ip[2]) ** 2
+                )
                 if separation < self.capture_threshold:
                     captured = True
                     self._stop_both_drones()
                     if not self._collision_event.is_set():
                         self.caught = True
                         self._collision_event.set()
-                        print(f"[SarlEvasion] COLLISION GUARD: drones within "
-                              f"{separation:.2f} m (< {self.capture_threshold:.2f}) — both stopped")
+                        print(
+                            f"[SarlEvasion] COLLISION GUARD: drones within "
+                            f"{separation:.2f} m (< {self.capture_threshold:.2f}) — both stopped"
+                        )
 
             if not captured and not self._collision_event.is_set():
                 # Containment — brake (not reverse) any drone past the line,
@@ -768,217 +641,6 @@ class SarlEvasion(DroneEnvironment):
             time.sleep(dt)
 
     # ------------------------------------------------------------------
-    # Dead / stuck runner recovery (unattended-training safety)
-    # ------------------------------------------------------------------
-
-    STUCK_POSITION_TOLERANCE = 1e-4
-    STUCK_THRESHOLD_STEPS = 6
-    MAX_CONSECUTIVE_RESTART_ATTEMPTS = 5
-    RESTART_TIMEOUT_SECONDS = 60  # recover() re-launches threads + re-inits hardware; give it room
-
-    def _reset_stuck_tracker(self):
-        self._recent_positions = []
-
-    def _drone_is_dead(self, position: List[float]) -> bool:
-        """Detect EKF blow-up or a post-emergency dead-drone state."""
-        x, y, z = position
-        if abs(x) > 5.0 or abs(y) > 5.0 or abs(z) > 5.0:
-            return True
-        if x == 0.0 and y == 0.0 and z == 0.0:
-            return True
-        if z < 0.1:
-            return True
-        # EKF z-drift: drone is stuck well above the task ceiling after many resets
-        if z > self.z_max + 0.5:
-            return True
-        return False
-
-    def _runner_is_dead(self) -> bool:
-        """Runner-specific death check: position heuristics OR a latched emergency.
-
-        The sim emergency stop latches emergency_event WITHOUT disarming, so a
-        boundary-killed runner can be re-launched by the parent reset's take_off
-        and hover at its crash site while every control loop (all gated on
-        emergency_event) refuses commands — a "zombie" whose position (e.g.
-        x=2.6, z=1.0) looks perfectly alive to the position heuristics. The
-        latched flag is the one unambiguous signature of that state, and
-        restart() -> _recover_drone clears it. (Interceptor detection stays
-        position-only: its recovery path sees transient emergency blips from
-        reconnects, which the runner — recovered synchronously from the env
-        thread — does not.)
-        """
-        if self.drone.emergency_event.is_set():
-            return True
-        return self._drone_is_dead(self.drone.get_position())
-
-    def _drone_is_stuck(self, position: List[float]) -> bool:
-        """Detect a frozen drone reporting the same position every step."""
-        if not hasattr(self, "_recent_positions"):
-            self._recent_positions = []
-        self._recent_positions.append(tuple(position))
-        if len(self._recent_positions) > self.STUCK_THRESHOLD_STEPS:
-            self._recent_positions = self._recent_positions[-self.STUCK_THRESHOLD_STEPS:]
-        if len(self._recent_positions) < self.STUCK_THRESHOLD_STEPS:
-            return False
-        first = self._recent_positions[0]
-        for p in self._recent_positions[1:]:
-            if (abs(p[0] - first[0]) > self.STUCK_POSITION_TOLERANCE or
-                    abs(p[1] - first[1]) > self.STUCK_POSITION_TOLERANCE or
-                    abs(p[2] - first[2]) > self.STUCK_POSITION_TOLERANCE):
-                return False
-        return True
-
-    def _recover_drone(self, drone) -> bool:
-        """Recover a blown-up / emergency-stopped drone, driving its own primitives.
-
-        The drone layer latches ``emergency_event`` (never cleared) and its
-        ``_run`` command thread exits on emergency and is never recreated — so a
-        plain reconnect hangs and the drone stays dead. We do the recovery here,
-        from a neutral thread:
-
-          1. signal all loops to stop and wake queue waiters,
-          2. WAIT for the old ``_run`` thread to fully exit before relaunching —
-             it shares ``self.cf``/``self.scf`` with the relaunch, so if it is
-             still finishing its emergency shutdown when the new thread connects
-             it will disarm/close the brand-new link,
-          3. join the remaining workers and reset state,
-          4. close the link explicitly (the drone's own cleanup doesn't), so the
-             next ``open_link()`` to the same URI can't hang on a bound socket,
-          5. clear the latched flags,
-          6. drain the command queue (the ``"exit"`` used to wake the old threads
-             would otherwise immediately stop the freshly launched ``_run``),
-          7. relaunch the coordinated worker threads — ``_run`` re-opens the link,
-             resets the EKF and re-arms.
-
-        Must NOT be called from one of the drone's own worker threads (the join
-        would self-deadlock). Returns True if the hardware re-initialised.
-        """
-        name = getattr(drone, "agent_id", "drone")
-        old_thread = getattr(drone, "thread", None)
-        if old_thread is threading.current_thread():
-            print(f"[SarlEvasion] RECOVER {name}: refusing to run from the drone's own thread")
-            return False
-
-        print(f"[SarlEvasion] RECOVER {name}: starting")
-
-        # 1. Stop all loops and wake anything blocked on the command queue.
-        try:
-            drone._signal_stop_to_all_threads()
-        except Exception as e:
-            print(f"[SarlEvasion] RECOVER {name}: signal error: {e}")
-
-        # 2. CRITICAL: let the old _run thread fully exit before relaunching.
-        if old_thread is not None and old_thread.is_alive():
-            old_thread.join(timeout=25.0)
-            if old_thread.is_alive():
-                print(f"[SarlEvasion] RECOVER {name}: old control thread won't exit — aborting")
-                return False
-
-        # 3. Join the remaining workers and reset shared state.
-        for fn in ("_join_all_threads", "_reset_shared_state"):
-            try:
-                getattr(drone, fn)()
-            except Exception as e:
-                print(f"[SarlEvasion] RECOVER {name}: {fn} error: {e}")
-
-        # 4. Close the link explicitly so a re-open to the same URI can't hang.
-        try:
-            if getattr(drone, "scf", None) is not None:
-                drone.scf.close_link()
-        except Exception as e:
-            print(f"[SarlEvasion] RECOVER {name}: close_link error: {e}")
-        drone.cf = None
-        drone.scf = None
-        drone.mc = None
-
-        # 5. Clear the latched flags that keep the drone disabled.
-        drone.emergency_event.clear()
-        drone.hardware_ready_event.clear()
-        drone.position_ready_event.clear()
-        drone.in_boundaries = True
-
-        # 6. Drain leftover commands (e.g. the "exit" from step 1).
-        try:
-            drone.clear_command_queue()
-        except Exception:
-            pass
-
-        # 7. Relaunch the coordinated worker threads.
-        drone.set_running(True)
-        drone.thread = threading.Thread(target=drone._run, daemon=True)
-        try:
-            drone._start_threads_coordinated()
-        except Exception as e:
-            print(f"[SarlEvasion] RECOVER {name}: relaunch error: {e}")
-            return False
-
-        recovered = drone.hardware_ready_event.wait(timeout=20)
-        print(f"[SarlEvasion] RECOVER {name}: {'success' if recovered else 'FAILED'}")
-        return recovered
-
-    def restart(self):
-        """Auto-restart the runner with no user input (overrides the interactive base).
-
-        open_link() can block indefinitely if the simulator is dead, so the whole
-        sequence runs in a daemon thread we abandon after RESTART_TIMEOUT_SECONDS.
-        After MAX_CONSECUTIVE_RESTART_ATTEMPTS failures we stop trying.
-        """
-        if not hasattr(self, "_consecutive_restart_failures"):
-            self._consecutive_restart_failures = 0
-
-        if self._consecutive_restart_failures >= self.MAX_CONSECUTIVE_RESTART_ATTEMPTS:
-            print("[SarlEvasion] Skipping restart — too many consecutive "
-                  "failures; the simulator may need a manual restart")
-            return False
-
-        print("[SarlEvasion] Auto-restarting runner (no user input required)")
-
-        done_event = threading.Event()
-        success_holder = [False]
-
-        def _do_restart():
-            try:
-                # Never recover airborne: _recover_drone's re-init resets the EKF,
-                # and an airborne EKF reset is the thrust-spike launch. A zombie
-                # runner (latched emergency) may well be hovering — the parent
-                # reset re-launches it because the sim emergency stop never
-                # disarms. Land first (best-effort; a dead link falls through).
-                if self.drone.is_flying_event.is_set():
-                    try:
-                        self.drone.land()
-                        self.drone.is_landed_event.wait(timeout=10)
-                    except Exception:
-                        pass
-                # _recover_drone clears the latched emergency_event and relaunches
-                # the drone's worker threads (which re-init the link + reset the
-                # EKF), making a blow-up survivable instead of permanently fatal.
-                if self._recover_drone(self.drone):
-                    self.drone.take_off()
-                    if self.drone.is_flying_event.wait(timeout=15):
-                        success_holder[0] = True
-            except Exception as exc:
-                print(f"[SarlEvasion] Restart exception: {exc}")
-            finally:
-                done_event.set()
-
-        thread = threading.Thread(target=_do_restart, daemon=True)
-        thread.start()
-
-        if not done_event.wait(timeout=self.RESTART_TIMEOUT_SECONDS):
-            print(f"[SarlEvasion] Restart timed out after "
-                  f"{self.RESTART_TIMEOUT_SECONDS}s — abandoning attempt")
-            self._consecutive_restart_failures += 1
-            return False
-
-        if success_holder[0]:
-            self._consecutive_restart_failures = 0
-            return True
-
-        print("[SarlEvasion] WARNING: runner did not confirm takeoff after restart")
-        self._consecutive_restart_failures += 1
-        return False
-
-    # ------------------------------------------------------------------
     # DroneEnvironment overrides
     # ------------------------------------------------------------------
 
@@ -992,106 +654,95 @@ class SarlEvasion(DroneEnvironment):
         # result here (reset clears it later), so record it before the rest of
         # reset runs.
         if self._episode_count > 1:
-            self._recent_runner_outcomes.append(1.0 if self.survived_full_episode else 0.0)
+            self._recent_runner_outcomes.append(
+                1.0 if self.survived_full_episode else 0.0
+            )
         if len(self._recent_runner_outcomes) < self.curriculum_window:
             return
-        success_rate = sum(self._recent_runner_outcomes) / len(self._recent_runner_outcomes)
-        if (success_rate >= self.curriculum_success_threshold
-                and self.interceptor_max_velocity < self.interceptor_speed_max):
+        success_rate = sum(self._recent_runner_outcomes) / len(
+            self._recent_runner_outcomes
+        )
+        if (
+            success_rate >= self.curriculum_success_threshold
+            and self.interceptor_max_velocity < self.interceptor_speed_max
+        ):
             self.interceptor_max_velocity = min(
                 self.interceptor_speed_max,
                 self.interceptor_max_velocity + self.curriculum_speed_step,
             )
             self._recent_runner_outcomes.clear()  # re-earn the next bump at the new speed
-            print(f"[SarlEvasion][curriculum] runner survival {success_rate:.0%} -> "
-                  f"interceptor speed {self.interceptor_max_velocity:.3f} m/s")
+            print(
+                f"[SarlEvasion][curriculum] runner survival {success_rate:.0%} -> "
+                f"interceptor speed {self.interceptor_max_velocity:.3f} m/s"
+            )
+
+    def _configure_interceptor_drone(
+        self,
+    ) -> None:
+        """Apply simulator-specific safety limits to the interceptor."""
+
+        if not self.use_simulator:
+            return
+
+        interceptor_drone = self.expert_drones[self.INTERCEPTOR_NAME]
+
+        interceptor_drone.boundaries = {
+            "x": 4,
+            "y": 4,
+            "z_min": -0.5,
+            "z_max": 3.0,
+        }
 
     def reset(
         self,
         training: bool = True,
     ):
         """
-        Sample the interceptor spawn and use the base environment to
-        reset the runner and interceptor together.
-
-        Mirrors sarl_tag's reset: sample geometry, populate reset_positions,
-        then delegate entirely to the base environment reset. The base
-        _reset_all_drones() already lands, teleports, clears a latched
-        emergency, re-seeds the EKF and takes off EVERY drone (runner and
-        interceptor alike) EVERY episode — that's what makes a dying drone
-        recover. Layering task-level pre/post "is it dead, call restart()"
-        checks on top of that fights with the base reset instead of
-        complementing it and was the source of flaky recovery in sarl_tag
-        before it was cleaned up the same way.
+        Sample task geometry and delegate drone lifecycle
+        management to DroneEnvironment.
         """
 
         if not training and not self._is_evaluating:
             self.successful_episodes_count = 0
 
-        self._reset_stuck_tracker()
-
-        # The monitor must not treat valid reset movement as capture
-        # or boundary drift.
+        # Do not let the task safety monitor interfere with
+        # coordinated reset movement.
         self._stop_safety_monitor()
         self._collision_event.clear()
 
-        # Stop the existing expert command while reset preparation
-        # and any recovery operations are performed.
+        # Stop the previous expert pursuit command.
         self._freeze_interceptor()
 
         self._episode_count += 1
-
-        # This must happen before interceptor spawn sampling because
-        # the configured speed affects fair placement.
         self._update_interceptor_curriculum(training)
 
-        # Sample the new runner spawn.
-        self.runner_spawn[2] = float(
-            np.random.uniform(
-                *self.runner_spawn_z_range
-            )
-        )
+        self.runner_spawn[2] = float(np.random.uniform(*self.runner_spawn_z_range))
 
         interceptor_spawn = self._sample_interceptor_spawn(self.runner_spawn)
 
-        # Match the base _iter_drones() order:
-        # rl_drone, then interceptor_0.
-        self.reset_positions = [
-            list(self.runner_spawn),
-            list(interceptor_spawn),
-        ]
+        self.reset_positions = {
+            self.RL_DRONE_NAME: list(self.runner_spawn),
+            self.INTERCEPTOR_NAME: list(interceptor_spawn),
+        }
 
-        # A fatal sim link (dead UDP connection / firmware supervisor crash)
-        # can't be fixed by the base reset's land/teleport/EKF-reset cycle —
-        # the drone interface itself needs rebuilding. Check and recover
-        # BEFORE handing off, same point sarl_tag checks at.
-        if self._fatal_sim_drones():
-            self._recover_fatal_sim_link()
-
-        # Resets both the RL drone and interceptor using:
-        #
-        # self.reset_positions[0] -> rl_drone
-        # self.reset_positions[1] -> interceptor_0
+        # Handles:
+        # - normal simulator reset
+        # - fatal simulator recovery
+        # - physical ResetPlanner
+        # - physical battery servicing
         super().reset(training)
 
-        # The land/teleport/take-off cycle just run above can ITSELF trip a
-        # drone's firmware crash latch (e.g. a hard stop-then-land while the
-        # interceptor was still carrying pursuit speed) — the supervisor
-        # telemetry confirming that arrives asynchronously, sometimes only
-        # after the pre-reset _fatal_sim_drones() check above already ran
-        # and found nothing. Left unchecked, the episode starts with a drone
-        # that never actually re-armed and dies within its first couple of
-        # steps. Re-check here, after the fact, and redo the reset once if
-        # recovery was needed so the episode never starts on that state.
-        if self._fatal_sim_drones():
-            print("[SarlEvasion] Fatal sim link detected after reset — recovering and retrying")
-            self._recover_fatal_sim_link()
-            super().reset(training)
+        # Simulator recovery can replace the DroneSim object.
+        current_interceptor_drone = self.expert_drones[self.INTERCEPTOR_NAME]
+
+        if self.interceptor.body.drone is not current_interceptor_drone:
+            print("[SarlEvasion] Rebinding interceptor body " "to recreated DroneSim.")
+            self.interceptor.body.drone = current_interceptor_drone
+
+        self._configure_interceptor_drone()
 
         runner_pos = self.rl_drone.get_position()
 
-        # The environment resets the drone lifecycle. The task still
-        # resets the expert policy.
         self.interceptor.reset_policy(
             {
                 "runner_pos": runner_pos,
@@ -1102,18 +753,11 @@ class SarlEvasion(DroneEnvironment):
         self.interceptor.refresh()
         self._sync_interceptor()
 
-        # _reset_task_state() is already called by super().reset(),
-        # so caught, survived_full_episode and done have been cleared.
-        self._prev_applied_action = [
-            0.0,
-            0.0,
-            0.0,
-        ]
+        self._prev_applied_action = [0.0, 0.0, 0.0]
         self._prev_interceptor_velocity = [0.0, 0.0, 0.0]
 
         time.sleep(0.5)
 
-        # Both drones are now at separated targets.
         self._start_safety_monitor()
 
         return self._get_state()
@@ -1128,7 +772,7 @@ class SarlEvasion(DroneEnvironment):
             self.truncate_next = True
             self.learning = True
 
-        assert len(action) == 3, 'action should be length 3'
+        assert len(action) == 3, "action should be length 3"
         if self.learning:
             processed_action = [action[0], action[1], action[2]]
         else:
@@ -1146,22 +790,9 @@ class SarlEvasion(DroneEnvironment):
             return result
 
         runner_pos = self.drone.get_position()
-        runner_dead = self._runner_is_dead()
-        if runner_dead or self._drone_is_stuck(runner_pos):
-            reason = "dead" if runner_dead else "stuck"
-            print(f"[SarlEvasion] Runner appears {reason} (pos={runner_pos}) — restarting")
-            # Hold the interceptor first: restart() can block for up to 60 s,
-            # during which its stale pursuit setpoint would keep flying it. The
-            # guard's containment brake only catches it past the 2.1 m line;
-            # freezing now keeps it inside the arena for the whole restart.
-            self._freeze_interceptor()
-            self.restart()
-            self._reset_stuck_tracker()
-            self.truncate_next = True
-            runner_pos = self.drone.get_position()
 
-        # Command the expert interceptor BEFORE super().step() so both drones fly
-        # simultaneously during the step_time sleep inside the parent step.
+        # Command the expert interceptor before the parent step so
+        # both drones move during the same step interval.
         self._command_interceptor(runner_pos)
 
         # Per-axis boundary clamp: only zero a velocity component that would push the
@@ -1209,18 +840,6 @@ class SarlEvasion(DroneEnvironment):
         self.interceptor.refresh()
         self._sync_interceptor()
 
-        # If the interceptor died this step, end the episode now so we don't keep
-        # training against a fallen drone; the next reset re-initialises it.
-        if self._interceptor_is_dead():
-            try:
-                ipos = self.interceptor.body.get_position()
-            except Exception:
-                ipos = self.interceptor_position
-            print(f"[SarlEvasion] Interceptor died mid-episode at "
-                  f"pos={[round(p, 2) for p in ipos]} (z={ipos[2]:.2f}) — truncating. "
-                  f"z>~2.0 here means a thrust-spike launch past its boundary.")
-            self.truncate_next = True
-
         return result
 
     def _reset_task_state(self):
@@ -1228,10 +847,6 @@ class SarlEvasion(DroneEnvironment):
         self.done = False
         self.caught = False
         self.survived_full_episode = False
-        # A post-step interceptor-death check (see step()) can set this for
-        # the *next* call to step() and never get consumed if that call never
-        # comes because the episode ended on this very step. Left uncleared,
-        # it silently truncates the following episode after a single step.
         self.truncate_next = False
 
     def _get_state(self) -> np.ndarray:
@@ -1257,7 +872,7 @@ class SarlEvasion(DroneEnvironment):
         # Interceptor block (10): relative pos (3), distance (1), direction (3), velocity (3)
         ix, iy, iz = self.interceptor_position
         i_rel_x, i_rel_y, i_rel_z = ix - position[0], iy - position[1], iz - position[2]
-        i_dist = math.sqrt(i_rel_x ** 2 + i_rel_y ** 2 + i_rel_z ** 2)
+        i_dist = math.sqrt(i_rel_x**2 + i_rel_y**2 + i_rel_z**2)
         state += [
             i_rel_x / self.max_xy_range,
             i_rel_y / self.max_xy_range,
@@ -1276,12 +891,12 @@ class SarlEvasion(DroneEnvironment):
     def get_overlay_info(self) -> Dict[str, Any]:
         position = self.drone.get_position()
         return {
-            'position': position,
-            'interceptor_position': self.interceptor_position[:],
-            'distance_to_interceptor': self._distance_to_interceptor(position),
-            'caught': self.caught,
-            'survived_full_episode': self.survived_full_episode,
-            'done': self.done,
+            "position": position,
+            "interceptor_position": self.interceptor_position[:],
+            "distance_to_interceptor": self._distance_to_interceptor(position),
+            "caught": self.caught,
+            "survived_full_episode": self.survived_full_episode,
+            "done": self.done,
         }
 
     def _calculate_reward(self, current_state: Dict[str, Any]) -> float:
@@ -1292,7 +907,7 @@ class SarlEvasion(DroneEnvironment):
         and either penalised hard for getting caught / leaving the arena, or
         given a large bonus for surviving the whole episode.
         """
-        position = current_state['position']
+        position = current_state["position"]
         interceptor_distance = self._distance_to_interceptor(position)
 
         # Out of bounds is a terminal failure.
@@ -1302,7 +917,10 @@ class SarlEvasion(DroneEnvironment):
         # Caught by the interceptor is a terminal failure. The safety monitor may
         # have latched the collision mid-step even if the step-boundary distance
         # reads slightly above threshold, so honour the latched event too.
-        if self._collision_event.is_set() or interceptor_distance < self.capture_threshold:
+        if (
+            self._collision_event.is_set()
+            or interceptor_distance < self.capture_threshold
+        ):
             return self.intercepted_penalty
 
         # Survived the full episode without being caught — terminal success.
@@ -1326,10 +944,13 @@ class SarlEvasion(DroneEnvironment):
         Surviving to `episode_length` is handled in `_check_if_truncated` — it's
         a truncation (the episode ran out of steps), not a `done` termination.
         """
-        position = current_state['position']
+        position = current_state["position"]
         interceptor_distance = self._distance_to_interceptor(position)
 
-        if self._collision_event.is_set() or interceptor_distance < self.capture_threshold:
+        if (
+            self._collision_event.is_set()
+            or interceptor_distance < self.capture_threshold
+        ):
             self.caught = True
             self.done = True
             return True
@@ -1346,16 +967,37 @@ class SarlEvasion(DroneEnvironment):
         # with the per-episode spawn altitude.
         return not self._is_out_of_task_bounds(self.drone.get_position())
 
-    def _check_if_truncated(self, current_state: Dict[str, Any]) -> bool:
+    def _check_if_truncated(
+        self,
+        current_state: Dict[str, Any],
+    ) -> bool:
+        """
+        Truncate on simulator failure, unsafe altitude,
+        time limit, or an explicitly requested truncation.
+        """
+
+        # Fatal simulator recovery belongs to the base environment
+        # during the following reset.
+        if self.use_simulator and self._get_fatal_sim_drone_names():
+            return True
+
+        z_violation_drones = self._drones_with_z_boundary_violation(current_state)
+
+        if z_violation_drones:
+            print(
+                "[SarlEvasion] Z boundary violation "
+                f"detected for: {z_violation_drones}. "
+                "Truncating episode."
+            )
+            return True
+
         if self.steps >= self.episode_length:
             if not self.caught:
                 self.survived_full_episode = True
+
                 if self._is_evaluating:
                     self.successful_episodes_count += 1
-            if self.need_to_change_battery():
-                self.change_battery()
-            elif current_state["position"][2] <= 0.25:
-                self.restart()
+
             return True
 
         if self.truncate_next:
@@ -1365,18 +1007,18 @@ class SarlEvasion(DroneEnvironment):
         return False
 
     def _get_additional_info(self, current_state: Dict[str, Any]) -> Dict[str, Any]:
-        position = current_state['position']
+        position = current_state["position"]
         info = {
-            'interceptor_position': self.interceptor_position[:],
-            'distance_to_interceptor': self._distance_to_interceptor(position),
-            'caught': self.caught,
-            'survived_full_episode': self.survived_full_episode,
-            'success': self.survived_full_episode,
-            'out_of_bounds': self._is_out_of_task_bounds(position),
-            'description': "3D pure evasion — RL runner evading an expert interceptor indefinitely",
+            "interceptor_position": self.interceptor_position[:],
+            "distance_to_interceptor": self._distance_to_interceptor(position),
+            "caught": self.caught,
+            "survived_full_episode": self.survived_full_episode,
+            "success": self.survived_full_episode,
+            "out_of_bounds": self._is_out_of_task_bounds(position),
+            "description": "3D pure evasion — RL runner evading an expert interceptor indefinitely",
         }
         if self._is_evaluating:
-            info['success_count'] = self.successful_episodes_count
+            info["success_count"] = self.successful_episodes_count
         return info
 
     # ------------------------------------------------------------------
@@ -1406,9 +1048,15 @@ class SarlEvasion(DroneEnvironment):
         pos = self.drone.get_position()
         d_int = self._distance_to_interceptor(pos)
         print(f"Runner Position:      [{pos[0]:.2f}, {pos[1]:.2f}, {pos[2]:.2f}]")
-        print(f"Interceptor Position: [{self.interceptor_position[0]:.2f}, {self.interceptor_position[1]:.2f}, {self.interceptor_position[2]:.2f}]")
-        print(f"Distance to Interceptor: {d_int:.2f}  (capture {self.capture_threshold:.2f})")
-        print(f"Steps survived: {self.steps}/{self.episode_length} | Caught: {self.caught}")
+        print(
+            f"Interceptor Position: [{self.interceptor_position[0]:.2f}, {self.interceptor_position[1]:.2f}, {self.interceptor_position[2]:.2f}]"
+        )
+        print(
+            f"Distance to Interceptor: {d_int:.2f}  (capture {self.capture_threshold:.2f})"
+        )
+        print(
+            f"Steps survived: {self.steps}/{self.episode_length} | Caught: {self.caught}"
+        )
 
     def grab_frame(self, height: int = 540, width: int = 960) -> np.ndarray:
         fig = plt.figure(figsize=(width / 120, height / 120), dpi=120)
@@ -1421,65 +1069,155 @@ class SarlEvasion(DroneEnvironment):
         x, y, z = pos_array[:, 0], pos_array[:, 1], pos_array[:, 2]
 
         from matplotlib.gridspec import GridSpec
+
         gs = GridSpec(1, 2, figure=fig, wspace=0.25, width_ratios=[1, 1])
 
         ix, iy, iz = self.interceptor_position
 
         # LEFT: 3D trajectory
-        ax1 = fig.add_subplot(gs[0, 0], projection='3d')
-        ax1.plot(x, y, z, label='Runner Path', color='yellow', linewidth=2.5)
-        ax1.scatter(x[0], y[0], z[0], color='green', s=80, label='Start',
-                    depthshade=False, edgecolors='black', linewidth=0.5)
-        ax1.scatter(x[-1], y[-1], z[-1], color='blue', s=80, label='Current',
-                    depthshade=False, edgecolors='black', linewidth=0.5)
-        ax1.scatter(ix, iy, iz, color='red', marker='^', s=120, label='Interceptor',
-                    depthshade=False, edgecolors='black', linewidth=1)
+        ax1 = fig.add_subplot(gs[0, 0], projection="3d")
+        ax1.plot(x, y, z, label="Runner Path", color="yellow", linewidth=2.5)
+        ax1.scatter(
+            x[0],
+            y[0],
+            z[0],
+            color="green",
+            s=80,
+            label="Start",
+            depthshade=False,
+            edgecolors="black",
+            linewidth=0.5,
+        )
+        ax1.scatter(
+            x[-1],
+            y[-1],
+            z[-1],
+            color="blue",
+            s=80,
+            label="Current",
+            depthshade=False,
+            edgecolors="black",
+            linewidth=0.5,
+        )
+        ax1.scatter(
+            ix,
+            iy,
+            iz,
+            color="red",
+            marker="^",
+            s=120,
+            label="Interceptor",
+            depthshade=False,
+            edgecolors="black",
+            linewidth=1,
+        )
         ax1.set_xlim(-self.xy_limit - 0.2, self.xy_limit + 0.2)
         ax1.set_ylim(-self.xy_limit - 0.2, self.xy_limit + 0.2)
         ax1.set_zlim(self.z_min - 0.1, self.z_max + 0.1)
-        ax1.set_xlabel('X (m)', fontsize=10, labelpad=8)
-        ax1.set_ylabel('Y (m)', fontsize=10, labelpad=8)
-        ax1.set_zlabel('Z (m)', fontsize=9, labelpad=10)
-        ax1.tick_params(axis='x', labelsize=8)
-        ax1.tick_params(axis='y', labelsize=8)
-        ax1.tick_params(axis='z', labelsize=8)
+        ax1.set_xlabel("X (m)", fontsize=10, labelpad=8)
+        ax1.set_ylabel("Y (m)", fontsize=10, labelpad=8)
+        ax1.set_zlabel("Z (m)", fontsize=9, labelpad=10)
+        ax1.tick_params(axis="x", labelsize=8)
+        ax1.tick_params(axis="y", labelsize=8)
+        ax1.tick_params(axis="z", labelsize=8)
         ax1.view_init(elev=10, azim=25)
-        ax1.set_title('3D Trajectory', fontsize=12, pad=15)
-        ax1.legend(loc='upper left', fontsize=6, framealpha=0.9, markerscale=0.60)
+        ax1.set_title("3D Trajectory", fontsize=12, pad=15)
+        ax1.legend(loc="upper left", fontsize=6, framealpha=0.9, markerscale=0.60)
         ax1.grid(True, alpha=0.3)
         ax1.set_box_aspect([1, 1, 0.67])
 
         # RIGHT: top-down X-Y
         ax2 = fig.add_subplot(gs[0, 1])
-        boundary_x = [-self.xy_limit, self.xy_limit, self.xy_limit, -self.xy_limit, -self.xy_limit]
-        boundary_y = [-self.xy_limit, -self.xy_limit, self.xy_limit, self.xy_limit, -self.xy_limit]
-        ax2.plot(boundary_x, boundary_y, 'k--', linewidth=1, alpha=0.5, label='Boundary', zorder=1)
-        ax2.plot(x, y, color='yellow', linewidth=2.5, label='Runner Path', zorder=2)
-        ax2.scatter(x[0], y[0], color='green', s=80, label='Start',
-                    edgecolors='black', linewidth=0.5, zorder=4)
-        ax2.scatter(x[-1], y[-1], color='blue', s=80, label='Current',
-                    edgecolors='black', linewidth=0.5, zorder=4)
-        ax2.scatter(ix, iy, color='red', marker='^', s=120, label='Interceptor',
-                    edgecolors='black', linewidth=1, zorder=5)
-        ax2.add_patch(plt.Circle((ix, iy), self.capture_threshold, color='red', alpha=0.15, zorder=1))
+        boundary_x = [
+            -self.xy_limit,
+            self.xy_limit,
+            self.xy_limit,
+            -self.xy_limit,
+            -self.xy_limit,
+        ]
+        boundary_y = [
+            -self.xy_limit,
+            -self.xy_limit,
+            self.xy_limit,
+            self.xy_limit,
+            -self.xy_limit,
+        ]
+        ax2.plot(
+            boundary_x,
+            boundary_y,
+            "k--",
+            linewidth=1,
+            alpha=0.5,
+            label="Boundary",
+            zorder=1,
+        )
+        ax2.plot(x, y, color="yellow", linewidth=2.5, label="Runner Path", zorder=2)
+        ax2.scatter(
+            x[0],
+            y[0],
+            color="green",
+            s=80,
+            label="Start",
+            edgecolors="black",
+            linewidth=0.5,
+            zorder=4,
+        )
+        ax2.scatter(
+            x[-1],
+            y[-1],
+            color="blue",
+            s=80,
+            label="Current",
+            edgecolors="black",
+            linewidth=0.5,
+            zorder=4,
+        )
+        ax2.scatter(
+            ix,
+            iy,
+            color="red",
+            marker="^",
+            s=120,
+            label="Interceptor",
+            edgecolors="black",
+            linewidth=1,
+            zorder=5,
+        )
+        ax2.add_patch(
+            plt.Circle(
+                (ix, iy), self.capture_threshold, color="red", alpha=0.15, zorder=1
+            )
+        )
 
         ax2.set_xlim(-self.xy_limit - 0.2, self.xy_limit + 0.2)
         ax2.set_ylim(-self.xy_limit - 0.2, self.xy_limit + 0.2)
-        ax2.set_xlabel('X (m)', fontsize=10)
-        ax2.set_ylabel('Y (m)', fontsize=10)
-        ax2.set_title('Top-Down View (X-Y)', fontsize=12, pad=15)
-        ax2.set_aspect('equal', adjustable='box')
-        ax2.legend(loc='upper left', fontsize=6, framealpha=0.9, markerscale=0.60)
+        ax2.set_xlabel("X (m)", fontsize=10)
+        ax2.set_ylabel("Y (m)", fontsize=10)
+        ax2.set_title("Top-Down View (X-Y)", fontsize=12, pad=15)
+        ax2.set_aspect("equal", adjustable="box")
+        ax2.legend(loc="upper left", fontsize=6, framealpha=0.9, markerscale=0.60)
         ax2.grid(True, alpha=0.3)
-        ax2.tick_params(axis='both', labelsize=8)
+        ax2.tick_params(axis="both", labelsize=8)
 
-        outcome = "Survived" if self.survived_full_episode else ("Caught" if self.caught else "In Progress")
-        fig.suptitle(f'SARL Evasion (Step {self.steps}) | {outcome}', fontsize=13, y=0.98)
+        outcome = (
+            "Survived"
+            if self.survived_full_episode
+            else ("Caught" if self.caught else "In Progress")
+        )
+        fig.suptitle(
+            f"SARL Evasion (Step {self.steps}) | {outcome}", fontsize=13, y=0.98
+        )
         plt.tight_layout(rect=[0, 0, 1, 0.96])
 
         buf = io.BytesIO()
-        fig.savefig(buf, format='png', dpi=120,
-                    facecolor='white', edgecolor='none', bbox_inches='tight')
+        fig.savefig(
+            buf,
+            format="png",
+            dpi=120,
+            facecolor="white",
+            edgecolor="none",
+            bbox_inches="tight",
+        )
         buf.seek(0)
         img_arr = np.frombuffer(buf.getvalue(), dtype=np.uint8)
         buf.close()
@@ -1489,7 +1227,9 @@ class SarlEvasion(DroneEnvironment):
         if frame is not None:
             current_h, current_w = frame.shape[:2]
             if current_h != height or current_w != width:
-                frame = cv2.resize(frame, (width, height), interpolation=cv2.INTER_LANCZOS4)
+                frame = cv2.resize(
+                    frame, (width, height), interpolation=cv2.INTER_LANCZOS4
+                )
             frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         else:
             frame = np.full((height, width, 3), 255, dtype=np.uint8)
