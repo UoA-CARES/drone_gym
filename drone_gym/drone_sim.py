@@ -1,6 +1,7 @@
 from threading import Event, Lock
 import queue
 import time
+import warnings
 
 import cflib.crtp
 from cflib.crazyflie import Crazyflie
@@ -9,15 +10,15 @@ from cflib.crazyflie.log import LogConfig
 
 from cflib.crazyflie.syncCrazyflie import SyncCrazyflie
 from drone_gym.drone_setup import DroneSetup
-import warnings
 from drone_gym.utils.crazyflie_log_position_source import (
     CrazyflieLogPositionSource,
 )
 from drone_gym.utils.position_source import PositionSource
 
-warnings.filterwarnings('ignore', message='Using legacy TYPE_HOVER_LEGACY')
+warnings.filterwarnings("ignore", message="Using legacy TYPE_HOVER_LEGACY")
 
 SUPERVISOR_IS_CRASHED_BIT = 7
+
 
 class DroneSim(DroneSetup):
     """
@@ -27,19 +28,23 @@ class DroneSim(DroneSetup):
         uri (str): The URI for the Crazyflie drone.
         agent_id (str): Unique identifier for the drone instance.
         simulation (bool): Flag indicating whether the drone is in simulation mode.
-        boundaries (dict[str, float] | None): Optional dictionary defining the safe operational boundaries for the drone. If not provided, default boundaries will be used. (e.g. {"x": 2.5, "y": 2.5, "z_min": 0.1, "z_max": 3.0})
-        position_source (PositionSource | None): Optional PositionSource instance for providing position data. If not provided, a default CrazyflieLogPositionSource will be used.
+        boundaries (dict[str, float] | None): Optional dictionary defining the safe
+            operational boundaries for the drone. If not provided, default boundaries
+            will be used. (e.g. {"x": 2.5, "y": 2.5, "z_min": 0.1, "z_max": 3.0})
+        position_source (PositionSource | None): Optional PositionSource instance for
+            providing position data. If not provided, a default
+            CrazyflieLogPositionSource will be used.
     """
+
     def __init__(
-            self,
-            uri: str = "udp://0.0.0.0:19850",
-            agent_id: str = "Drone",
-            simulation: bool = True,
-            boundaries: dict[str, float] | None = None,
-            position_source: PositionSource | None = None,
-        ) -> None:
+        self,
+        uri: str = "udp://0.0.0.0:19850",
+        agent_id: str = "Drone",
+        simulation: bool = True,
+        boundaries: dict[str, float] | None = None,
+        position_source: PositionSource | None = None,
+    ) -> None:
         # Drone Properties
-        self.simulation = simulation
         self.agent_id = agent_id
         if position_source is None:
             position_source = CrazyflieLogPositionSource(
@@ -53,12 +58,13 @@ class DroneSim(DroneSetup):
 
         self.supervisor_log_config = None
         self.last_supervisor_bitfield: int | None = None
-    
+
         super().__init__(
-            uri=uri, 
-            agent_id=agent_id, 
-            boundaries=boundaries, 
-            position_source=position_source
+            uri=uri,
+            agent_id=agent_id,
+            boundaries=boundaries,
+            position_source=position_source,
+            simulation=simulation,
         )
 
     def initialise_crazyflie(self) -> bool:
@@ -66,31 +72,39 @@ class DroneSim(DroneSetup):
         try:
             cflib.crtp.init_drivers()
             print(f"[{self.agent_id}] Initializing CRTP drivers...")
-            
+
             # Add retries for connection
             max_retries = 3
             retry_delay = 5
-            
+
             for attempt in range(max_retries):
                 try:
-                    print(f"[{self.agent_id}] Connection attempt {attempt + 1}/{max_retries} to {self.URI}...")
-                    self.scf = SyncCrazyflie(self.URI, cf=Crazyflie(rw_cache=f"./cache/{self.agent_id}/"))
+                    print(
+                        f"[{self.agent_id}] Connection attempt "
+                        f"{attempt + 1}/{max_retries} to {self.URI}..."
+                    )
+                    self.scf = SyncCrazyflie(
+                        self.URI, cf=Crazyflie(rw_cache=f"./cache/{self.agent_id}/")
+                    )
                     self.scf.open_link()
                     self.cf = self.scf.cf
                     self.cf.connection_lost.add_callback(self._connection_lost)
                     print(f"[{self.agent_id}] Successfully connected to CrazySim!")
                     break
                 except Exception as e:
-                    print(f"[{self.agent_id}] Connection attempt {attempt + 1} failed: {str(e)}")
+                    print(
+                        f"[{self.agent_id}] Connection attempt "
+                        f"{attempt + 1} failed: {str(e)}"
+                    )
                     if attempt < max_retries - 1:
                         print(f"[{self.agent_id}] Retrying in {retry_delay} seconds...")
                         time.sleep(retry_delay)
                     else:
                         print(f"[{self.agent_id}] All connection attempts failed")
                         print(f"[{self.agent_id}] Make sure:")
-                        print(f"  1. Gazebo is running")
-                        print(f"  2. The SITL firmware is started")
-                        print(f"  3. The drone model is spawned in Gazebo")
+                        print("  1. Gazebo is running")
+                        print("  2. The SITL firmware is started")
+                        print("  3. The drone model is spawned in Gazebo")
                         raise
 
             # For CrazySim, we can skip deck detection or set it immediately I believe
@@ -105,7 +119,6 @@ class DroneSim(DroneSetup):
             time.sleep(0.5)
 
             self._start_supervisor_logging()
-
 
             print(f"[{self.agent_id}] Resetting state estimation (EKF)...")
             self.cf.param.set_value("kalman.resetEstimation", "1")
@@ -122,7 +135,7 @@ class DroneSim(DroneSetup):
             self._setup_battery_logging()
             self._setup_velocity_logging()
             # self.cf.disconnected.add_callback(self._disconnected)
-    
+
             # Signal that hardware is ready
             self.hardware_ready_event.set()
             print(f"[{self.agent_id}] Hardware initialisation complete - ready to fly!")
@@ -133,17 +146,12 @@ class DroneSim(DroneSetup):
             return False
 
     def stop(self) -> None:
-        """
-        Fully stop the drone and optionally prepare for a clean restart.
-
-        Args
-
-        """
+        """Fully stop the drone and optionally prepare for a clean restart."""
         print(f"[{self.agent_id}] Stopping...")
         self.set_running(False)
         self.position_controller_active = False
         self.velocity_controller_active = False
-        
+
         # Clear queue
         while not self.command_queue.empty():
             try:
@@ -164,10 +172,7 @@ class DroneSim(DroneSetup):
                 self.supervisor_log_config.stop()
                 self.supervisor_log_config.delete()
             except Exception as exc:
-                print(
-                    f"[{self.agent_id}] Error stopping supervisor logging: "
-                    f"{exc}"
-                )
+                print(f"[{self.agent_id}] Error stopping supervisor logging: " f"{exc}")
             finally:
                 self.supervisor_log_config = None
         self.last_supervisor_bitfield = None
@@ -181,15 +186,15 @@ class DroneSim(DroneSetup):
         This overrides DroneSetup._execute_emergency_stop().
 
         For physical drones, the inherited behaviour lands, disarms, exits the
-        command thread, and calls stop(). That is safe for real hardware but 
+        command thread, and calls stop(). That is safe for real hardware but
         causes issues in simulation.
         """
         current_position = self.get_position()
         if not self.emergency_event.is_set():
             self.emergency_event.set()
             print(
-            f"[{self.agent_id}] SIM HARD BOUNDARY VIOLATION. "
-            f"Position={current_position}, limits={self.boundaries}. "
+                f"[{self.agent_id}] SIM HARD BOUNDARY VIOLATION. "
+                f"Position={current_position}, limits={self.boundaries}. "
             )
 
         if self.mc:
@@ -198,13 +203,19 @@ class DroneSim(DroneSetup):
             self.is_landed_event.set()
             self.is_flying_event.clear()
             time.sleep(1)
-        print(f"[{self.agent_id} - DRONE SIM] Drone landed due to boundary violation. Current position: {self.get_position()}")
+        print(
+            f"[{self.agent_id} - DRONE SIM] Drone landed due to boundary violation. "
+            f"Current position: {self.get_position()}"
+        )
 
         # Cancel any currently commanded motion.
         try:
             self.set_velocity_vector(0.0, 0.0, 0.0)
         except Exception as exc:
-            print(f"[{self.agent_id}] Failed to send zero velocity after boundary violation: {exc}")
+            print(
+                f"[{self.agent_id}] Failed to send zero velocity "
+                f"after boundary violation: {exc}"
+            )
 
         # Disable high-level controllers so they do not keep pushing the drone.
         self.position_controller_active = False
@@ -238,9 +249,7 @@ class DroneSim(DroneSetup):
             supervisor_log_config.data_received_cb.add_callback(
                 self._supervisor_data_received
             )
-            supervisor_log_config.error_cb.add_callback(
-                self._supervisor_logging_error
-            )
+            supervisor_log_config.error_cb.add_callback(self._supervisor_logging_error)
 
             self.cf.log.add_config(supervisor_log_config)
             supervisor_log_config.start()
@@ -250,11 +259,8 @@ class DroneSim(DroneSetup):
             print(f"[{self.agent_id}] Supervisor logging started")
 
         except Exception as exc:
-            print(
-                f"[{self.agent_id}] Failed to start supervisor logging: "
-                f"{exc}"
-            )
-    
+            print(f"[{self.agent_id}] Failed to start supervisor logging: " f"{exc}")
+
     def _supervisor_logging_error(
         self,
         log_config: LogConfig,
@@ -264,7 +270,7 @@ class DroneSim(DroneSetup):
             f"[{self.agent_id}] Supervisor logging error "
             f"for {log_config.name}: {message}"
         )
-    
+
     def _supervisor_data_received(
         self,
         timestamp: int,
@@ -320,19 +326,14 @@ class DroneSim(DroneSetup):
                 bitfield,
                 bit_position,
             )
-            for bit_position, state_name
-            in enumerate(self.cf.supervisor.STATES)
+            for bit_position, state_name in enumerate(self.cf.supervisor.STATES)
         }
 
         state_text = ", ".join(
-            f"{state_name}={state_value}"
-            for state_name, state_value in states.items()
+            f"{state_name}={state_value}" for state_name, state_value in states.items()
         )
 
-        print(
-            f"[{self.agent_id}] Initial supervisor states: "
-            f"{state_text}"
-        )
+        print(f"[{self.agent_id}] Initial supervisor states: " f"{state_text}")
 
     def _print_supervisor_state_changes(
         self,
@@ -341,9 +342,7 @@ class DroneSim(DroneSetup):
         changed_bits: int,
     ) -> None:
         """Print supervisor states whose values have changed."""
-        for bit_position, state_name in enumerate(
-            self.cf.supervisor.STATES
-        ):
+        for bit_position, state_name in enumerate(self.cf.supervisor.STATES):
             bit_mask = 1 << bit_position
 
             if not changed_bits & bit_mask:
@@ -363,6 +362,56 @@ class DroneSim(DroneSetup):
                 f"{state_name}: {previous_value} -> {current_value}"
             )
 
+    def wait_for_takeoff_confirmation(
+        self,
+        minimum_height: float = 0.2,
+        timeout: float = 10.0,
+    ) -> bool:
+        """
+        Confirm that the simulated drone is airborne using fresh
+        position telemetry.
+        """
+
+        check_started = time.monotonic()
+        deadline = check_started + timeout
+
+        while time.monotonic() < deadline:
+            with self.position_lock:
+                last_update = self.last_position_update_time
+                current_z = self.position["z"]
+
+            fresh_position = last_update is not None and last_update >= check_started
+
+            if fresh_position and current_z >= minimum_height:
+                print(
+                    f"[{self.agent_id}] Take-off confirmed "
+                    f"from fresh telemetry at z={current_z:.2f} m."
+                )
+                return True
+
+            time.sleep(0.05)
+
+        with self.position_lock:
+            last_update = self.last_position_update_time
+            current_z = self.position["z"]
+
+        if last_update is None:
+            position_age = "no position received"
+        else:
+            position_age = f"{time.monotonic() - last_update:.2f}s old"
+
+        print(
+            f"[{self.agent_id}] FATAL: Take-off could not be "
+            f"confirmed. z={current_z:.2f} m, "
+            f"position telemetry={position_age}."
+        )
+
+        with self.fatal_error_lock:
+            self.fatal_error_event.set()
+
+        self.emergency_event.set()
+
+        return False
 
     @staticmethod
     def _is_supervisor_bit_set(
@@ -377,6 +426,7 @@ class DroneSim(DroneSetup):
             self.fatal_error_event.set()
         self.emergency_event.set()
 
+
 if __name__ == "__main__":
     drone = DroneSim()
     drone.take_off()
@@ -389,7 +439,7 @@ if __name__ == "__main__":
         print(f"[{drone.agent_id}] Moving forward...")
         drone.set_velocity_vector(0.2, 0, 0)
         time.sleep(3)
-        
+
         drone.set_velocity_vector(0, 0, 0)
         time.sleep(1)
 

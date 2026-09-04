@@ -1,11 +1,5 @@
 import threading
 import time
-from drone_gym.drone_setup import DroneSetup
-from drone_gym.utils.vicon_connection_class import ViconInterface as vi
-from drone_gym.utils.position_source import PositionSource
-from drone_gym.utils.vicon_position_source import (
-    ViconPositionSource,
-)
 
 import cflib.crtp
 from cflib.crazyflie import Crazyflie
@@ -13,10 +7,17 @@ from cflib.crazyflie.syncCrazyflie import SyncCrazyflie
 from cflib.utils import uri_helper
 from cflib.utils.power_switch import PowerSwitch
 
+from drone_gym.drone_setup import DroneSetup
+from drone_gym.utils.vicon_connection_class import ViconInterface as vi
+from drone_gym.utils.position_source import PositionSource
+from drone_gym.utils.vicon_position_source import (
+    ViconPositionSource,
+)
+
 
 class Drone(DroneSetup):
     """
-    Drone class for Crazyflie 
+    Drone class for Crazyflie
 
     Args:
         agent_id (str): Unique identifier for the drone instance.
@@ -24,15 +25,16 @@ class Drone(DroneSetup):
         uri (str | None): The URI for the Crazyflie drone.
         position_source (PositionSource): The source for obtaining the drone's position.
     """
+
     def __init__(
-            self, 
-            position_source: PositionSource,
-            agent_id: str = "Drone",
-            boundaries: dict[str, float] | None = None,
-            uri: str = "radio://0/100/2M/E7E7E7E700",
-        ) -> None:
+        self,
+        position_source: PositionSource,
+        agent_id: str = "Drone",
+        boundaries: dict[str, float] | None = None,
+        uri: str = "radio://0/100/2M/E7E7E7E700",
+    ) -> None:
         # Use either legacy_vicon or source_vicon
-        # source_vicon is the new implementation that abstracts position source 
+        # source_vicon is the new implementation that abstracts position source
         self.position_tracking_mode: str = "legacy_vicon"
 
         if self.position_tracking_mode == "legacy_vicon":
@@ -50,10 +52,10 @@ class Drone(DroneSetup):
         self.drone_name = f"Crzayme_{agent_id}"
 
         super().__init__(
-            boundaries=boundaries, 
-            agent_id=agent_id, 
-            uri=uri, 
-            position_source=position_source
+            boundaries=boundaries,
+            agent_id=agent_id,
+            uri=uri,
+            position_source=position_source,
         )
 
         # Drone Properties
@@ -64,12 +66,14 @@ class Drone(DroneSetup):
     def _update_position(self) -> None:
         vicon_thread = None
         try:
-            while (not hasattr(self, "vicon")):
+            while not hasattr(self, "vicon"):
                 print("Waiting for vicon initialization...")
             # It takes some time for the vicon to get values
             vicon_thread = threading.Thread(target=self.vicon.main_loop)
             vicon_thread.start()
-            print(f"[{self.agent_id}] Vicon thread started, waiting for position data...")
+            print(
+                f"[{self.agent_id}] Vicon thread started, waiting for position data..."
+            )
             time.sleep(4)
 
             # Wait for first valid position reading before signaling ready
@@ -105,7 +109,9 @@ class Drone(DroneSetup):
                         self.last_position_update_time = current_time
 
                         # Calculate velocity at 20Hz (every 0.05s)
-                        if (current_time - self.last_velocity_calculation_time) >= self.velocity_update_rate:
+                        if (
+                            current_time - self.last_velocity_calculation_time
+                        ) >= self.velocity_update_rate:
                             if len(self.position_history) >= 2:
                                 self._calculate_velocity()
                             self.last_velocity_calculation_time = current_time
@@ -114,7 +120,9 @@ class Drone(DroneSetup):
                         if not position_ready:
                             self.position_ready_event.set()
                             position_ready = True
-                            print(f"[{self.agent_id}] First position acquired: {self.position}")
+                            print(
+                                f"[{self.agent_id}] First position acquired: {self.position}"
+                            )
 
                     else:
                         print(f"[{self.agent_id}] Drone position is not being updated")
@@ -181,7 +189,9 @@ class Drone(DroneSetup):
 
             # Signal that hardware is ready
             self.hardware_ready_event.set()
-            print(f"[{self.agent_id}] Hardware initialisation complete - signaling ready")
+            print(
+                f"[{self.agent_id}] Hardware initialisation complete - signaling ready"
+            )
             return True
 
         except Exception as e:
@@ -197,7 +207,9 @@ class Drone(DroneSetup):
         else:
             print(f"[{self.agent_id}] Deck is NOT attached")
 
-    def set_velocity(self, velocity_vector: list[float] | tuple[float, float, float]) -> None:
+    def set_velocity(
+        self, velocity_vector: list[float] | tuple[float, float, float]
+    ) -> None:
         """Set velocity vector from a list or array [vx, vy, vz]"""
 
         if len(velocity_vector) != 3:
@@ -226,10 +238,14 @@ class Drone(DroneSetup):
     def _close_vicon(self) -> None:
         """Tell the Vicon interface to stop its background thread."""
         if self.vicon is None:
-            print(f"[{self.agent_id}] Exiting close_vicon() - vicon object is None, no action needed")
+            print(
+                f"[{self.agent_id}] Exiting close_vicon() - vicon object is None, no action needed"
+            )
             return
         if self.position_tracking_mode != "legacy_vicon":
-            print(f"[{self.agent_id}] Exiting close_vicon() - not in legacy_vicon mode, no action needed")
+            print(
+                f"[{self.agent_id}] Exiting close_vicon() - not in legacy_vicon mode, no action needed"
+            )
             return
         try:
             self.vicon.run_interface = False
@@ -244,8 +260,8 @@ class Drone(DroneSetup):
         print(f"[{self.agent_id}] Executing STM32 power cycle via PowerSwitch...")
         try:
             # Re-initialize the PowerSwitch as the old connection may be stale
-            ps = PowerSwitch(self.URI)
-            ps.stm_power_cycle()
+            self.ps = PowerSwitch(self.URI)
+            self.ps.stm_power_cycle()
             print(f"[{self.agent_id}] Power cycle complete. Waiting for reboot...")
             time.sleep(5)  # Give the Crazyflie time to reboot and restart
         except Exception as e:
@@ -254,26 +270,27 @@ class Drone(DroneSetup):
 
         return True
 
-if __name__ == "__main__":
-    # Testing instructions
-    drone = Drone()
-    print("Drone class initiated")
-    drone.take_off()
-    drone.is_flying_event.wait(timeout=15)
 
-    if not drone.is_flying_event.is_set():
-        print(f"[{drone.agent_id}] Drone failed to take off")
-        drone.stop()
+# if __name__ == "__main__":
+#     # Testing instructions
+#     drone = Drone()
+#     print("Drone class initiated")
+#     drone.take_off()
+#     drone.is_flying_event.wait(timeout=15)
 
-    drone.start_position_control()
-    time.sleep(2)  # Let the controller stabilise first
-    print(f"[{drone.agent_id}] Setting target position")
-    drone.set_target_position(0, 0, 1)  # Move 1m forward on x-axis
-    time.sleep(30)
-    drone.stop_position_control()
-    drone.land()
-    drone.is_landed_event.wait(timeout=30)
-    if not drone.is_landed_event.is_set():
-        print(f"[{drone.agent_id}] Drone is failing to land....")
-        print(f"[{drone.agent_id}] Forcing stop")
-    drone.stop()
+#     if not drone.is_flying_event.is_set():
+#         print(f"[{drone.agent_id}] Drone failed to take off")
+#         drone.stop()
+
+#     drone.start_position_control()
+#     time.sleep(2)  # Let the controller stabilise first
+#     print(f"[{drone.agent_id}] Setting target position")
+#     drone.set_target_position(0, 0, 1)  # Move 1m forward on x-axis
+#     time.sleep(30)
+#     drone.stop_position_control()
+#     drone.land()
+#     drone.is_landed_event.wait(timeout=30)
+#     if not drone.is_landed_event.is_set():
+#         print(f"[{drone.agent_id}] Drone is failing to land....")
+#         print(f"[{drone.agent_id}] Forcing stop")
+#     drone.stop()

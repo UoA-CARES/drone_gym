@@ -94,9 +94,10 @@ class DroneEnvironment(ABC):
         self.reset_hover_height = reset_height
         self.reset_safety_distance = reset_safety_distance
         self.position_max_age = position_max_age
-        self.max_manual_interventions = 2
         self.battery_reset_margin = 0.2
         self.battery_episode_margin = 0.2
+        self.max_manual_interventions = 2
+        self.max_sim_reset_attempts = 3
 
         # Initialize reset positions keyed by drone name.
         self.reset_positions: dict[str, list[float]] = {}
@@ -462,7 +463,7 @@ class DroneEnvironment(ABC):
             ]
 
             if len(reached_drones) == len(drones):
-                print("[RESET] All drones reached their " "reset targets.")
+                print("[RESET] All drones reached their reset targets.")
                 return True
 
             waiting_drones = [
@@ -502,122 +503,342 @@ class DroneEnvironment(ABC):
         else:
             self._reset_all_physical_drones()
 
-    def _reset_all_sim_drones(self) -> None:
+    def _reset_all_sim_drones(
+        self,
+    ) -> None:
         """Reset all simulated drones using the Gazebo reset process."""
-        drones = list(self._iter_drones())
 
-        # Stop controllers and land.
-        for _, drone in drones:
-            if drone.velocity_controller_active:
-                drone.stop_velocity_control()
+        for attempt in range(
+            1,
+            self.max_sim_reset_attempts + 1,
+        ):
+            try:
+                self._recover_sim_if_fatal()
+                drones = list(self._iter_drones())
 
-            time.sleep(0.5)
+                # Stop all existing control before landing.
+                for _, drone in drones:
+                    if drone.velocity_controller_active:
+                        drone.stop_velocity_control()
 
-            self._reset_control_properties(
-                drone=drone,
-            )
+                    if drone.position_controller_active:
+                        drone.stop_position_control()
 
-            drone.set_velocity_vector(
-                0.0,
-                0.0,
-                0.0,
-            )
+                    self._reset_control_properties(drone=drone)
+                    drone.set_velocity_vector(0.0, 0.0, 0.0)
+                    drone.land()
 
-            drone.land()
+                # Confirm landing before teleporting.
+                failed_landings = [
+                    drone_name
+                    for drone_name, drone in drones
+                    if not drone.is_landed_event.wait(timeout=10)
+                ]
 
-        for drone_name, drone in drones:
-            drone.is_landed_event.wait(timeout=10)
+                if failed_landings:
+                    raise RuntimeError(
+                        "Drones failed to confirm landing "
+                        f"during sim reset: {failed_landings}"
+                    )
 
+                # Clear emergency states and teleport drones.
+                for drone_name, drone in drones:
+                    if drone.emergency_event.is_set():
+                        drone.clear_emergency_event()
+
+                        if drone.safety_thread_active:
+                            drone.stop_boundary_monitoring()
+                            time.sleep(0.2)
+                            drone.start_boundary_monitoring()
+
+                    self.sim_manager.set_drone_pose(
+                        drone_id=self._get_sim_drone_id(drone_name),
+                        x=float(self.reset_positions[drone_name][0]),
+                        y=float(self.reset_positions[drone_name][1]),
+                        z=0.02,
+                        orientation=(0.0, 0.0, 0.0),
+                    )
+
+                # Allow Gazebo physics to settle.
+                time.sleep(0.3)
+
+                # Reset each estimator at the teleported position.
+                for drone_name, drone in drones:
+                    spawn_position = [
+                        float(self.reset_positions[drone_name][0]),
+                        float(self.reset_positions[drone_name][1]),
+                        0.02,
+                    ]
+                    self._reset_ekf(drone=drone, position=spawn_position)
+
+                time.sleep(0.5)
+
+                # Take off.
+                for drone_name, drone in drones:
+                    if not drone.is_flying_event.is_set():
+                        print(f"[{drone_name}] " "Taking off before reset...")
+
+                        drone.take_off()
+
+                for drone_name, drone in drones:
+                    if not drone.wait_for_takeoff_confirmation(
+                        minimum_height=0.2,
+                        timeout=10.0,
+                    ):
+                        raise RuntimeError(
+                            f"{drone_name} failed functional " "take-off verification."
+                        )
+
+                # Move all drones to their actual reset positions.
+                for drone_name, drone in drones:
+                    drone.set_target_position(*self.reset_positions[drone_name])
+
+                time.sleep(0.1)
+
+                for _, drone in drones:
+                    drone.start_position_control()
+
+                reset_success = self._wait_for_all_reset_events(timeout=10)
+
+                if not reset_success:
+                    raise RuntimeError(
+                        "Not all drones reached their reset positions before timeout."
+                    )
+
+                time.sleep(1.0)
+
+                self._switch_to_velocity_control()
+
+                # Log final reset positions.
+                for drone_name, drone in drones:
+                    initial_position = drone.get_position()
+
+                    print(
+                        f"[{drone_name}] Current position "
+                        f"after reset: {initial_position}"
+                    )
+
+                    print(
+                        f"[{drone_name}] Desired reset target: "
+                        f"{self.reset_positions[drone_name]}"
+                    )
+
+                # Make sure no drone entered an emergency/fatal
+                # state during the reset.
+                if self._all_drones_safe():
+                    print("[SIM RESET] All drones safe after reset.")
+
+                    return
+
+                unsafe_drones = self._unsafe_drones()
+
+                raise RuntimeError("Drones unsafe after reset: " f"{unsafe_drones}")
+
+            except Exception as exc:
+                print(
+                    f"[SIM RESET] Attempt "
+                    f"{attempt}/"
+                    f"{self.max_sim_reset_attempts} "
+                    f"failed: {exc}."
+                )
+
+                if attempt >= self.max_sim_reset_attempts:
+                    raise RuntimeError(
+                        "Sim reset failed after "
+                        f"{self.max_sim_reset_attempts} "
+                        "attempts."
+                    ) from exc
+
+                print("[SIM RESET] Retrying...")
+                time.sleep(5.0)
+
+    def _unsafe_drones(
+        self,
+    ) -> list[str]:
+        """Return drones currently in an emergency or fatal state."""
+
+        unsafe = []
+
+        for drone_name, drone in self._iter_drones():
             if drone.emergency_event.is_set():
-                drone.clear_emergency_event()
+                unsafe.append(drone_name)
+            if isinstance(drone, DroneSim) and drone.fatal_error_event.is_set():
+                unsafe.append(drone_name)
 
-                if drone.safety_thread_active:
-                    drone.stop_boundary_monitoring()
-                    time.sleep(0.2)
-                    drone.start_boundary_monitoring()
+        return unsafe
 
-            reset_position = self.reset_positions[drone_name]
+    def _all_drones_safe(
+        self,
+    ) -> bool:
+        """Return whether all owned drones are free of fault states."""
+        return not self._unsafe_drones()
 
-            self.sim_manager.set_drone_pose(
-                drone_id=self._get_sim_drone_id(drone_name),
-                x=float(reset_position[0]),
-                y=float(reset_position[1]),
-                z=0.02,
-                orientation=(0.0, 0.0, 0.0),
+    def _recover_sim_if_fatal(
+        self,
+    ) -> None:
+        """Restart the simulator if any DroneSim has a fatal error."""
+
+        fatal_drones = self._get_fatal_sim_drone_names()
+
+        if not fatal_drones:
+            return
+
+        print(f"Fatal simulator error for: {fatal_drones}")
+        if not self._recover_from_fatal_sim_error(max_attempts=3, retry_delay=10.0):
+            raise RuntimeError("Failed to recover the simulator after all retries.")
+
+    def _recover_from_fatal_sim_error(
+        self,
+        max_attempts: int = 3,
+        retry_delay: float = 5.0,
+    ) -> bool:
+        """
+        Restart the simulator and recreate all DroneSim interfaces.
+
+        Args:
+            max_attempts:
+                Maximum number of complete simulator restart attempts.
+            retry_delay:
+                Delay between failed recovery attempts.
+
+        Returns:
+            True if the simulator and all drone interfaces recover.
+            False if every recovery attempt fails.
+        """
+
+        if self.sim_manager is None:
+            raise RuntimeError(
+                "Fatal simulated-drone error detected, but no SimManager exists."
             )
-        time.sleep(0.3)
 
-        for drone_name, drone in drones:
+        print("[SIM RECOVERY] Preparing to restart the simulation...")
 
-            reset_position = self.reset_positions[drone_name]
+        # Existing DroneSim objects refer to the old SITL
+        # processes and cannot be reused.
+        self._clear_all_drones_instances()
 
-            spawn_position = [
-                float(reset_position[0]),
-                float(reset_position[1]),
-                0.02,
-            ]
+        for attempt in range(
+            1,
+            max_attempts + 1,
+        ):
+            print(f"[SIM RECOVERY] Recovery attempt {attempt}/{max_attempts}...")
 
-            self._reset_ekf(
-                drone=drone,
-                position=spawn_position,
-            )
+            try:
+                sim_restarted = self.sim_manager.restart_sim()
 
-        time.sleep(0.5)
-        for drone_name, drone in drones:
-            if not drone.is_flying_event.is_set():
-                print(f"[{drone_name}] " "Taking off before reset...")
-                drone.take_off()
+                if not sim_restarted:
+                    print(
+                        "[SIM RECOVERY] Simulator restart "
+                        f"failed on attempt {attempt}/{max_attempts}."
+                    )
 
-        time.sleep(1)
+                else:
+                    print(
+                        "[SIM RECOVERY] Simulator restarted. "
+                        "Recreating drone interfaces..."
+                    )
 
-        for drone_name, drone in drones:
-            if drone.is_flying_event.wait(timeout=15):
-                continue
-            print(f"[{drone_name}] Failed to confirm " "take-off during reset.")
+                    # Remove any interfaces left by a previous
+                    # partial creation attempt.
+                    if self.rl_drones or self.expert_drones:
+                        self._clear_all_drones_instances()
 
-        for drone_name, drone in drones:
-            reset_position = self.reset_positions[drone_name]
+                    self._create_drones()
 
-            drone.set_target_position(*reset_position)
+                    drones = self._get_drone_mapping()
 
-        time.sleep(0.1)
+                    failed_drones = [
+                        drone_name
+                        for drone_name in self.possible_agents
+                        if (
+                            drone_name not in drones
+                            or not drones[drone_name].is_running()
+                            or (
+                                isinstance(
+                                    drones[drone_name],
+                                    DroneSim,
+                                )
+                                and drones[drone_name].fatal_error_event.is_set()
+                            )
+                        )
+                    ]
 
-        for _, drone in drones:
-            drone.start_position_control()
+                    if not failed_drones:
+                        print(
+                            "[SIM RECOVERY] Simulator and "
+                            "drone interfaces recovered "
+                            "successfully."
+                        )
 
-        reset_success = self._wait_for_all_reset_events(
-            timeout=10,
+                        return True
+
+                    print(
+                        "[SIM RECOVERY] The following drone "
+                        "interfaces failed to initialise: "
+                        f"{failed_drones}"
+                    )
+
+            except Exception as exc:
+                print(
+                    "[SIM RECOVERY] Recovery attempt "
+                    f"{attempt}/{max_attempts} "
+                    f"raised an error: {exc}"
+                )
+
+            # Clean up objects created during a failed attempt.
+            if self.rl_drones or self.expert_drones:
+                self._clear_all_drones_instances()
+
+            if attempt < max_attempts:
+                print("[SIM RECOVERY] Retrying in " f"{retry_delay} seconds...")
+
+                time.sleep(retry_delay)
+
+        print(
+            "[SIM RECOVERY] Failed to recover the "
+            "simulation after "
+            f"{max_attempts} attempts."
         )
 
-        if not reset_success:
-            print(
-                "[ERROR] Not all drones reached reset positions in time. "
-                "Check drone states and reset position configuration."
-            )
+        return False
 
-        time.sleep(1)
+    def _get_fatal_sim_drone_names(
+        self,
+    ) -> list[str]:
+        """Return simulated drones whose interfaces have a fatal error."""
 
-        for _, drone in drones:
-            drone.stop_position_control()
-            drone.clear_reset_position_event()
-            drone.set_velocity_vector(
-                0.0,
-                0.0,
-                0.0,
-            )
+        if self.sim_manager is None:
+            return []
 
-        for drone_name, drone in drones:
-            initial_position = drone.get_position()
+        return [
+            drone_name
+            for drone_name, drone in self._iter_drones()
+            if (isinstance(drone, DroneSim) and drone.fatal_error_event.is_set())
+        ]
 
-            print(
-                f"[{drone_name}] Current position " f"after reset: {initial_position}"
-            )
-            print(
-                f"[{drone_name}] Desired reset target: "
-                f"{self.reset_positions[drone_name]}"
-            )
+    def _clear_all_drones_instances(
+        self,
+    ) -> None:
+        """
+        Stop and remove all current drone interfaces.
 
-            drone.start_velocity_control()
+        IMPORTANT:
+            This does not land drones. It is intended for simulator
+            recovery where the existing SITL processes/interfaces are
+            already considered invalid.
+        """
+
+        for drone_name, drone in list(self._iter_drones()):
+            try:
+                print(f"[SARL] Stopping old interface " f"for {drone_name}...")
+
+                drone.stop()
+
+            except Exception as exc:
+                print(f"[SARL] Error stopping " f"{drone_name}: {exc}.")
+
+        self.rl_drones.clear()
+        self.expert_drones.clear()
 
     def _reset_all_physical_drones(
         self,
@@ -644,9 +865,9 @@ class DroneEnvironment(ABC):
                     break
 
                 except ResetPlanner.InterventionRequired as escalation:
-                    print("[RESET] Automatic reset requires " "manual intervention.")
-                    print(f"[RESET] Affected drones: " f"{escalation.agents}")
-                    print(f"[RESET] Reason: " f"{escalation.reason}")
+                    print("[RESET] Automatic reset requires manual intervention.")
+                    print(f"[RESET] Affected drones: {escalation.agents}")
+                    print(f"[RESET] Reason: {escalation.reason}")
 
                     if not self._land_all_drones(label="RESET"):
                         raise RuntimeError(
@@ -694,8 +915,6 @@ class DroneEnvironment(ABC):
 
                     raise
 
-            # Preserve any reset-slot assignment produced by
-            # ResetPlanner before doing the episode battery check.
             self.reset_positions = outcome["assigned_positions"]
 
             # The reset may have taken significant time.
@@ -716,9 +935,6 @@ class DroneEnvironment(ABC):
                 # result is therefore no longer a valid episode start.
                 continue
 
-            # No battery servicing was needed after the reset, so
-            # the fleet is still at the positions produced by
-            # ResetPlanner and is ready to begin the episode.
             print(f"Reset: " f"{ResetPlanner.summarise(outcome)}")
 
             for drone_name, error in sorted(outcome["final_errors"].items()):
@@ -1028,7 +1244,7 @@ class DroneEnvironment(ABC):
                 print(f"[RESET RECOVERY] Failed to prepare " f"{drone_name}: {exc}")
                 return False
 
-        print("\n[RESET RECOVERY] It is now safe to enter " "the flight area.")
+        print("\n[RESET RECOVERY] It is now safe to enter the flight area.")
 
         if not self._recover_service_drones(
             drones_to_service=failed_drones,

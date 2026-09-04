@@ -893,19 +893,16 @@ class MarlDroneEnvironment(ParallelEnv):
 
                         drone.take_off()
 
-                time.sleep(1.0)
+                for agent in self.possible_agents:
+                    drone = self.drones[agent]
 
-                grounded = [
-                    agent
-                    for agent in self.possible_agents
-                    if not self.drones[agent].is_flying_event.wait(timeout=15)
-                ]
-
-                if grounded:
-                    raise RuntimeError(
-                        "Drones failed to confirm take-off "
-                        f"during sim reset: {grounded}"
-                    )
+                    if not drone.wait_for_takeoff_confirmation(
+                        minimum_height=0.2,
+                        timeout=10.0,
+                    ):
+                        raise RuntimeError(
+                            f"{agent} failed functional " "take-off verification."
+                        )
 
                 # Send all drones to their actual reset positions.
                 for agent in self.possible_agents:
@@ -954,18 +951,21 @@ class MarlDroneEnvironment(ParallelEnv):
                 raise RuntimeError("Drones unsafe after reset: " f"{unsafe}")
 
             except Exception as exc:
+                print(
+                    f"[SIM RESET] Attempt "
+                    f"{attempt}/"
+                    f"{self.max_sim_reset_attempts} "
+                    f"failed: {exc}."
+                )
+
                 if attempt >= self.max_sim_reset_attempts:
                     raise RuntimeError(
                         "Sim reset failed after "
-                        f"{self.max_sim_reset_attempts} attempts."
+                        f"{self.max_sim_reset_attempts} "
+                        "attempts."
                     ) from exc
 
-                print(
-                    f"[SIM RESET] Attempt "
-                    f"{attempt}/{self.max_sim_reset_attempts} "
-                    f"failed: {exc}. Retrying..."
-                )
-
+                print("[SIM RESET] Retrying...")
                 time.sleep(5.0)
 
     def _reset_all_physical_drones(
@@ -1002,11 +1002,11 @@ class MarlDroneEnvironment(ParallelEnv):
                     break
 
                 except ResetPlanner.InterventionRequired as escalation:
-                    print("[RESET] Automatic reset requires " "manual intervention.")
+                    print("[RESET] Automatic reset requires manual intervention.")
 
-                    print(f"[RESET] Affected drones: " f"{escalation.agents}")
+                    print(f"[RESET] Affected drones: {escalation.agents}")
 
-                    print(f"[RESET] Reason: " f"{escalation.reason}")
+                    print(f"[RESET] Reason: {escalation.reason}")
 
                     if not self._land_all_drones(label="RESET"):
                         raise RuntimeError(
@@ -1016,9 +1016,7 @@ class MarlDroneEnvironment(ParallelEnv):
 
                     if interventions >= self.max_manual_interventions:
                         raise RuntimeError(
-                            f"Reset failed after "
-                            f"{interventions} interventions: "
-                            f"{escalation}"
+                            f"Reset failed after {interventions} interventions: {escalation}"
                         ) from escalation
 
                     if not self._manual_reset_intervention(
@@ -1061,7 +1059,7 @@ class MarlDroneEnvironment(ParallelEnv):
                 # may have physically moved serviced drones.
                 continue
 
-            print(f"Reset: " f"{ResetPlanner.summarise(outcome)}")
+            print(f"Reset: {ResetPlanner.summarise(outcome)}")
 
             self._log_initial_state_error(outcome)
 
@@ -1087,7 +1085,7 @@ class MarlDroneEnvironment(ParallelEnv):
 
             if drone.emergency_event.is_set():
                 unsafe.append(agent)
-            elif isinstance(drone, DroneSim) and drone.fatal_error_event.is_set():
+            if isinstance(drone, DroneSim) and drone.fatal_error_event.is_set():
                 unsafe.append(agent)
 
         return unsafe

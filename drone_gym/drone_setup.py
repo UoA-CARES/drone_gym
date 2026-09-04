@@ -16,17 +16,22 @@ from drone_gym.utils.position_source import (
     PositionSource,
 )
 
+from cflib.utils.power_switch import PowerSwitch
+
 
 class DroneSetup:
     def __init__(
-            self,
-            uri: str,
-            agent_id: str = "Drone",
-            boundaries: dict[str, float] | None = None,
-            position_source: PositionSource | None = None,
-        ) -> None:
-        # Drone Properties
+        self,
+        uri: str,
+        agent_id: str = "Drone",
+        boundaries: dict[str, float] | None = None,
+        position_source: PositionSource | None = None,
+        simulation: bool = True,
+    ) -> None:
 
+        self.simulation = simulation
+
+        # Drone Properties
         self.URI = uri
         self.agent_id = agent_id
         self.default_height = 0.5
@@ -80,26 +85,32 @@ class DroneSetup:
         # Velocity control PID gains and state
         self.velocity_gains = {
             "x": {"kp": 0.105, "kd": 0.05, "ki": 0.03},
-            "y": {"kp": 0.105, "kd": 0.05, "ki": 0.03},  # Higher Kd for Y due to oscillations
+            "y": {
+                "kp": 0.105,
+                "kd": 0.05,
+                "ki": 0.03,
+            },  # Higher Kd for Y due to oscillations
             "z": {"kp": 0.05, "kd": 0.01, "ki": 0.0},
             # "z": {"kp": 0, "kd": 0, "ki": 0},
         }
         self.velocity_last_error = {"x": 0.0, "y": 0.0, "z": 0.0}
         self.velocity_integral = {"x": 0.0, "y": 0.0, "z": 0.0}
         self.target_velocity = {"x": 0.0, "y": 0.0, "z": 0.0}
-        self.max_velocity = {"x": 0.40, "y": 0.40, "z": 0.40} # Maximum velocity in m/s
+        self.max_velocity = {"x": 0.40, "y": 0.40, "z": 0.40}  # Maximum velocity in m/s
         # overridden by environment and task max_vel when vel is set using set_velocity_vector and velocity controller is active
         self.position_deadband = (
             0.025  # Position error below which velocity will be zero (in meters)
             # Changed from 0.1 to 0.025 along with position control error
         )
-        self.position_error_threshold = 0.05  
+        self.position_error_threshold = 0.05
         # Error threshold to consider position reached (meters)
-        # Changed from 0.17 to 0.05 along with position_deadband 
+        # Changed from 0.17 to 0.05 along with position_deadband
 
         # NEW: Velocity ramping for smooth transitions
         self.current_commanded_velocity = {"x": 0.0, "y": 0.0, "z": 0.0}
-        self.max_velocity_change_rate = 100 #Maximum change in velocity per second (m/s²)
+        self.max_velocity_change_rate = (
+            100  # Maximum change in velocity per second (m/s²)
+        )
         self.velocity_command_lock = threading.Lock()
 
         # Crazyflie objects - will be initialized in _run
@@ -107,6 +118,7 @@ class DroneSetup:
         self.cf: Crazyflie | None = None
         self.mc: MotionCommander | None = None
         self.armed = False
+        self.ps: PowerSwitch | None = None
 
         # Drone position tracking
         self.position_source = position_source
@@ -121,13 +133,19 @@ class DroneSetup:
         # Velocity calculation (from position differentiation)
         self.calculated_velocity = {"x": 0.0, "y": 0.0, "z": 0.0}
         self.velocity_calculation_lock = threading.Lock()
-        self.position_history = deque(maxlen=15)  # Store last 15 positions for moving average
+        self.position_history = deque(
+            maxlen=15
+        )  # Store last 15 positions for moving average
         self.velocity_update_rate = 0.20  # 20Hz velocity calculation rate
         self.position_update_rate = 0.0166666  # 60Hz position update rate
         self.last_velocity_calculation_time = 0.0
 
         # Drone Safety
-        self.boundaries = {"x": 2.5, "y": 2.5, "z_min": 0.1, "z_max": 3.0} if boundaries is None else boundaries
+        self.boundaries = (
+            {"x": 2.5, "y": 2.5, "z_min": 0.1, "z_max": 3.0}
+            if boundaries is None
+            else boundaries
+        )
         self.safety_thread = None
         self.in_boundaries = True
         self.emergency_event = Event()
@@ -153,12 +171,16 @@ class DroneSetup:
 
         # Start main thread first (initialises hardware)
         self.thread.start()
-        print(f"[{self.agent_id}] Main thread started, waiting for hardware initialization...")
+        print(
+            f"[{self.agent_id}] Main thread started, waiting for hardware initialization..."
+        )
 
         # Wait for hardware to be ready
         if not self.hardware_ready_event.wait(timeout=15):
             print(f"[{self.agent_id}] ERROR: Hardware failed to initialize in time")
-            print(f"[{self.agent_id}] IF SIM: Make sure Gazebo is running and the drone model is loaded")
+            print(
+                f"[{self.agent_id}] IF SIM: Make sure Gazebo is running and the drone model is loaded"
+            )
             self.set_running(False)
             return
 
@@ -166,9 +188,7 @@ class DroneSetup:
 
         # Start position tracking after hardware is ready
         if not self._start_position_tracking():
-            print(
-                f"[{self.agent_id}] ERROR: Position tracking failed to start"
-            )
+            print(f"[{self.agent_id}] ERROR: Position tracking failed to start")
             self.set_running(False)
             self.command_queue.put("exit")
             return
@@ -177,7 +197,9 @@ class DroneSetup:
         if not self.position_ready_event.wait(timeout=10):
             print(f"[{self.agent_id}] WARNING: Position system may not be ready")
         else:
-            print(f"[{self.agent_id}] Position system ready, starting safety monitoring...")
+            print(
+                f"[{self.agent_id}] Position system ready, starting safety monitoring..."
+            )
 
         # Start safety monitoring last
         self.safety_thread_active = True
@@ -397,7 +419,7 @@ class DroneSetup:
                     f"{self.position_source.name}: {exc}"
                 )
                 return False
-        
+
     def _stop_position_tracking(self) -> None:
         """
         Stop the configured PositionSource.
@@ -459,8 +481,9 @@ class DroneSetup:
 
                     # Apply exponential low-pass filter for smoothing
                     self.calculated_velocity[axis] = (
-                        self.velocity_filter_alpha * raw_velocity +
-                        (1 - self.velocity_filter_alpha) * self.calculated_velocity[axis]
+                        self.velocity_filter_alpha * raw_velocity
+                        + (1 - self.velocity_filter_alpha)
+                        * self.calculated_velocity[axis]
                     )
 
     def get_calculated_velocity(self) -> dict[str, float]:
@@ -490,7 +513,9 @@ class DroneSetup:
             while self.is_running():
                 try:
                     if self.emergency_event.is_set() and not self.simulation:
-                        print(f"[{self.agent_id} - Drone Setup] Emergency event detected in _run thread. Exiting main loop.")
+                        print(
+                            f"[{self.agent_id} - Drone Setup] Emergency event detected in _run thread. Exiting main loop."
+                        )
                         self._handle_command({"land": True})
                         self.is_landed_event.wait(timeout=10)
                         break
@@ -504,7 +529,9 @@ class DroneSetup:
                         if self.position_controller_active:
                             self.stop_position_control()
                         if self.is_flying_event.is_set() and self.mc:
-                            print(f"[{self.agent_id}] EMERGENCY STOP: Landing and Stopping.")
+                            print(
+                                f"[{self.agent_id}] EMERGENCY STOP: Landing and Stopping."
+                            )
                             self.land_and_stop()
                         self.set_running(False)
                         print(f"[{self.agent_id}] EMERGENCY STOP initiated.")
@@ -521,7 +548,9 @@ class DroneSetup:
                 if display:
                     if hasattr(self, "_last_position_print"):
                         if time.time() - self._last_position_print > 0.2:
-                            print(f"[{self.agent_id}] Current position: {self.position}")
+                            print(
+                                f"[{self.agent_id}] Current position: {self.position}"
+                            )
                             self._last_position_print = time.time()
                     else:
                         self._last_position_print = time.time()
@@ -552,7 +581,7 @@ class DroneSetup:
                 self.cf.supervisor.send_arming_request(False)
                 self.armed = False
 
-            #Added try catch for safety
+            # Added try catch for safety
             if self.battery_log_config:
                 try:
                     self.battery_log_config.stop()
@@ -597,16 +626,22 @@ class DroneSetup:
             elif "take_off" in command:
                 if not self.is_flying_event.is_set() and self.armed:
                     print(f"[{self.agent_id}] Taking off...")
-                    self.mc = MotionCommander(self.scf, default_height=self.default_height)
+                    self.mc = MotionCommander(
+                        self.scf, default_height=self.default_height
+                    )
                     self.mc.take_off()
                     self.is_landed_event.clear()
                     self.is_flying_event.set()
                     # Check if the radio link is still alive and connected
                     if not self.mc._cf.is_connected():
-                        print(f"[{self.agent_id}] Error: The Crazyflie instance is disconnected or invalid!")
+                        print(
+                            f"[{self.agent_id}] Error: The Crazyflie instance is disconnected or invalid!"
+                        )
                     print(f"[{self.agent_id}] Take-off successful")
                 else:
-                    print(f"[{self.agent_id}] Cannot take off - already flying or not armed")
+                    print(
+                        f"[{self.agent_id}] Cannot take off - already flying or not armed"
+                    )
 
             elif "land" in command:
                 if self.is_flying_event.is_set() and self.mc:
@@ -662,7 +697,6 @@ class DroneSetup:
     def move(self) -> None:
         self.send_command({"move": True})
 
-
     def start_boundary_monitoring(self) -> None:
         """Start the boundary monitoring thread for safety checks"""
         print(f"[{self.agent_id} - DroneSetup] Entering start boundary function")
@@ -670,13 +704,13 @@ class DroneSetup:
         if not self.position_ready_event.wait(timeout=10):
             print(f"[{self.agent_id}] WARNING: Position system may not be ready")
         else:
-            print(f"[{self.agent_id}] Position system ready, starting safety monitoring...")
-       
+            print(
+                f"[{self.agent_id}] Position system ready, starting safety monitoring..."
+            )
+
         if not self.safety_thread_active:
             self.safety_thread_active = True
-            self.safety_thread = threading.Thread(
-                target=self._check_boundaries
-            )
+            self.safety_thread = threading.Thread(target=self._check_boundaries)
             self.safety_thread.start()
             print(f"[{self.agent_id}] Boundary monitoring started")
         else:
@@ -692,7 +726,6 @@ class DroneSetup:
             print(f"[{self.agent_id}] Boundary monitoring stopped")
         else:
             print(f"[{self.agent_id}] Boundary monitoring already stopped")
-
 
     def start_position_control(self) -> None:
         """Start the position controller thread for automatic position tracking"""
@@ -732,19 +765,24 @@ class DroneSetup:
         """Stop the velocity controller thread"""
         if self.velocity_controller_active:
             self.velocity_controller_active = False
-            if self.velocity_controller_thread and self.velocity_controller_thread.is_alive():
+            if (
+                self.velocity_controller_thread
+                and self.velocity_controller_thread.is_alive()
+            ):
                 self.velocity_controller_thread.join()
             print(f"[{self.agent_id}] Velocity controller stopped")
         else:
             print(f"[{self.agent_id}] Velocity controller already stopped")
 
-    def _position_control_loop(self, first_instance: int = 0, debugging: bool = True) -> None:
+    def _position_control_loop(
+        self, first_instance: int = 0, debugging: bool = True
+    ) -> None:
         """
         Main control loop for position-based velocity control
-        
+
         Used for moving drone to reset positions
         """
-        control_rate = 0.05  # Control rate in seconds (20hz)    
+        control_rate = 0.05  # Control rate in seconds (20hz)
 
         print(f"[{self.agent_id}] Position control loop started")
         while (
@@ -759,8 +797,8 @@ class DroneSetup:
                     target_pos = self.target_position.copy()
 
                 # if first_instance == 0:
-                    # print(f"target position = {self.target_position.copy()}")
-                    # print(f"current position = {self.get_position_dict()}")
+                # print(f"target position = {self.target_position.copy()}")
+                # print(f"current position = {self.get_position_dict()}")
 
                 # Calculate position error
                 error = {
@@ -859,7 +897,9 @@ class DroneSetup:
 
         print(f"[{self.agent_id}] Velocity control loop stopped")
 
-    def _apply_velocity_ramping(self, desired_velocity: dict[str, float], dt: float) -> dict[str, float]:
+    def _apply_velocity_ramping(
+        self, desired_velocity: dict[str, float], dt: float
+    ) -> dict[str, float]:
 
         ramped_velocity = {"x": 0.0, "y": 0.0, "z": 0.0}
 
@@ -875,7 +915,9 @@ class DroneSetup:
             }
 
             # Calculate the magnitude of the change vector (x, y, and z)
-            delta_magnitude = (delta["x"]**2 + delta["y"]**2 + delta["z"]**2)**0.5
+            delta_magnitude = (
+                delta["x"] ** 2 + delta["y"] ** 2 + delta["z"] ** 2
+            ) ** 0.5
 
             # If the desired change is larger than allowed, scale it down while preserving direction
             if delta_magnitude > max_delta:
@@ -902,7 +944,9 @@ class DroneSetup:
     def clear_emergency_event(self) -> None:
         self.emergency_event.clear()
 
-    def _calculate_pid_velocity(self, error: dict[str, float], dt: float) -> dict[str, float]:
+    def _calculate_pid_velocity(
+        self, error: dict[str, float], dt: float
+    ) -> dict[str, float]:
         """Calculate velocity vector using PID control
 
         Args:
@@ -946,11 +990,11 @@ class DroneSetup:
         return velocity
 
     def _calculate_velocity_pid(
-            self, 
-            target_velocity: dict[str, float], 
-            actual_velocity: dict[str, float], 
-            dt: float
-            ) -> dict[str, float]:
+        self,
+        target_velocity: dict[str, float],
+        actual_velocity: dict[str, float],
+        dt: float,
+    ) -> dict[str, float]:
         corrected_velocity = {"x": 0.0, "y": 0.0, "z": 0.0}
 
         for axis in ["x", "y", "z"]:
@@ -958,11 +1002,17 @@ class DroneSetup:
 
             # PID terms
             p_term = self.velocity_gains[axis]["kp"] * error
-            d_term = self.velocity_gains[axis]["kd"] * (error - self.velocity_last_error[axis]) / dt
+            d_term = (
+                self.velocity_gains[axis]["kd"]
+                * (error - self.velocity_last_error[axis])
+                / dt
+            )
 
             self.velocity_integral[axis] += error * dt
             max_integral = 0.2
-            self.velocity_integral[axis] = max(-max_integral, min(max_integral, self.velocity_integral[axis]))
+            self.velocity_integral[axis] = max(
+                -max_integral, min(max_integral, self.velocity_integral[axis])
+            )
             i_term = self.velocity_gains[axis]["ki"] * self.velocity_integral[axis]
 
             # Feed-forward term (NEW)
@@ -970,7 +1020,9 @@ class DroneSetup:
 
             # Combine all terms
             raw_velocity = ff_term + p_term + d_term + i_term
-            corrected_velocity[axis] = max(-self.max_velocity[axis], min(self.max_velocity[axis], raw_velocity))
+            corrected_velocity[axis] = max(
+                -self.max_velocity[axis], min(self.max_velocity[axis], raw_velocity)
+            )
 
             self.velocity_last_error[axis] = error
 
@@ -1000,7 +1052,9 @@ class DroneSetup:
             # and self.boundaries["z_min"] <= z <= self.boundaries["z_max"]
             and z <= self.boundaries["z_max"]
         ):
-            print(f"[{self.agent_id}] WARNING: Target position {x}, {y}, {z} is outside safe boundaries. Command rejected.")
+            print(
+                f"[{self.agent_id}] WARNING: Target position {x}, {y}, {z} is outside safe boundaries. Command rejected."
+            )
             return
 
         with self.position_lock:
@@ -1072,7 +1126,9 @@ class DroneSetup:
                 f"[{self.agent_id}] Could not start battery logging, Crazyflie object not available."
             )
 
-    def _battery_callback(self, timestamp: int, data: dict[str, Any], logconf: Any) -> None:
+    def _battery_callback(
+        self, timestamp: int, data: dict[str, Any], logconf: Any
+    ) -> None:
         """Callback for when new battery data is received from the drone."""
         voltage = data["pm.vbat"]
         with self.battery_lock:
@@ -1111,7 +1167,9 @@ class DroneSetup:
                 f"[{self.agent_id}] Could not start velocity logging, Crazyflie object not available."
             )
 
-    def _velocity_callback(self, timestamp: int, data: dict[str, Any], logconf: Any) -> None:
+    def _velocity_callback(
+        self, timestamp: int, data: dict[str, Any], logconf: Any
+    ) -> None:
         """Callback for when new velocity data is received from the drone."""
         with self.velocity_log_lock:
             self.internal_vx = data["stateEstimate.vx"]
@@ -1184,11 +1242,13 @@ class DroneSetup:
         for name, thr in threads_to_join:
             if thr and thr.is_alive():
                 if name == "main":
-                    thr.join(timeout=5.0)
+                    thr.join(timeout=10.0)
                 else:
                     thr.join(timeout=2.0)
                 if thr.is_alive():
-                    print(f"[{self.agent_id}] WARNING: {name} thread did not join in time.")
+                    print(
+                        f"[{self.agent_id}] WARNING: {name} thread did not join in time."
+                    )
 
     def _reset_shared_state(self) -> None:
         """Reset all state variables to their initial values."""
@@ -1231,9 +1291,7 @@ class DroneSetup:
             try:
                 self.scf.close_link()
             except Exception as exc:
-                print(
-                    f"[{self.agent_id}] Warning while closing link: {exc}"
-                )
+                print(f"[{self.agent_id}] Warning while closing link: {exc}")
         self.cf = None
         self.scf = None
         self.mc = None
@@ -1260,12 +1318,11 @@ class DroneSetup:
             self.velocity_log_config = None
 
         # Power down the physical Crazyflie
-        try:
-            self.ps.platform_power_down()
-        except Exception as exc:
-            print(
-                f"[{self.agent_id}] Warning while powering down: {exc}"
-            )
+        if self.ps is not None:
+            try:
+                self.ps.platform_power_down()
+            except Exception as exc:
+                print(f"[{self.agent_id}] Warning while powering down: {exc}")
 
         self.armed = False
 
@@ -1274,9 +1331,7 @@ class DroneSetup:
             try:
                 self.scf.close_link()
             except Exception as exc:
-                print(
-                    f"[{self.agent_id}] Warning while closing link: {exc}"
-                )
+                print(f"[{self.agent_id}] Warning while closing link: {exc}")
 
         self.cf = None
         self.scf = None
