@@ -45,7 +45,6 @@ class DroneSim(DroneSetup):
         position_source: PositionSource | None = None,
     ) -> None:
         # Drone Properties
-        self.simulation = simulation
         self.agent_id = agent_id
         if position_source is None:
             position_source = CrazyflieLogPositionSource(
@@ -65,6 +64,7 @@ class DroneSim(DroneSetup):
             agent_id=agent_id,
             boundaries=boundaries,
             position_source=position_source,
+            simulation=simulation,
         )
 
     def initialise_crazyflie(self) -> bool:

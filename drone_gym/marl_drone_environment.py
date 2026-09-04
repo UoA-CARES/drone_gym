@@ -951,18 +951,21 @@ class MarlDroneEnvironment(ParallelEnv):
                 raise RuntimeError("Drones unsafe after reset: " f"{unsafe}")
 
             except Exception as exc:
-                if attempt > self.max_sim_reset_attempts:
-                    raise RuntimeError(
-                        "Sim reset failed after "
-                        f"{self.max_sim_reset_attempts} attempts."
-                    ) from exc
-
                 print(
                     f"[SIM RESET] Attempt "
-                    f"{attempt}/{self.max_sim_reset_attempts} "
-                    f"failed: {exc}. Retrying..."
+                    f"{attempt}/"
+                    f"{self.max_sim_reset_attempts} "
+                    f"failed: {exc}."
                 )
 
+                if attempt >= self.max_sim_reset_attempts:
+                    raise RuntimeError(
+                        "Sim reset failed after "
+                        f"{self.max_sim_reset_attempts} "
+                        "attempts."
+                    ) from exc
+
+                print("[SIM RESET] Retrying...")
                 time.sleep(5.0)
 
     def _reset_all_physical_drones(
