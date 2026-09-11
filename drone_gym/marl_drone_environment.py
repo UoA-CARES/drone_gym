@@ -86,7 +86,7 @@ class MarlDroneEnvironment(ParallelEnv):
         self.battery_episode_margin = 0.2
 
         # PettingZoo agent lists
-        self.possible_agents = [f"drone_{i}" for i in range(self.num_agents_config)]
+        self.possible_agents = self._generate_possible_agents()
         self.agents = []
 
         if self.use_simulator:
@@ -502,6 +502,10 @@ class MarlDroneEnvironment(ParallelEnv):
             reset_positions[agent] = [float(x), float(y), float(z)]
 
         return reset_positions
+
+    def _generate_possible_agents(self) -> list[str]:
+        """Generate a list of possible agent names."""
+        return [f"drone_{i}" for i in range(self.num_agents_config)]
 
     def _generate_default_sim_uris(self) -> dict[str, str]:
         """Generate default simulator URIs for all possible agents."""

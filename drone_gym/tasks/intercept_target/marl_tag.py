@@ -88,15 +88,17 @@ class MarlTag(MarlDroneEnvironment):
         # Role labels over the base's positional agent ids. Keeping the base's
         # names (rather than renaming possible_agents) leaves all of its
         # bookkeeping — uris, drones, reset_positions — keyed consistently.
-        self.RUNNER = self.possible_agents[0]        # drone_0 -> udp 19850
-        self.INTERCEPTOR = self.possible_agents[1]   # drone_1 -> udp 19851
+        self.RUNNER = self.possible_agents[0]  # drone_0 -> udp 19850
+        self.INTERCEPTOR = self.possible_agents[1]  # drone_1 -> udp 19851
 
         self.episode_length = episode_length
         self.time_tolerance = 0.15  # look-ahead slack for the boundary brake
 
         # --- Win conditions --------------------------------------------------
-        self.capture_threshold = capture_threshold  # interceptor "catches" the runner (3D)
-        self.goal_threshold = goal_threshold        # runner reaches the goal (3D)
+        self.capture_threshold = (
+            capture_threshold  # interceptor "catches" the runner (3D)
+        )
+        self.goal_threshold = goal_threshold  # runner reaches the goal (3D)
 
         # --- Geometry (mirrors sarl_tag) ------------------------------------
         self.runner_spawn = [0.0, 0.0, self.reset_height]
@@ -112,8 +114,8 @@ class MarlTag(MarlDroneEnvironment):
         self.intercept_frac = (0.45, 0.65)
         self.fairness_jitter = 0.15
         self.interceptor_z_jitter = 0.1
-        self.min_runner_clearance = 1.0   # never spawn in point-blank capture range
-        self.min_goal_clearance = 0.6     # never spawn camped on the goal
+        self.min_runner_clearance = 1.0  # never spawn in point-blank capture range
+        self.min_goal_clearance = 0.6  # never spawn camped on the goal
         # Symmetric speeds -> ratio 1.0. Raise if you later give the interceptor
         # a higher max_velocity (see the per-agent speed note in step processing).
         self.interceptor_speed_ratio = 1.0
@@ -123,14 +125,17 @@ class MarlTag(MarlDroneEnvironment):
         # (applied in _apply_task_action_processing). Start slow so the runner
         # can learn to navigate, then raise the cap as its success rate climbs.
         self.curriculum_enabled = True
-        self.interceptor_speed_min = 0.05             # starting cap (m/s)
+        self.interceptor_speed_min = 0.05  # starting cap (m/s)
         self.interceptor_speed_max = self.max_velocity  # ceiling = runner's max speed
         self.curriculum_window = 50
         self.curriculum_success_threshold = 0.6
         self.curriculum_speed_step = 0.02
-        self.interceptor_speed = (self.interceptor_speed_min
-                                  if self.curriculum_enabled else self.max_velocity)
-        self.interceptor_speed_ratio = self.interceptor_speed / max(self.max_velocity, 1e-6)
+        self.interceptor_speed = (
+            self.interceptor_speed_min if self.curriculum_enabled else self.max_velocity
+        )
+        self.interceptor_speed_ratio = self.interceptor_speed / max(
+            self.max_velocity, 1e-6
+        )
         self._episode_count = 0
         self._recent_runner_outcomes = deque(maxlen=self.curriculum_window)
 
@@ -149,14 +154,18 @@ class MarlTag(MarlDroneEnvironment):
         }
 
         # --- Reward parameters ----------------------------------------------
-        self.success_reward = 100.0            # runner reaches goal
-        self.capture_reward = 100.0            # interceptor catches runner
-        self.out_of_bounds_penalty = 100.0     # runner leaves the arena (magnitude; applied negative)
+        self.success_reward = 100.0  # runner reaches goal
+        self.capture_reward = 100.0  # interceptor catches runner
+        self.out_of_bounds_penalty = (
+            100.0  # runner leaves the arena (magnitude; applied negative)
+        )
         self.goal_progress_multiplier = 100.0  # runner: reward closing on the goal
-        self.capture_progress_multiplier = 100.0  # interceptor: reward closing on the runner
-        self.step_penalty = 1.0                # both: small per-step cost (act fast)
-        self.danger_radius = 0.6               # runner: evasion shaping kicks in inside this
-        self.danger_penalty = 5.0              # runner: max shaping penalty at zero separation
+        self.capture_progress_multiplier = (
+            100.0  # interceptor: reward closing on the runner
+        )
+        self.step_penalty = 1.0  # both: small per-step cost (act fast)
+        self.danger_radius = 0.6  # runner: evasion shaping kicks in inside this
+        self.danger_penalty = 5.0  # runner: max shaping penalty at zero separation
 
         # --- Task state ------------------------------------------------------
         self.goal_position: list[float] = [0.0, 0.0, self.reset_height]
@@ -197,20 +206,30 @@ class MarlTag(MarlDroneEnvironment):
         # self.winner still holds the just-finished episode's result here
         # (_reset_task_state clears it later during super().reset()).
         if self._episode_count > 1:
-            self._recent_runner_outcomes.append(1.0 if self.winner == self.RUNNER else 0.0)
+            self._recent_runner_outcomes.append(
+                1.0 if self.winner == self.RUNNER else 0.0
+            )
         if len(self._recent_runner_outcomes) < self.curriculum_window:
             return
-        success_rate = sum(self._recent_runner_outcomes) / len(self._recent_runner_outcomes)
-        if (success_rate >= self.curriculum_success_threshold
-                and self.interceptor_speed < self.interceptor_speed_max):
+        success_rate = sum(self._recent_runner_outcomes) / len(
+            self._recent_runner_outcomes
+        )
+        if (
+            success_rate >= self.curriculum_success_threshold
+            and self.interceptor_speed < self.interceptor_speed_max
+        ):
             self.interceptor_speed = min(
                 self.interceptor_speed_max,
                 self.interceptor_speed + self.curriculum_speed_step,
             )
-            self.interceptor_speed_ratio = self.interceptor_speed / max(self.max_velocity, 1e-6)
+            self.interceptor_speed_ratio = self.interceptor_speed / max(
+                self.max_velocity, 1e-6
+            )
             self._recent_runner_outcomes.clear()
-            print(f"[MarlTag][curriculum] runner success {success_rate:.0%} -> "
-                  f"interceptor speed {self.interceptor_speed:.3f} m/s")
+            print(
+                f"[MarlTag][curriculum] runner success {success_rate:.0%} -> "
+                f"interceptor speed {self.interceptor_speed:.3f} m/s"
+            )
 
     def reset(self, seed: int | None = None, options: dict[str, Any] | None = None):
         """Sample the episode geometry, write it into ``reset_positions`` so the
@@ -226,7 +245,9 @@ class MarlTag(MarlDroneEnvironment):
         # are randomized. Sample here (before the base reset) because the base's
         # _reset_all_drones teleports drones to reset_positions.
         self.goal_position = self._sample_goal(self.runner_spawn)
-        interceptor_spawn = self._sample_interceptor_spawn(self.runner_spawn, self.goal_position)
+        interceptor_spawn = self._sample_interceptor_spawn(
+            self.runner_spawn, self.goal_position
+        )
 
         self.reset_positions[self.RUNNER] = list(self.runner_spawn)
         self.reset_positions[self.INTERCEPTOR] = interceptor_spawn
@@ -276,7 +297,9 @@ class MarlTag(MarlDroneEnvironment):
             self.reset_height,
         ]
 
-    def _sample_interceptor_spawn(self, runner_pos: list[float], goal_pos: list[float]) -> list[float]:
+    def _sample_interceptor_spawn(
+        self, runner_pos: list[float], goal_pos: list[float]
+    ) -> list[float]:
         """Seed the interceptor for a FAIR race to contest the runner's path.
 
         A contest point is chosen a fraction ``f`` along the runner->goal line;
@@ -298,7 +321,10 @@ class MarlTag(MarlDroneEnvironment):
         def _clearances_ok(p):
             d_runner = self._distance_3d(p, runner_pos)
             d_goal = self._distance_3d(p, goal_pos)
-            return d_runner >= self.min_runner_clearance and d_goal >= self.min_goal_clearance
+            return (
+                d_runner >= self.min_runner_clearance
+                and d_goal >= self.min_goal_clearance
+            )
 
         fallback = None
         for _ in range(400):
@@ -306,13 +332,31 @@ class MarlTag(MarlDroneEnvironment):
             cx = runner_pos[0] + f * dx
             cy = runner_pos[1] + f * dy
             cz = runner_pos[2] + f * dz
-            L = speed_ratio * f * D * float(np.random.uniform(1.0 - self.fairness_jitter,
-                                                              1.0 + self.fairness_jitter))
+            L = (
+                speed_ratio
+                * f
+                * D
+                * float(
+                    np.random.uniform(
+                        1.0 - self.fairness_jitter, 1.0 + self.fairness_jitter
+                    )
+                )
+            )
             side = 1.0 if np.random.random() < 0.5 else -1.0
             ix = cx + side * px * L
             iy = cy + side * py * L
-            iz = float(np.clip(cz + float(np.random.uniform(-self.interceptor_z_jitter,
-                                                            self.interceptor_z_jitter)), z_lo, z_hi))
+            iz = float(
+                np.clip(
+                    cz
+                    + float(
+                        np.random.uniform(
+                            -self.interceptor_z_jitter, self.interceptor_z_jitter
+                        )
+                    ),
+                    z_lo,
+                    z_hi,
+                )
+            )
             candidate = [ix, iy, iz]
 
             if abs(ix) <= xy and abs(iy) <= xy and _clearances_ok(candidate):
@@ -411,7 +455,11 @@ class MarlTag(MarlDroneEnvironment):
         for agent in self.agents:
             own_pos = positions[agent]
             vel = self.drones[agent].get_calculated_velocity()
-            own_vel = [float(vel.get("x", 0.0)), float(vel.get("y", 0.0)), float(vel.get("z", 0.0))]
+            own_vel = [
+                float(vel.get("x", 0.0)),
+                float(vel.get("y", 0.0)),
+                float(vel.get("z", 0.0)),
+            ]
 
             opp = self._opponent_of(agent)
             opp_pos = positions.get(opp) or self.drones[opp].get_position()
@@ -422,11 +470,11 @@ class MarlTag(MarlDroneEnvironment):
             goal_dist = self._distance_3d(self.goal_position, own_pos)
 
             obs_parts = [
-                self._normalize_position(own_pos),                       # 3
-                self._normalize_velocity(own_vel),                       # 3
-                self._normalize_relative_position(opp_rel),              # 3
+                self._normalize_position(own_pos),  # 3
+                self._normalize_velocity(own_vel),  # 3
+                self._normalize_relative_position(opp_rel),  # 3
                 np.array([opp_dist / self.max_distance_3d], np.float32),  # 1
-                self._normalize_relative_position(goal_rel),             # 3
+                self._normalize_relative_position(goal_rel),  # 3
                 np.array([goal_dist / self.max_distance_3d], np.float32),  # 1
             ]
             observations[agent] = np.concatenate(obs_parts).astype(np.float32)
@@ -437,7 +485,9 @@ class MarlTag(MarlDroneEnvironment):
     # Rewards — near-zero-sum: each agent's reward mirrors the other's
     # ------------------------------------------------------------------
 
-    def _calculate_rewards(self, state_dicts: dict[str, dict[str, Any]]) -> dict[str, float]:
+    def _calculate_rewards(
+        self, state_dicts: dict[str, dict[str, Any]]
+    ) -> dict[str, float]:
         goal_distance = self._runner_goal_distance(state_dicts)
         capture_distance = self._capture_distance(state_dicts)
         runner_pos = self._runner_position(state_dicts)
@@ -454,7 +504,9 @@ class MarlTag(MarlDroneEnvironment):
         elif reached:
             r_runner = self.success_reward
         else:
-            r_runner = (self.previous_goal_distance - goal_distance) * self.goal_progress_multiplier
+            r_runner = (
+                self.previous_goal_distance - goal_distance
+            ) * self.goal_progress_multiplier
             r_runner -= self.step_penalty
             if capture_distance < self.danger_radius:
                 closeness = 1.0 - (capture_distance / self.danger_radius)
@@ -466,9 +518,13 @@ class MarlTag(MarlDroneEnvironment):
         elif reached:
             r_interceptor = -self.success_reward  # runner escaped to the goal
         elif runner_oob:
-            r_interceptor = 0.0  # runner eliminated itself; interceptor neither rewarded nor blamed
+            r_interceptor = (
+                0.0  # runner eliminated itself; interceptor neither rewarded nor blamed
+            )
         else:
-            r_interceptor = (self.previous_capture_distance - capture_distance) * self.capture_progress_multiplier
+            r_interceptor = (
+                self.previous_capture_distance - capture_distance
+            ) * self.capture_progress_multiplier
             r_interceptor -= self.step_penalty
 
         self.previous_goal_distance = goal_distance
@@ -481,7 +537,9 @@ class MarlTag(MarlDroneEnvironment):
     # Terminations / truncations
     # ------------------------------------------------------------------
 
-    def _check_terminations(self, state_dicts: dict[str, dict[str, Any]]) -> dict[str, bool]:
+    def _check_terminations(
+        self, state_dicts: dict[str, dict[str, Any]]
+    ) -> dict[str, bool]:
         goal_distance = self._runner_goal_distance(state_dicts)
         capture_distance = self._capture_distance(state_dicts)
         runner_pos = self._runner_position(state_dicts)
@@ -497,29 +555,37 @@ class MarlTag(MarlDroneEnvironment):
                 self.winner = self.RUNNER
                 self.runner_success_count += 1
                 if self._is_evaluating:
-                    self.success_counts[self.RUNNER] = self.success_counts.get(self.RUNNER, 0) + 1
+                    self.success_counts[self.RUNNER] = (
+                        self.success_counts.get(self.RUNNER, 0) + 1
+                    )
             elif self.caught:
                 self.winner = self.INTERCEPTOR
                 self.interceptor_success_count += 1
                 if self._is_evaluating:
-                    self.success_counts[self.INTERCEPTOR] = self.success_counts.get(self.INTERCEPTOR, 0) + 1
+                    self.success_counts[self.INTERCEPTOR] = (
+                        self.success_counts.get(self.INTERCEPTOR, 0) + 1
+                    )
             else:
                 self.winner = "none"  # runner out of bounds — no winner
 
         # Competitive episode: it ends for both agents at once.
         return {agent: terminal for agent in self.agents}
 
-    def _check_truncations(self, state_dicts: dict[str, dict[str, Any]]) -> dict[str, bool]:
+    def _check_truncations(
+        self, state_dicts: dict[str, dict[str, Any]]
+    ) -> dict[str, bool]:
         time_limit_reached = self.steps >= self.episode_length
 
         any_low_battery = any(
-            state_dicts[agent]["battery"] < self.battery_threshold for agent in self.agents
+            state_dicts[agent]["battery"] < self.battery_threshold
+            for agent in self.agents
         )
 
         # A z-band violation (either drone) usually means an EKF thrust-spike
         # launch — truncate before it drifts into the internal kill boundary.
         z_violation = [
-            agent for agent in self.agents
+            agent
+            for agent in self.agents
             if not (self.z_min <= state_dicts[agent]["position"][2] <= self.z_max)
         ]
         if z_violation:
@@ -542,7 +608,9 @@ class MarlTag(MarlDroneEnvironment):
         action_filter_infos: dict[str, dict[str, Any]] | None = None,
     ) -> dict[str, dict[str, Any]]:
         if state_dicts is None:
-            positions = {agent: self.drones[agent].get_position() for agent in self.agents}
+            positions = {
+                agent: self.drones[agent].get_position() for agent in self.agents
+            }
             state_dicts = self._generate_state_dicts(positions)
 
         goal_distance = self._runner_goal_distance(state_dicts)
@@ -587,9 +655,15 @@ class MarlTag(MarlDroneEnvironment):
             parts.append(self._normalize_position(self.drones[agent].get_position()))
         for agent in self.possible_agents:
             vel = self.drones[agent].get_calculated_velocity()
-            parts.append(self._normalize_velocity(
-                [float(vel.get("x", 0.0)), float(vel.get("y", 0.0)), float(vel.get("z", 0.0))]
-            ))
+            parts.append(
+                self._normalize_velocity(
+                    [
+                        float(vel.get("x", 0.0)),
+                        float(vel.get("y", 0.0)),
+                        float(vel.get("z", 0.0)),
+                    ]
+                )
+            )
         parts.append(self._normalize_position(self.goal_position))
         return np.concatenate(parts).astype(np.float32)
 
@@ -599,11 +673,17 @@ class MarlTag(MarlDroneEnvironment):
         print(f"Goal:               {[round(v, 2) for v in self.goal_position]}")
         print(f"Runner:             {[round(v, 2) for v in runner_pos]}")
         print(f"Interceptor:        {[round(v, 2) for v in interceptor_pos]}")
-        print(f"Distance to goal:   {self._distance_3d(runner_pos, self.goal_position):.2f} "
-              f"(threshold {self.goal_threshold:.2f})")
-        print(f"Separation:         {self._distance_3d(runner_pos, interceptor_pos):.2f} "
-              f"(capture {self.capture_threshold:.2f})")
-        print(f"Reached goal: {self.reached_goal} | Caught: {self.caught} | Winner: {self.winner}")
+        print(
+            f"Distance to goal:   {self._distance_3d(runner_pos, self.goal_position):.2f} "
+            f"(threshold {self.goal_threshold:.2f})"
+        )
+        print(
+            f"Separation:         {self._distance_3d(runner_pos, interceptor_pos):.2f} "
+            f"(capture {self.capture_threshold:.2f})"
+        )
+        print(
+            f"Reached goal: {self.reached_goal} | Caught: {self.caught} | Winner: {self.winner}"
+        )
 
     # ------------------------------------------------------------------
     # Distances / bounds — base hook + helpers
@@ -626,17 +706,21 @@ class MarlTag(MarlDroneEnvironment):
 
     def _is_out_of_task_bounds(self, position: list[float]) -> bool:
         tol = self.out_of_bounds_tolerance
-        return (abs(position[0]) > self.xy_limit + tol or
-                abs(position[1]) > self.xy_limit + tol or
-                position[2] < self.z_min - tol or
-                position[2] > self.z_max + tol)
+        return (
+            abs(position[0]) > self.xy_limit + tol
+            or abs(position[1]) > self.xy_limit + tol
+            or position[2] < self.z_min - tol
+            or position[2] > self.z_max + tol
+        )
 
     # --- state_dict accessors (robust to an agent already being deactivated) ---
 
     def _runner_goal_distance(self, state_dicts: dict[str, dict[str, Any]]) -> float:
         if self.RUNNER in state_dicts:
             return state_dicts[self.RUNNER]["distance_to_target"]
-        return self._distance_3d(self.drones[self.RUNNER].get_position(), self.goal_position)
+        return self._distance_3d(
+            self.drones[self.RUNNER].get_position(), self.goal_position
+        )
 
     def _capture_distance(self, state_dicts: dict[str, dict[str, Any]]) -> float:
         if self.INTERCEPTOR in state_dicts:
@@ -650,3 +734,9 @@ class MarlTag(MarlDroneEnvironment):
         if self.RUNNER in state_dicts:
             return state_dicts[self.RUNNER]["position"]
         return self.drones[self.RUNNER].get_position()
+
+    def _generate_possible_agents(self) -> list[str]:
+        return [
+            "runner_0",
+            "interceptor_0",
+        ]
