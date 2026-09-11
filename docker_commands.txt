@@ -1,3 +1,18 @@
+docker tag \
+    drone-gym:hpc-test \
+    130.216.238.2:5500/drone-gym:hpc-test
+    
+docker push \
+    130.216.238.2:5500/drone-gym:hpc-test
+    
+docker pull \
+    130.216.238.2:5500/drone-gym:hpc-test
+    
+    
+cares-rl train --skip-prompts --run-name sarl_tag_sac_seed10_test cli --gym drone --task sarl_tag SAC --seeds 10 --max_steps_exploration 500 --max_steps_training 5000
+
+cares-rl train --skip-prompts --run-name marl_move_to_targets_2d_sac_seed10 cli --gym marl_drone --task marl_move_to_targets_2d --num_agents 4 MADDPG --seeds 10 --max_steps_exploration 500 --max_steps_training 5000
+
 docker run --rm -it \
     --user "$(id -u):$(id -g)" \
     --gpus all \
