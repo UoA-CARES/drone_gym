@@ -10,13 +10,12 @@ from cflib.crazyflie.log import LogConfig
 from cflib.crazyflie import Crazyflie
 from cflib.crazyflie.syncCrazyflie import SyncCrazyflie
 from cflib.positioning.motion_commander import MotionCommander
-from cflib.utils import uri_helper
+from cflib.utils.power_switch import PowerSwitch
+
 from drone_gym.utils.position_source import (
     PositionSample,
     PositionSource,
 )
-
-from cflib.utils.power_switch import PowerSwitch
 
 
 class DroneSetup:
@@ -137,7 +136,7 @@ class DroneSetup:
             maxlen=15
         )  # Store last 15 positions for moving average
         self.velocity_update_rate = 0.20  # 20Hz velocity calculation rate
-        self.position_update_rate = 0.0166666  # 60Hz position update rate
+        self.position_update_rate = 1 / 60  # 60Hz position update rate
         self.last_velocity_calculation_time = 0.0
 
         # Drone Safety

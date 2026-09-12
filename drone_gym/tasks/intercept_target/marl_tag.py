@@ -558,6 +558,13 @@ class MarlTag(MarlDroneEnvironment):
                 "caught": self.caught,
                 "reached_goal": self.reached_goal,
                 "winner": self.winner,
+                # Per-drone outcome flags (1/0), shared across both agents'
+                # info dicts. Picked up automatically by the generic
+                # success-rate / time-to-outcome plots (any "*_success"
+                # column) once MARLDroneEnvironment hoists them to the top
+                # level of the logged info.
+                "runner_success": int(self.winner == self.RUNNER),
+                "interceptor_success": int(self.winner == self.INTERCEPTOR),
                 "in_boundaries": state_dicts[agent]["in_boundaries"],
                 "battery": state_dicts[agent]["battery"],
             }

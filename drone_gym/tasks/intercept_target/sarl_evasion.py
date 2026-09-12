@@ -1,13 +1,12 @@
+import io
 import math
 import time
-import io
 import threading
 from collections import deque
 from typing import Dict, List, Any, Literal
 import numpy as np
 import matplotlib.pyplot as plt
 import cv2
-from matplotlib.markers import MarkerStyle
 
 from drone_gym.drone_environment import DroneEnvironment
 from drone_gym.agents.bodies import CrazyflieBody
@@ -15,31 +14,29 @@ from drone_gym.agents.policies import CallablePolicy
 from drone_gym.agents.sim_agent import SimAgent
 
 
-class SarlTag(DroneEnvironment):
-    """3D navigate-to-goal-under-interception task (Variant A: expert interceptor).
+class SarlEvasion(DroneEnvironment):
+    """3D pure-evasion task (Variant A: expert interceptor).
 
-    The learner is the **runner** (Drone 1): it spawns at the centre and must fly
-    to a randomly designated **goal** some distance away in 3D, *while evading a
-    second drone that is actively trying to intercept it*. The runner therefore
-    has to balance two objectives — reach the goal AND avoid the interceptor.
+    Identical machinery to :class:`SarlTag` (same reset/recovery/safety-monitor
+    infrastructure, same expert interceptor), but with no goal at all: the
+    learner (Drone 1) has exactly one objective — evade the interceptor for as
+    long as possible. There is nowhere to "win" by arriving anywhere; the only
+    terminal outcomes are getting caught, leaving the boundary, or surviving
+    the full episode.
 
-    The **interceptor** (Drone 2) is a *second real SITL Crazyflie*, brought up
-    through the shared :class:`SimManager` as a ``crazyflie_pursuer`` agent. In
-    this variant its brain is an expert 3D pure-pursuit policy (supplied via the
-    manager's ``callable`` policy seam, because the built-in PurePursuitPolicy is
-    xy-only); in the MARL variant the same seam takes a learned policy instead, so
-    only that one line changes. The interceptor flies faster than the runner so
-    that interception is genuinely feasible.
+    The **interceptor** (Drone 2) is a second real SITL Crazyflie, brought up
+    through the shared :class:`SimManager` as an expert drone. Its brain is the
+    same 3D pure-pursuit (Proportional Navigation) policy as SarlTag's, supplied
+    via the ``callable`` policy seam.
 
     An "interception" is a 0.20 m proximity event (3D), never a real drone-on-drone
     impact: a high-rate background guard stops both drones the instant they are
     within that distance, so the task is collision-safe in sim and the real arena.
 
     Episode outcomes:
-      * success  — runner reaches within ``goal_threshold`` of the goal.
-      * failure  — interceptor gets within ``capture_threshold`` of the runner,
-                   or the runner leaves the boundary.
-      * truncated — ``episode_length`` steps elapse with neither.
+      * success   — the runner survives all ``episode_length`` steps uncaught.
+      * failure   — interceptor gets within ``capture_threshold`` of the runner,
+                    or the runner leaves the boundary.
 
     Launch with the *multi*-agent SITL so both ports exist, e.g.::
 
@@ -54,8 +51,8 @@ class SarlTag(DroneEnvironment):
         max_velocity: float = 0.25,
         step_time: float = 0.5,
         exploration_steps: int = 1000,
-        episode_length: int = 80,
-        interceptor_max_velocity: float = 0.125,
+        episode_length: int = 160,
+        interceptor_max_velocity: float = 0.20,
     ):
         super().__init__(
             use_simulator=use_simulator,
@@ -92,54 +89,35 @@ class SarlTag(DroneEnvironment):
         self.z_max = 1.4
         self.fixed_z = 1.0  # centre of the z band (default altitude)
         # Runner spawn altitude — resampled every episode. Kept a notch inside the
-        # z band so the worst-case vertical gap to a goal (~0.5 m) stays closable
-        # at max_velocity_z within an 80-step episode (0.5 / (0.03 * 0.5) ≈ 34 steps).
+        # z band so vertical variety stays reachable at max_velocity_z within the
+        # episode length.
         self.runner_spawn_z_range = (0.8, 1.2)
         self.spawn_margin = (
             0.5  # keep spawns clear of the xy wall (PID overshoot safety)
         )
-        self.goal_margin = 0.3  # keep the goal clear of the xy wall
         self.z_margin = (
-            0.1  # keep goal/interceptor spawn off the z floor/ceiling (tight band)
+            0.1  # keep interceptor spawn off the z floor/ceiling (tight band)
         )
         self.out_of_bounds_tolerance = 0.05  # small grace for PID overshoot at the wall
 
         # The runner always spawns at the xy centre (0, 0) — lateral diversity
-        # comes from the random goal + interceptor placement, NOT from moving the
-        # runner. This is the proven-stable pattern from intercept_evader /
-        # evade_pursuers: a long-range lateral reset move on the learner stresses
-        # CrazySim's EKF and makes the drone tumble and fall. The spawn ALTITUDE
-        # is resampled each episode (see runner_spawn_z_range): that only changes
-        # the length of the slow, PID-controlled vertical climb out of the ground
-        # teleport, which the max_velocity_z cap keeps gentle.
+        # comes from the random interceptor placement, NOT from moving the
+        # runner. This is the proven-stable pattern from sarl_tag / evade_pursuers:
+        # a long-range lateral reset move on the learner stresses CrazySim's EKF
+        # and makes the drone tumble and fall. The spawn ALTITUDE is resampled
+        # each episode (see runner_spawn_z_range): that only changes the length
+        # of the slow, PID-controlled vertical climb out of the ground teleport,
+        # which the max_velocity_z cap keeps gentle.
         self.runner_spawn = [0.0, 0.0, self.fixed_z]
 
-        # FAIRNESS — goal placement. The goal must be far enough that a faster
-        # interceptor has a real chance to cut the runner off (if the goal were
-        # right next to the runner, the runner trivially wins and the interceptor
-        # has no chance). goal_max keeps the journey bounded so it stays winnable.
-        self.goal_min_distance = 1.5
-        self.goal_max_distance = 2.4
-
-        # FAIRNESS — interceptor placement. The interceptor is seeded so it must
-        # RACE to contest the runner's path: close enough to threaten, far enough
-        # that the runner has a real chance. We pick a contest point along the
-        # runner->goal line, then offset the interceptor sideways by a distance
-        # scaled by the speed ratio so it arrives at the contest point at roughly
-        # the same time as the runner (a fair race — neither side trivially wins).
-        # Hard clearances stop the two degenerate cases the task must avoid:
-        #   * interceptor right in front of the runner  -> runner has no chance
-        #   * interceptor camped on the goal            -> runner has no chance
-        self.intercept_frac = (
-            0.45,
-            0.65,
-        )  # where along the runner->goal path the contest is set up
-        self.fairness_jitter = 0.15  # ±15% randomness on the fair lateral distance
+        # FAIRNESS — interceptor placement. With no goal to race towards, the
+        # interceptor is simply seeded a random distance/direction from the
+        # runner: close enough to threaten immediately, far enough that the
+        # runner has a real chance to establish separation before the chase
+        # is on in earnest.
+        self.interceptor_spawn_min_distance = 1.0
+        self.interceptor_spawn_max_distance = 2.0
         self.interceptor_z_jitter = 0.25  # vertical variety for the interceptor spawn
-        self.min_runner_clearance = (
-            1.0  # interceptor never starts in (near) capture range of the runner
-        )
-        self.min_goal_clearance = 0.6  # interceptor can't start camped on the goal
 
         self.interceptor_max_velocity = (
             interceptor_max_velocity  # > max_velocity so capture is feasible
@@ -150,23 +128,25 @@ class SarlTag(DroneEnvironment):
 
         # --- Interceptor speed curriculum (performance-gated ratchet) --------
         # Start the interceptor fast enough to be a real threat from episode 1,
-        # then raise its speed further as the runner's success rate climbs.
-        # Speed only ever increases, and stalls automatically if the runner
-        # stops improving.
+        # then raise its speed further as the runner's evasion (full-episode-
+        # survival) rate climbs. Speed only ever increases, and stalls
+        # automatically if the runner stops improving.
         self.curriculum_enabled = True
-        self.interceptor_speed_min = 0.10  # starting speed (m/s) — ~71% of the ceiling
+        self.interceptor_speed_min = 0.15  # starting speed (m/s) — 75% of the ceiling
         self.interceptor_speed_max = (
             self.interceptor_max_velocity
         )  # ceiling = the ctor value
         self.curriculum_window = 50  # episodes judged per difficulty level
-        self.curriculum_success_threshold = 0.6  # runner success rate that earns a bump
+        self.curriculum_success_threshold = (
+            0.6  # runner survival rate that earns a bump
+        )
         self.curriculum_speed_step = 0.01  # speed added per bump (m/s)
         if self.curriculum_enabled:
             self.interceptor_max_velocity = self.interceptor_speed_min
         self._recent_runner_outcomes = deque(maxlen=self.curriculum_window)
 
         # Slew-rate limit for the interceptor's commanded velocity — same
-        # tilt/thrust-spike mechanism as max_action_delta above (see its
+        # tilt/thrust-spike mechanism as max_action_delta below (see its
         # comment), but for the pursuer: PN pursuit can reverse direction
         # instantly step-to-step, which is exactly the hard direction change
         # that tilts the drone and has been triggering its firmware crash
@@ -184,7 +164,6 @@ class SarlTag(DroneEnvironment):
         self.capture_threshold = (
             0.20  # metres (3D) — interceptor "catches" the runner (no real collision)
         )
-        self.goal_threshold = 0.20  # metres (3D) — runner has reached the goal
 
         self.max_xy_range = self.xy_limit * 2
         self.max_z_range = self.z_max - self.z_min
@@ -196,19 +175,19 @@ class SarlTag(DroneEnvironment):
         # boundary = (xy, xy, z_low, z_high) — used by the base visual boundary + step clamp
         self.boundary = [self.xy_limit, self.xy_limit, self.z_min, self.z_max]
 
-        # Observation: own(6) + goal block(7) + interceptor block(10) = 23
-        self.observation_space = 6 + 7 + 10
+        # Observation: own(6) + interceptor block(10) = 16 (no goal block — there is no goal)
+        self.observation_space = 6 + 10
 
         # --- Reward parameters ----------------------------------------------
-        self.success_reward = 100.0  # reached the goal — clearly the best outcome
+        # No goal-progress term: the objective is pure survival, so the runner is
+        # rewarded for every step it stays alive, shaped by staying clear of the
+        # interceptor, with a bonus for surviving the whole episode.
+        self.survival_reward = 1.0  # reward for each step survived
+        self.full_evasion_bonus = 100.0  # bonus for surviving the full episode uncaught
         self.intercepted_penalty = (
             -100.0
         )  # caught by the interceptor — clearly the worst
         self.out_of_bounds_penalty = -100.0
-        self.goal_progress_multiplier = (
-            100.0  # main drive: reward closing the gap to the goal
-        )
-        self.step_penalty = 1.0  # small per-step cost — reach the goal FAST
         self.danger_radius = (
             0.6  # within this of the interceptor, apply evasion shaping
         )
@@ -217,25 +196,16 @@ class SarlTag(DroneEnvironment):
         # --- Task state ------------------------------------------------------
         self.done = False
         self.caught = False  # True when the interceptor caught the runner
-        self.reached_goal = False  # True when the runner reached the goal
+        self.survived_full_episode = (
+            False  # True when the runner evaded for the whole episode
+        )
 
-        self.goal_position: List[float] = [0.0, 0.0, self.fixed_z]
         self.interceptor_position: List[float] = [0.0, 0.0, self.fixed_z]
         self.interceptor_velocity: List[float] = [0.0, 0.0, 0.0]
 
         # --- Interceptor agent (second real SITL Crazyflie) ------------------
         # Constructed directly here — agent lifecycle belongs to the environment,
-        # not to SimManager.  SimManager is only responsible for Gazebo visuals.
-        # self.sim_manager = get_default_sim_manager()
-        self.goal_marker_name = "rl_sarl_tag_goal"
-        # # Runner is on port 19850; interceptor is drone 2 from sitl_multiagent_square -n 2
-        # interceptor_uri = "udp://0.0.0.0:19851"
-        # interceptor_body = CrazyflieBody(
-        #     use_simulator=use_simulator,
-        #     uri=interceptor_uri,
-        #     fixed_z=self.fixed_z,
-        # )
-
+        # not to SimManager. SimManager is only responsible for Gazebo visuals.
         interceptor_drone = self.expert_drones[self.INTERCEPTOR_NAME]
         interceptor_body = CrazyflieBody(
             drone=interceptor_drone,
@@ -285,24 +255,10 @@ class SarlTag(DroneEnvironment):
         # CrazySim. TD3's near-deterministic actions are smooth and never hit this.
         # We slew-limit the commanded action per step so every velocity change is
         # gentle — a full reversal ramps over several steps instead of toppling.
-        #
-        # This slew cap is ALSO a horizontal-acceleration cap, which is the real
-        # lever on the launch bug: to accelerate horizontally the quad must TILT,
-        # and a tilted drone corrupts its own downward altitude sensor (the ToF
-        # z/cos(tilt) model amplifies error), which is what triggers the firmware
-        # thrust-spike launch. Smaller per-step velocity change -> smaller tilt ->
-        # valid altitude estimate. The implied acceleration cap is
-        #   max_action_delta * max_velocity / step_time
-        #   = 0.2 * 0.25 / 0.5 = 0.10 m/s^2   (was 0.20 m/s^2 at 0.4)
-        # i.e. the drone now tilts about half as hard to change course.
-        # Lower this further to reduce tilt/launches more; raise for agility. [0, 2].
         self.max_action_delta = 0.2
         self._prev_applied_action = [0.0, 0.0, 0.0]
 
-        # Distance tracking for reward calculation
-        self.previous_goal_distance = self.max_distance
-
-        # Evaluation mode tracking — counts episodes the runner reached the goal
+        # Evaluation mode tracking — counts episodes the runner survived in full
         self.successful_episodes_count = 0
 
         # Episode counter (used by reset-time health checks and logging). EKF
@@ -408,93 +364,30 @@ class SarlTag(DroneEnvironment):
     # Geometry sampling (3D)
     # ------------------------------------------------------------------
 
-    def _sample_goal(self, runner_pos: List[float]) -> List[float]:
-        """Sample a goal between goal_min/max_distance (3D) from the runner."""
-        xy = self.xy_limit - self.goal_margin
-        z_lo, z_hi = self.z_min + self.z_margin, self.z_max - self.z_margin
-        for _ in range(300):
-            x = float(np.random.uniform(-xy, xy))
-            y = float(np.random.uniform(-xy, xy))
-            z = float(np.random.uniform(z_lo, z_hi))
-            d = math.sqrt(
-                (x - runner_pos[0]) ** 2
-                + (y - runner_pos[1]) ** 2
-                + (z - runner_pos[2]) ** 2
-            )
-            if self.goal_min_distance <= d <= self.goal_max_distance:
-                return [x, y, z]
-        # Fallback: mirror the runner across the origin in xy, hold mid altitude
-        return [
-            float(np.clip(-runner_pos[0], -xy, xy)),
-            float(np.clip(-runner_pos[1], -xy, xy)),
-            self.fixed_z,
-        ]
+    def _sample_interceptor_spawn(self, runner_pos: List[float]) -> List[float]:
+        """Seed the interceptor a random distance/direction from the runner.
 
-    def _sample_interceptor_spawn(
-        self, runner_pos: List[float], goal_pos: List[float]
-    ) -> List[float]:
-        """Seed the interceptor for a FAIR race to contest the runner's path.
-
-        A contest point P is chosen a fraction ``f`` of the way along the
-        runner->goal line. The runner reaches P after ~ ``f * D / v_runner``. We
-        place the interceptor abeam P at a lateral distance ``L`` such that it
-        reaches P after ~ ``L / v_interceptor`` ≈ the runner's time — i.e.
-        ``L = (v_interceptor / v_runner) * f * D``. So the interceptor arrives at
-        the contested point at roughly the same moment as the runner: it has a
-        real shot, but cannot trivially win. Clearances keep it out of point-blank
-        range of the runner and off the goal. Everything is clamped into the box.
+        With no goal to race towards, fairness reduces to a single clearance
+        band: close enough that the interceptor poses an immediate threat, far
+        enough that the runner isn't caught before it can even react. Everything
+        is clamped into the arena box.
         """
         xy = self.xy_limit - self.spawn_margin
         z_lo, z_hi = self.z_min + self.z_margin, self.z_max - self.z_margin
 
-        dx = goal_pos[0] - runner_pos[0]
-        dy = goal_pos[1] - runner_pos[1]
-        dz = goal_pos[2] - runner_pos[2]
-        D = math.sqrt(dx * dx + dy * dy + dz * dz) or 1.0
-        xy_len = math.hypot(dx, dy) or 1.0
-        px, py = -dy / xy_len, dx / xy_len  # unit perpendicular to the path in xy
-        speed_ratio = self.interceptor_max_velocity / max(self.max_velocity, 1e-6)
-
-        def _clearances_ok(p):
-            d_runner = math.sqrt(
-                (p[0] - runner_pos[0]) ** 2
-                + (p[1] - runner_pos[1]) ** 2
-                + (p[2] - runner_pos[2]) ** 2
-            )
-            d_goal = math.sqrt(
-                (p[0] - goal_pos[0]) ** 2
-                + (p[1] - goal_pos[1]) ** 2
-                + (p[2] - goal_pos[2]) ** 2
-            )
-            return (
-                d_runner >= self.min_runner_clearance
-                and d_goal >= self.min_goal_clearance
-            )
-
-        fallback = None
         for _ in range(400):
-            f = float(np.random.uniform(*self.intercept_frac))
-            # contest point on the runner->goal line
-            cx = runner_pos[0] + f * dx
-            cy = runner_pos[1] + f * dy
-            cz = runner_pos[2] + f * dz
-            # fair lateral distance so interceptor and runner reach P together
-            L = (
-                speed_ratio
-                * f
-                * D
-                * float(
-                    np.random.uniform(
-                        1.0 - self.fairness_jitter, 1.0 + self.fairness_jitter
-                    )
+            distance = float(
+                np.random.uniform(
+                    self.interceptor_spawn_min_distance,
+                    self.interceptor_spawn_max_distance,
                 )
             )
-            side = 1.0 if np.random.random() < 0.5 else -1.0
-            ix = cx + side * px * L
-            iy = cy + side * py * L
+            azimuth = float(np.random.uniform(0, 2 * math.pi))
+            ix = runner_pos[0] + distance * math.cos(azimuth)
+            iy = runner_pos[1] + distance * math.sin(azimuth)
             iz = float(
                 np.clip(
-                    cz
+                    runner_pos[2]
                     + float(
                         np.random.uniform(
                             -self.interceptor_z_jitter, self.interceptor_z_jitter
@@ -504,41 +397,22 @@ class SarlTag(DroneEnvironment):
                     z_hi,
                 )
             )
-            candidate = [ix, iy, iz]
 
-            in_box = abs(ix) <= xy and abs(iy) <= xy
-            if in_box and _clearances_ok(candidate):
-                return candidate
-            # Keep a clamped candidate as a fallback in case nothing fits cleanly.
-            if fallback is None:
-                clamped = [float(np.clip(ix, -xy, xy)), float(np.clip(iy, -xy, xy)), iz]
-                if _clearances_ok(clamped):
-                    fallback = clamped
+            if abs(ix) <= xy and abs(iy) <= xy:
+                return [ix, iy, iz]
 
-        if fallback is not None:
-            return fallback
-        # Last resort: abeam the midpoint at the runner-clearance distance.
-        cx = runner_pos[0] + 0.55 * dx
-        cy = runner_pos[1] + 0.55 * dy
-        cz = runner_pos[2] + 0.55 * dz
-        L = max(self.min_runner_clearance, 1.0)
+        # Last resort: due east at the minimum clearance distance.
         return [
-            float(np.clip(cx + px * L, -xy, xy)),
-            float(np.clip(cy + py * L, -xy, xy)),
-            float(np.clip(cz, z_lo, z_hi)),
+            float(
+                np.clip(runner_pos[0] + self.interceptor_spawn_min_distance, -xy, xy)
+            ),
+            runner_pos[1],
+            float(np.clip(runner_pos[2], z_lo, z_hi)),
         ]
 
     # ------------------------------------------------------------------
     # Distances (3D)
     # ------------------------------------------------------------------
-
-    def _distance_to_target(self, position: List[float]) -> float:
-        """Base hook: 'target' for this task is the GOAL (used by the info dict)."""
-        return math.sqrt(
-            (position[0] - self.goal_position[0]) ** 2
-            + (position[1] - self.goal_position[1]) ** 2
-            + (position[2] - self.goal_position[2]) ** 2
-        )
 
     def _distance_to_interceptor(self, position: List[float]) -> float:
         return math.sqrt(
@@ -561,8 +435,30 @@ class SarlTag(DroneEnvironment):
             or position[2] > self.z_max + tol
         )
 
+    def _drones_with_z_boundary_violation(
+        self,
+        current_state: Dict[str, Any],
+    ) -> list[str]:
+        """
+        Return owned drones whose altitude is outside
+        the task's allowed z range.
+        """
+
+        violating_drones = []
+
+        for drone_name, drone in self._iter_drones():
+            if drone_name == self.RL_DRONE_NAME:
+                position = current_state["position"]
+            else:
+                position = drone.get_position()
+
+            if not (self.z_min <= position[2] <= self.z_max):
+                violating_drones.append(drone_name)
+
+        return violating_drones
+
     # ------------------------------------------------------------------
-    # Interceptor expert control / state tracking
+    # Interceptor lifecycle / health (EKF blow-up / fell-to-the-floor recovery)
     # ------------------------------------------------------------------
 
     def _sync_interceptor(self):
@@ -583,6 +479,19 @@ class SarlTag(DroneEnvironment):
         ]
         self.interceptor.act({"runner_pos": runner_pos, "runner_vel": runner_vel})
 
+    # ------------------------------------------------------------------
+    # Fatal sim-link recovery (dead UDP link / firmware supervisor crash)
+    #
+    # This is distinct from a latched emergency_event: the base reset's
+    # _reset_all_drones() already clears an ordinary emergency latch and
+    # re-lands/teleports/re-arms the drone just fine. A DroneSim's
+    # fatal_error_event, however, means the underlying cf/scf link itself is
+    # gone (DroneSim._connection_lost / _handle_supervisor_crash) — no amount
+    # of land/teleport/EKF-reset fixes that, the sim process and drone
+    # interfaces have to be rebuilt. Mirrors sarl_tag.py's handling of the
+    # same gap in this shared DroneEnvironment base.
+    # ------------------------------------------------------------------
+
     def _position_past_containment(self, pos) -> bool:
         """True if `pos` has drifted past the containment lines (toward the kill)."""
         return (
@@ -591,22 +500,6 @@ class SarlTag(DroneEnvironment):
             or pos[2] > self.CONTAINMENT_Z_HIGH
             or pos[2] < self.CONTAINMENT_Z_LOW
         )
-
-    def _configure_interceptor_drone(
-        self,
-    ) -> None:
-        """Apply SarlTag-specific safety limits to the interceptor drone."""
-        if not self.use_simulator:
-            return
-
-        interceptor_drone = self.expert_drones[self.INTERCEPTOR_NAME]
-
-        interceptor_drone.boundaries = {
-            "x": 4,
-            "y": 4,
-            "z_min": -0.5,
-            "z_max": 3.0,
-        }
 
     # ------------------------------------------------------------------
     # Collision safety monitor — zeroes both drones within capture_threshold
@@ -727,7 +620,7 @@ class SarlTag(DroneEnvironment):
                         self.caught = True
                         self._collision_event.set()
                         print(
-                            f"[SarlTag] COLLISION GUARD: drones within "
+                            f"[SarlEvasion] COLLISION GUARD: drones within "
                             f"{separation:.2f} m (< {self.capture_threshold:.2f}) — both stopped"
                         )
 
@@ -753,14 +646,17 @@ class SarlTag(DroneEnvironment):
 
     def _update_interceptor_curriculum(self, training: bool = True) -> None:
         """Record the finished episode's runner outcome and, once a full window
-        is in, raise the interceptor's speed if the runner is succeeding often
+        is in, raise the interceptor's speed if the runner is evading often
         enough. Ratchets up only; stalls if the runner plateaus."""
         if not self.curriculum_enabled or not training:
             return
-        # self.reached_goal still holds the just-finished episode's result here
-        # (reset clears it later), so record it before the rest of reset runs.
+        # self.survived_full_episode still holds the just-finished episode's
+        # result here (reset clears it later), so record it before the rest of
+        # reset runs.
         if self._episode_count > 1:
-            self._recent_runner_outcomes.append(1.0 if self.reached_goal else 0.0)
+            self._recent_runner_outcomes.append(
+                1.0 if self.survived_full_episode else 0.0
+            )
         if len(self._recent_runner_outcomes) < self.curriculum_window:
             return
         success_rate = sum(self._recent_runner_outcomes) / len(
@@ -776,79 +672,77 @@ class SarlTag(DroneEnvironment):
             )
             self._recent_runner_outcomes.clear()  # re-earn the next bump at the new speed
             print(
-                f"[SarlTag][curriculum] runner success {success_rate:.0%} -> "
+                f"[SarlEvasion][curriculum] runner survival {success_rate:.0%} -> "
                 f"interceptor speed {self.interceptor_max_velocity:.3f} m/s"
             )
+
+    def _configure_interceptor_drone(
+        self,
+    ) -> None:
+        """Apply simulator-specific safety limits to the interceptor."""
+
+        if not self.use_simulator:
+            return
+
+        interceptor_drone = self.expert_drones[self.INTERCEPTOR_NAME]
+
+        interceptor_drone.boundaries = {
+            "x": 4,
+            "y": 4,
+            "z_min": -0.5,
+            "z_max": 3.0,
+        }
 
     def reset(
         self,
         training: bool = True,
     ):
         """
-        Sample the task geometry and use the base environment to
-        reset the runner and interceptor together.
-
-        Mirrors marl_tag's reset: sample geometry, populate reset_positions,
-        then delegate entirely to the base environment reset. The base
-        _reset_all_drones() (shared pattern with MarlDroneEnvironment) already
-        lands, teleports, clears a latched emergency, re-seeds the EKF and
-        takes off EVERY drone (runner and interceptor alike) EVERY episode —
-        that's what makes a dying drone recover. Layering task-level
-        pre/post "is it dead, call restart()" checks on top of that (the
-        previous approach here) fought with the base reset instead of
-        complementing it and was the source of the flaky recovery.
+        Sample task geometry and delegate drone lifecycle
+        management to DroneEnvironment.
         """
 
         if not training and not self._is_evaluating:
             self.successful_episodes_count = 0
 
-        # The monitor must not treat valid reset movement as capture
-        # or boundary drift.
+        # Do not let the task safety monitor interfere with
+        # coordinated reset movement.
         self._stop_safety_monitor()
         self._collision_event.clear()
 
-        # Stop the existing expert command while reset preparation
-        # and any recovery operations are performed.
+        # Stop the previous expert pursuit command.
         self._freeze_interceptor()
 
         self._episode_count += 1
-
-        # This must happen before interceptor spawn sampling because
-        # the configured speed affects fair placement.
         self._update_interceptor_curriculum(training)
 
-        # Sample the new runner spawn.
         self.runner_spawn[2] = float(np.random.uniform(*self.runner_spawn_z_range))
 
-        # Sample task geometry.
-        self.goal_position = self._sample_goal(self.runner_spawn)
-
-        interceptor_spawn = self._sample_interceptor_spawn(
-            self.runner_spawn,
-            self.goal_position,
-        )
+        interceptor_spawn = self._sample_interceptor_spawn(self.runner_spawn)
 
         self.reset_positions = {
             self.RL_DRONE_NAME: list(self.runner_spawn),
             self.INTERCEPTOR_NAME: list(interceptor_spawn),
         }
 
-        state = super().reset(training)
-        # Fatal simulator recovery may recreate the DroneSim objects.
-        # Keep the task's interceptor body attached to the current
-        # environment-owned expert drone.
+        # Handles:
+        # - normal simulator reset
+        # - fatal simulator recovery
+        # - physical ResetPlanner
+        # - physical battery servicing
+        super().reset(training)
+
+        # Simulator recovery can replace the DroneSim object.
         current_interceptor_drone = self.expert_drones[self.INTERCEPTOR_NAME]
 
         if self.interceptor.body.drone is not current_interceptor_drone:
-            print("[SarlTag] Rebinding interceptor body to recreated DroneSim.")
+            print("[SarlEvasion] Rebinding interceptor body " "to recreated DroneSim.")
             self.interceptor.body.drone = current_interceptor_drone
 
         self._configure_interceptor_drone()
 
         runner_pos = self.rl_drone.get_position()
 
-        # The environment resets the drone lifecycle. The task still
-        # resets the expert policy.
         self.interceptor.reset_policy(
             {
                 "runner_pos": runner_pos,
@@ -859,26 +753,11 @@ class SarlTag(DroneEnvironment):
         self.interceptor.refresh()
         self._sync_interceptor()
 
-        # Draw the goal after the new geometry has been selected.
-        self._set_target_marker(
-            self.goal_position,
-            marker_name=self.goal_marker_name,
-        )
-
-        # _reset_task_state() is already called by super().reset(),
-        # so caught, reached_goal and done have been cleared.
-        self.previous_goal_distance = self._distance_to_target(runner_pos)
-
-        self._prev_applied_action = [
-            0.0,
-            0.0,
-            0.0,
-        ]
+        self._prev_applied_action = [0.0, 0.0, 0.0]
         self._prev_interceptor_velocity = [0.0, 0.0, 0.0]
 
         time.sleep(0.5)
 
-        # Both drones are now at separated targets.
         self._start_safety_monitor()
 
         return self._get_state()
@@ -911,8 +790,9 @@ class SarlTag(DroneEnvironment):
             return result
 
         runner_pos = self.drone.get_position()
-        # Command the expert interceptor BEFORE super().step() so both drones fly
-        # simultaneously during the step_time sleep inside the parent step.
+
+        # Command the expert interceptor before the parent step so
+        # both drones move during the same step interval.
         self._command_interceptor(runner_pos)
 
         # Per-axis boundary clamp: only zero a velocity component that would push the
@@ -966,37 +846,11 @@ class SarlTag(DroneEnvironment):
         """Reset task-specific state variables (called from base reset)."""
         self.done = False
         self.caught = False
-        self.reached_goal = False
-        # A post-step interceptor-death check (see step()) can set this for
-        # the *next* call to step() and never get consumed if that call never
-        # comes because the episode ended on this very step. Left uncleared,
-        # it silently truncates the following episode after a single step.
+        self.survived_full_episode = False
         self.truncate_next = False
 
-    def _drones_with_z_boundary_violation(
-        self,
-        current_state: Dict[str, Any],
-    ) -> list[str]:
-        """
-        Return owned drones whose altitude is outside the task's
-        allowed z range.
-        """
-
-        violating_drones = []
-
-        for drone_name, drone in self._iter_drones():
-            if drone_name == self.RL_DRONE_NAME:
-                position = current_state["position"]
-            else:
-                position = drone.get_position()
-
-            if not (self.z_min <= position[2] <= self.z_max):
-                violating_drones.append(drone_name)
-
-        return violating_drones
-
     def _get_state(self) -> np.ndarray:
-        """Runner-centric 3D observation: own state + goal block + interceptor block."""
+        """Runner-centric 3D observation: own state + interceptor block (no goal — there is none)."""
         position = self.drone.get_position()
         vel_x = self.drone.calculated_velocity["x"]
         vel_y = self.drone.calculated_velocity["y"]
@@ -1013,20 +867,6 @@ class SarlTag(DroneEnvironment):
             vel_x / self.max_velocity,
             vel_y / self.max_velocity,
             vel_z / self.max_velocity_z,
-        ]
-
-        # Goal block (7): relative pos (3), distance (1), direction (3)
-        gx, gy, gz = self.goal_position
-        g_rel_x, g_rel_y, g_rel_z = gx - position[0], gy - position[1], gz - position[2]
-        g_dist = math.sqrt(g_rel_x**2 + g_rel_y**2 + g_rel_z**2)
-        state += [
-            g_rel_x / self.max_xy_range,
-            g_rel_y / self.max_xy_range,
-            g_rel_z / self.max_z_range,
-            g_dist / self.max_distance,
-            g_rel_x / (g_dist + 1e-6),
-            g_rel_y / (g_dist + 1e-6),
-            g_rel_z / (g_dist + 1e-6),
         ]
 
         # Interceptor block (10): relative pos (3), distance (1), direction (3), velocity (3)
@@ -1052,24 +892,26 @@ class SarlTag(DroneEnvironment):
         position = self.drone.get_position()
         return {
             "position": position,
-            "goal_position": self.goal_position[:],
             "interceptor_position": self.interceptor_position[:],
-            "distance_to_goal": self._distance_to_target(position),
             "distance_to_interceptor": self._distance_to_interceptor(position),
             "caught": self.caught,
-            "reached_goal": self.reached_goal,
+            "survived_full_episode": self.survived_full_episode,
             "done": self.done,
         }
 
     def _calculate_reward(self, current_state: Dict[str, Any]) -> float:
-        """Reward = progress to goal − step cost − evasion shaping, with terminal bonuses."""
+        """Reward = survival, shaped by evasion, with terminal bonuses/penalties.
+
+        No goal-progress term exists: the runner is simply rewarded for every
+        step it stays alive, penalised for letting the interceptor get close,
+        and either penalised hard for getting caught / leaving the arena, or
+        given a large bonus for surviving the whole episode.
+        """
         position = current_state["position"]
-        goal_distance = current_state["distance_to_target"]
         interceptor_distance = self._distance_to_interceptor(position)
 
         # Out of bounds is a terminal failure.
         if self._is_out_of_task_bounds(position):
-            self.previous_goal_distance = goal_distance
             return self.out_of_bounds_penalty
 
         # Caught by the interceptor is a terminal failure. The safety monitor may
@@ -1079,42 +921,31 @@ class SarlTag(DroneEnvironment):
             self._collision_event.is_set()
             or interceptor_distance < self.capture_threshold
         ):
-            self.previous_goal_distance = goal_distance
             return self.intercepted_penalty
 
-        # Reached the goal is a terminal success.
-        if goal_distance < self.goal_threshold:
-            self.previous_goal_distance = goal_distance
-            return self.success_reward
+        # Survived the full episode without being caught — terminal success.
+        if self.steps >= self.episode_length:
+            return self.survival_reward + self.full_evasion_bonus
 
-        # Main signal: progress toward the goal.
-        progress = self.previous_goal_distance - goal_distance
-        reward = progress * self.goal_progress_multiplier
-
-        # Small per-step cost so the runner is rewarded for reaching the goal FAST.
-        reward -= self.step_penalty
+        reward = self.survival_reward
 
         # Evasion shaping: ramp up a penalty as the interceptor closes inside the
-        # danger radius, so the runner learns to keep clear without ignoring the goal.
+        # danger radius, so the runner learns to actively keep clear, not just
+        # passively survive.
         if interceptor_distance < self.danger_radius:
             closeness = 1.0 - (interceptor_distance / self.danger_radius)
             reward -= self.danger_penalty * closeness
 
-        self.previous_goal_distance = goal_distance
         return reward
 
     def _check_if_done(self, current_state: Dict[str, Any]) -> bool:
-        """Episode ends on goal reached (success), interception, or out of bounds (failures)."""
-        position = current_state["position"]
-        goal_distance = current_state["distance_to_target"]
-        interceptor_distance = self._distance_to_interceptor(position)
+        """Episode ends (as `done`, not truncation) on interception or out of bounds.
 
-        if goal_distance < self.goal_threshold:
-            self.reached_goal = True
-            self.done = True
-            if self._is_evaluating:
-                self.successful_episodes_count += 1
-            return True
+        Surviving to `episode_length` is handled in `_check_if_truncated` — it's
+        a truncation (the episode ran out of steps), not a `done` termination.
+        """
+        position = current_state["position"]
+        interceptor_distance = self._distance_to_interceptor(position)
 
         if (
             self._collision_event.is_set()
@@ -1141,12 +972,12 @@ class SarlTag(DroneEnvironment):
         current_state: Dict[str, Any],
     ) -> bool:
         """
-        Truncate the episode on time limit, fatal simulator failure,
-        or an invalid drone altitude.
+        Truncate on simulator failure, unsafe altitude,
+        time limit, or an explicitly requested truncation.
         """
 
-        # A fatal DroneSim error requires the base environment to
-        # restart CrazySim during the following reset.
+        # Fatal simulator recovery belongs to the base environment
+        # during the following reset.
         if self.use_simulator and self._get_fatal_sim_drone_names():
             return True
 
@@ -1154,14 +985,19 @@ class SarlTag(DroneEnvironment):
 
         if z_violation_drones:
             print(
-                "[SarlTag] Z boundary violation detected for: "
-                f"{z_violation_drones}. "
+                "[SarlEvasion] Z boundary violation "
+                f"detected for: {z_violation_drones}. "
                 "Truncating episode."
             )
-
             return True
 
         if self.steps >= self.episode_length:
+            if not self.caught:
+                self.survived_full_episode = True
+
+                if self._is_evaluating:
+                    self.successful_episodes_count += 1
+
             return True
 
         if self.truncate_next:
@@ -1173,21 +1009,13 @@ class SarlTag(DroneEnvironment):
     def _get_additional_info(self, current_state: Dict[str, Any]) -> Dict[str, Any]:
         position = current_state["position"]
         info = {
-            "goal_position": self.goal_position[:],
             "interceptor_position": self.interceptor_position[:],
-            "distance_to_goal": self._distance_to_target(position),
             "distance_to_interceptor": self._distance_to_interceptor(position),
             "caught": self.caught,
-            "reached_goal": self.reached_goal,
-            "success": self.reached_goal,
-            # Per-drone outcome flags (1/0), picked up automatically by the
-            # generic success-rate / time-to-outcome plots (any "*_success"
-            # column). Runner succeeds by reaching the goal; the interceptor
-            # succeeds by catching the runner first.
-            "runner_success": int(self.reached_goal),
-            "interceptor_success": int(self.caught),
+            "survived_full_episode": self.survived_full_episode,
+            "success": self.survived_full_episode,
             "out_of_bounds": self._is_out_of_task_bounds(position),
-            "description": "3D navigate-to-goal under interception — RL runner vs expert interceptor",
+            "description": "3D pure evasion — RL runner evading an expert interceptor indefinitely",
         }
         if self._is_evaluating:
             info["success_count"] = self.successful_episodes_count
@@ -1218,24 +1046,17 @@ class SarlTag(DroneEnvironment):
 
     def _render_task_specific_info(self):
         pos = self.drone.get_position()
-        d_goal = self._distance_to_target(pos)
         d_int = self._distance_to_interceptor(pos)
         print(f"Runner Position:      [{pos[0]:.2f}, {pos[1]:.2f}, {pos[2]:.2f}]")
         print(
-            f"Goal Position:        [{self.goal_position[0]:.2f}, "
-            f"{self.goal_position[1]:.2f}, {self.goal_position[2]:.2f}]"
-        )
-        print(
-            f"Interceptor Position: [{self.interceptor_position[0]:.2f}, "
-            f"{self.interceptor_position[1]:.2f}, {self.interceptor_position[2]:.2f}]"
-        )
-        print(
-            f"Distance to Goal:        {d_goal:.2f}  (threshold {self.goal_threshold:.2f})"
+            f"Interceptor Position: [{self.interceptor_position[0]:.2f}, {self.interceptor_position[1]:.2f}, {self.interceptor_position[2]:.2f}]"
         )
         print(
             f"Distance to Interceptor: {d_int:.2f}  (capture {self.capture_threshold:.2f})"
         )
-        print(f"Reached Goal: {self.reached_goal} | Caught: {self.caught}")
+        print(
+            f"Steps survived: {self.steps}/{self.episode_length} | Caught: {self.caught}"
+        )
 
     def grab_frame(self, height: int = 540, width: int = 960) -> np.ndarray:
         fig = plt.figure(figsize=(width / 120, height / 120), dpi=120)
@@ -1251,7 +1072,6 @@ class SarlTag(DroneEnvironment):
 
         gs = GridSpec(1, 2, figure=fig, wspace=0.25, width_ratios=[1, 1])
 
-        gx, gy, gz = self.goal_position
         ix, iy, iz = self.interceptor_position
 
         # LEFT: 3D trajectory
@@ -1278,18 +1098,6 @@ class SarlTag(DroneEnvironment):
             depthshade=False,
             edgecolors="black",
             linewidth=0.5,
-        )
-        ax1.scatter(
-            gx,
-            gy,
-            gz,
-            color="lime",
-            marker="*",
-            s=160,
-            label="Goal",
-            depthshade=False,
-            edgecolors="black",
-            linewidth=1,
         )
         ax1.scatter(
             ix,
@@ -1365,31 +1173,15 @@ class SarlTag(DroneEnvironment):
             zorder=4,
         )
         ax2.scatter(
-            gx,
-            gy,
-            color="lime",
-            marker=MarkerStyle("*"),
-            s=160,
-            label="Goal",
-            edgecolors="black",
-            linewidth=1,
-            zorder=5,
-        )
-        ax2.scatter(
             ix,
             iy,
             color="red",
-            marker=MarkerStyle("^"),
+            marker="^",
             s=120,
             label="Interceptor",
             edgecolors="black",
             linewidth=1,
             zorder=5,
-        )
-        ax2.add_patch(
-            plt.Circle(
-                (gx, gy), self.goal_threshold, color="lime", alpha=0.18, zorder=1
-            )
         )
         ax2.add_patch(
             plt.Circle(
@@ -1408,11 +1200,13 @@ class SarlTag(DroneEnvironment):
         ax2.tick_params(axis="both", labelsize=8)
 
         outcome = (
-            "Reached Goal"
-            if self.reached_goal
+            "Survived"
+            if self.survived_full_episode
             else ("Caught" if self.caught else "In Progress")
         )
-        fig.suptitle(f"SARL Tag (Step {self.steps}) | {outcome}", fontsize=13, y=0.98)
+        fig.suptitle(
+            f"SARL Evasion (Step {self.steps}) | {outcome}", fontsize=13, y=0.98
+        )
         plt.tight_layout(rect=[0, 0, 1, 0.96])
 
         buf = io.BytesIO()

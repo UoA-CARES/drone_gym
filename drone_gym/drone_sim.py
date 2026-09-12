@@ -124,9 +124,6 @@ class DroneSim(DroneSetup):
             self.cf.param.set_value("kalman.resetEstimation", "1")
             time.sleep(0.5)
 
-            # Arm the drone
-            print(f"[{self.agent_id}] Arming Crazyflie...")
-            # self.cf.platform.send_arming_request(True)
             self.cf.supervisor.send_arming_request(True)
             time.sleep(1.5)
             self.armed = True
@@ -134,7 +131,6 @@ class DroneSim(DroneSetup):
 
             self._setup_battery_logging()
             self._setup_velocity_logging()
-            # self.cf.disconnected.add_callback(self._disconnected)
 
             # Signal that hardware is ready
             self.hardware_ready_event.set()

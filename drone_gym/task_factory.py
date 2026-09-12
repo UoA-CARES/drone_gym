@@ -5,6 +5,7 @@ from drone_gym.tasks.intercept_target.intercept_target_line_2d import InterceptT
 from drone_gym.tasks.intercept_target.intercept_target_line_3d import InterceptTargetLine3D
 from drone_gym.tasks.intercept_target.intercept_evader_2d_particle import InterceptEvader2DParticle
 from drone_gym.tasks.intercept_target.sarl_tag import SarlTag
+from drone_gym.tasks.intercept_target.sarl_evasion import SarlEvasion
 from drone_gym.tasks.move_to_2d_position import MoveToPosition
 from drone_gym.tasks.move_to_random_2d_position import MoveToRandomPosition
 from drone_gym.tasks.move_to_3d_position import MoveTo3DPosition
@@ -45,6 +46,8 @@ def make(task_name: str, use_simulator: Literal[0,1], **kwargs):
         env = InterceptEvader2DParticle(use_simulator, **kwargs)
     elif task_name == "sarl_tag":
         env = SarlTag(use_simulator, **kwargs)
+    elif task_name == "sarl_evasion":
+        env = SarlEvasion(use_simulator, **kwargs)
     elif task_name == "evade_pursuers_2d":
         env = EvadePursuers2D(use_simulator, **kwargs)
     elif task_name == "evade_pursuers_2d_particle":
