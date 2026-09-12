@@ -85,8 +85,8 @@ class MarlTag(MarlDroneEnvironment):
             reset_spacing=reset_spacing,
         )
 
-        self.runner_agents = self.possible_agents[0]
-        self.interceptor_agents = self.possible_agents[1:]
+        self.runner_agents: list[str] = [self.possible_agents[0]]
+        self.interceptor_agents: list[str] = self.possible_agents[1:]
 
         self.episode_length = episode_length
         self.time_tolerance = 0.15  # look-ahead slack for the boundary brake
@@ -180,11 +180,24 @@ class MarlTag(MarlDroneEnvironment):
             high=np.array([1.0, 1.0, 1.0], dtype=np.float32),
             dtype=np.float32,
         )
-        # own(6) + opponent(4) + goal(4) = 14
-        obs_dim = 6 + 4 + 4
-        self._observation_space = spaces.Box(
-            low=-np.inf, high=np.inf, shape=(obs_dim,), dtype=np.float32
+
+        # Runner observation:
+        # [own vel, own pos, other agents rel pos, other good agents vel, goal rel pos]
+        runner_obs_dim = (
+            3 + 3 + (num_agents - 1) * 3 + (len(self.runner_agents) - 1) * 3 + 3
         )
+        self._runner_observation_space = spaces.Box(
+            low=-np.inf, high=np.inf, shape=(runner_obs_dim,), dtype=np.float32
+        )
+
+        # Interceptor observation:
+        # [own vel, own pos, other agents rel pos, other good agents vel]
+        interceptor_obs_dim = 3 + 3 + (num_agents - 1) * 3 + len(self.runner_agents) * 3
+        self._interceptor_observation_space = spaces.Box(
+            low=-np.inf, high=np.inf, shape=(interceptor_obs_dim,), dtype=np.float32
+        )
+
+        # TODO: This needs to be updated to reflect the actual observation space for each agent.
         # global state: 2 positions(6) + 2 velocities(6) + goal(3) = 15
         state_dim = 2 * 3 + 2 * 3 + 3
         self.state_space = spaces.Box(
@@ -438,47 +451,107 @@ class MarlTag(MarlDroneEnvironment):
         info = {"requested_velocity": requested, "sent_velocity": list(limited)}
         return limited[0], limited[1], limited[2], info
 
-    # ------------------------------------------------------------------
-    # Observations — homogeneous 14-vector: own(6) + opponent(4) + goal(4)
-    # ------------------------------------------------------------------
+    # -------------
+    # Observations
+    # -------------
 
-    def _opponent_of(self, agent: str) -> str:
-        return (
-            self.interceptor_agents
-            if agent == self.runner_agents
-            else self.runner_agents
-        )
+    def _get_runner_observations(self, agent: str) -> np.ndarray:
+        """Runner sees its own state, the interceptor's relative position, and the
+        goal's relative position."""
+        vel = self.drones[agent].get_calculated_velocity()
+        own_vel = [
+            float(vel.get("x", 0.0)),
+            float(vel.get("y", 0.0)),
+            float(vel.get("z", 0.0)),
+        ]
+        own_pos = self.drones[agent].get_position()
 
-    def _get_observations(self) -> dict[str, np.ndarray]:
-        positions = {agent: self.drones[agent].get_position() for agent in self.agents}
-        observations: dict[str, np.ndarray] = {}
+        # Relative position of every other drone
+        other_agents_rel_pos = np.array([], dtype=np.float32)
+        for other in self.possible_agents:
+            if other != agent:
+                other_pos = self.drones[other].get_position()
+                rel_pos = self._relative_position(other_pos, own_pos)
+                other_agents_rel_pos = np.concatenate(
+                    (other_agents_rel_pos, self._normalize_relative_pos(rel_pos))
+                )
 
-        for agent in self.agents:
-            own_pos = positions[agent]
-            vel = self.drones[agent].get_calculated_velocity()
-            own_vel = [
+        # Other runner agent vel
+        other_good_agents_vel = np.array([], dtype=np.float32)
+        for other in self.runner_agents:
+            if other != agent:
+                vel = self.drones[other].get_calculated_velocity()
+                other_vel = [
+                    float(vel.get("x", 0.0)),
+                    float(vel.get("y", 0.0)),
+                    float(vel.get("z", 0.0)),
+                ]
+                other_good_agents_vel = np.concatenate(
+                    (other_good_agents_vel, self._normalize_vel(other_vel))
+                )
+
+        goal_pos = self.goal_position
+        goal_rel = self._relative_position(goal_pos, own_pos)
+
+        obs_parts = [
+            self._normalize_vel(own_vel),  # 3
+            self._normalize_pos(own_pos),  # 3
+            other_agents_rel_pos,  # 3 * (num_agents - 1)
+            other_good_agents_vel,  # 3 * (num_runner_agents - 1)
+            self._normalize_relative_pos(goal_rel),  # 3
+        ]
+        return np.concatenate(obs_parts).astype(np.float32)
+
+    def _get_interceptor_observations(self, agent: str) -> np.ndarray:
+        """Interceptor sees its own state, the runner's relative position, and the
+        goal's relative position."""
+        vel = self.drones[agent].get_calculated_velocity()
+        own_vel = [
+            float(vel.get("x", 0.0)),
+            float(vel.get("y", 0.0)),
+            float(vel.get("z", 0.0)),
+        ]
+        own_pos = self.drones[agent].get_position()
+
+        # Relative position of every other drone
+        other_agents_rel_pos = np.array([], dtype=np.float32)
+        for other in self.possible_agents:
+            if other != agent:
+                other_pos = self.drones[other].get_position()
+                rel_pos = self._relative_position(other_pos, own_pos)
+                other_agents_rel_pos = np.concatenate(
+                    (other_agents_rel_pos, self._normalize_relative_pos(rel_pos))
+                )
+
+        # Other runner agent vel
+        other_good_agents_vel = np.array([], dtype=np.float32)
+        for other in self.runner_agents:
+            vel = self.drones[other].get_calculated_velocity()
+            other_vel = [
                 float(vel.get("x", 0.0)),
                 float(vel.get("y", 0.0)),
                 float(vel.get("z", 0.0)),
             ]
+            other_good_agents_vel = np.concatenate(
+                (other_good_agents_vel, self._normalize_vel(other_vel))
+            )
 
-            opp = self._opponent_of(agent)
-            opp_pos = positions.get(opp) or self.drones[opp].get_position()
+        obs_parts = [
+            self._normalize_vel(own_vel),  # 3
+            self._normalize_pos(own_pos),  # 3
+            other_agents_rel_pos,  # 3 * (num_agents - 1)
+            other_good_agents_vel,  # 3 * num_runner_agents
+        ]
+        return np.concatenate(obs_parts).astype(np.float32)
 
-            opp_rel = [opp_pos[i] - own_pos[i] for i in range(3)]
-            opp_dist = self._distance_3d(opp_pos, own_pos)
-            goal_rel = [self.goal_position[i] - own_pos[i] for i in range(3)]
-            goal_dist = self._distance_3d(self.goal_position, own_pos)
+    def _get_observations(self) -> dict[str, np.ndarray]:
+        observations: dict[str, np.ndarray] = {}
 
-            obs_parts = [
-                self._normalize_position(own_pos),  # 3
-                self._normalize_velocity(own_vel),  # 3
-                self._normalize_relative_position(opp_rel),  # 3
-                np.array([opp_dist / self.max_distance_3d], np.float32),  # 1
-                self._normalize_relative_position(goal_rel),  # 3
-                np.array([goal_dist / self.max_distance_3d], np.float32),  # 1
-            ]
-            observations[agent] = np.concatenate(obs_parts).astype(np.float32)
+        for agent in self.agents:
+            if agent in self.runner_agents:
+                observations[agent] = self._get_runner_observations(agent)
+            else:
+                observations[agent] = self._get_interceptor_observations(agent)
 
         return observations
 
@@ -656,11 +729,11 @@ class MarlTag(MarlDroneEnvironment):
     def _get_global_state(self) -> np.ndarray:
         parts = []
         for agent in self.possible_agents:
-            parts.append(self._normalize_position(self.drones[agent].get_position()))
+            parts.append(self._normalize_pos(self.drones[agent].get_position()))
         for agent in self.possible_agents:
             vel = self.drones[agent].get_calculated_velocity()
             parts.append(
-                self._normalize_velocity(
+                self._normalize_vel(
                     [
                         float(vel.get("x", 0.0)),
                         float(vel.get("y", 0.0)),
@@ -668,7 +741,7 @@ class MarlTag(MarlDroneEnvironment):
                     ]
                 )
             )
-        parts.append(self._normalize_position(self.goal_position))
+        parts.append(self._normalize_pos(self.goal_position))
         return np.concatenate(parts).astype(np.float32)
 
     def _render_task_specific_info(self) -> None:
@@ -746,3 +819,12 @@ class MarlTag(MarlDroneEnvironment):
             "runner_0",
             *[f"interceptor_{i}" for i in range(self.num_agents_config - 1)],
         ]
+
+    def observation_space(self, agent: str) -> spaces.Space:
+        """
+        Return gymnasium Space object for the given agent's observations.
+        """
+        if agent in self.runner_agents:
+            return self._runner_observation_space
+        if agent in self.interceptor_agents:
+            return self._interceptor_observation_space

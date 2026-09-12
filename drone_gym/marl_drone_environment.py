@@ -1575,7 +1575,7 @@ class MarlDroneEnvironment(ParallelEnv):
         """
         return vx, vy, vz, {}
 
-    def _normalize_position(self, position: list[float]) -> np.ndarray:
+    def _normalize_pos(self, position: list[float]) -> np.ndarray:
         """Normalize a 3D position based on environment boundaries."""
         x, y, z = position
 
@@ -1588,7 +1588,7 @@ class MarlDroneEnvironment(ParallelEnv):
 
         return np.array([x_norm, y_norm, z_norm], dtype=np.float32)
 
-    def _normalize_velocity(self, velocity_xyz: list[float]) -> np.ndarray:
+    def _normalize_vel(self, velocity_xyz: list[float]) -> np.ndarray:
         """Normalize a velocity vector based on maximum velocity limits."""
         vx, vy, vz = velocity_xyz
 
@@ -1601,7 +1601,7 @@ class MarlDroneEnvironment(ParallelEnv):
             dtype=np.float32,
         )
 
-    def _normalize_relative_position(self, rel_xyz: list[float]) -> np.ndarray:
+    def _normalize_relative_pos(self, rel_xyz: list[float]) -> np.ndarray:
         """Normalize a relative position vector based on maximum possible distances."""
         rx, ry, rz = rel_xyz
 
@@ -1613,6 +1613,16 @@ class MarlDroneEnvironment(ParallelEnv):
             ],
             dtype=np.float32,
         )
+
+    def _relative_position(
+        self, position: list[float], reference: list[float]
+    ) -> list[float]:
+        """Calculate the relative position of a point with respect to a reference."""
+        return [
+            position[0] - reference[0],
+            position[1] - reference[1],
+            position[2] - reference[2],
+        ]
 
     def _generate_state_dicts(
         self,
