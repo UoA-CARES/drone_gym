@@ -71,10 +71,9 @@ class MarlTag(MarlDroneEnvironment):
         self.num_interceptor_agents = num_agents - 1
         self.num_runner_agents = 1
 
-        # Exactly two agents: possible_agents becomes ["drone_0", "drone_1"].
         super().__init__(
             use_simulator=use_simulator,
-            num_agents=2,
+            num_agents=num_agents,
             max_velocity=max_velocity,
             max_velocity_z=max_velocity_z,
             step_time=step_time,
@@ -241,7 +240,9 @@ class MarlTag(MarlDroneEnvironment):
                 f"interceptor speed {self.interceptor_speed:.3f} m/s"
             )
 
-    def reset(self, seed: int | None = None, options: dict[str, Any] | None = None):
+    def reset(
+        self, seed: int | None = None, options: dict[str, Any] | None = None
+    ) -> tuple[dict[str, np.ndarray], dict[str, Any]]:
         """Sample the episode geometry, write it into ``reset_positions`` so the
         base teleport places each drone at its spawn, then defer to the base
         reset (land -> teleport -> take off -> velocity control)."""
@@ -251,16 +252,7 @@ class MarlTag(MarlDroneEnvironment):
         # feeds the fair-spawn placement.
         self._update_interceptor_curriculum(training)
 
-        # The runner always starts at the centre; the goal and interceptor spawn
-        # are randomized. Sample here (before the base reset) because the base's
-        # _reset_all_drones teleports drones to reset_positions.
-        self.goal_position = self._sample_goal(self.runner_spawn)
-        interceptor_spawn = self._sample_interceptor_spawn(
-            self.runner_spawn, self.goal_position
-        )
-
-        self.reset_positions[self.runner_agents] = list(self.runner_spawn)
-        self.reset_positions[self.interceptor_agents] = interceptor_spawn
+        self.reset_positions = self._generate_reset_positions()
 
         return super().reset(seed=seed, options=options)
 
@@ -308,7 +300,10 @@ class MarlTag(MarlDroneEnvironment):
         ]
 
     def _sample_interceptor_spawn(
-        self, runner_pos: list[float], goal_pos: list[float]
+        self,
+        runner_pos: list[float],
+        goal_pos: list[float],
+        reset_positions: dict[str, list[float]],
     ) -> list[float]:
         """Seed the interceptor for a FAIR race to contest the runner's path.
 
@@ -328,12 +323,26 @@ class MarlTag(MarlDroneEnvironment):
         px, py = -dy / xy_len, dx / xy_len  # unit perpendicular to the path in xy
         speed_ratio = self.interceptor_speed_ratio
 
-        def _clearances_ok(p):
-            d_runner = self._distance_3d(p, runner_pos)
-            d_goal = self._distance_3d(p, goal_pos)
-            return (
-                d_runner >= self.min_runner_clearance
-                and d_goal >= self.min_goal_clearance
+        def _clearances_ok(position: list[float]) -> bool:
+            distance_from_runner = self._distance_3d(
+                position,
+                runner_pos,
+            )
+            distance_from_goal = self._distance_3d(
+                position,
+                goal_pos,
+            )
+
+            if distance_from_runner < self.min_runner_clearance:
+                return False
+
+            if distance_from_goal < self.min_goal_clearance:
+                return False
+
+            return self.reset_planner.is_xy_position_clear(
+                position,
+                reset_positions,
+                self.reset_planner.slot_clearance,
             )
 
         fallback = None
@@ -388,6 +397,30 @@ class MarlTag(MarlDroneEnvironment):
             float(np.clip(cy + py * L, -xy, xy)),
             float(np.clip(cz, z_lo, z_hi)),
         ]
+
+    def _generate_reset_positions(self) -> dict[str, list[float]]:
+        reset_positions: dict[str, list[float]] = {}
+
+        # MarlTag currently supports one runner.
+        runner_agent = self.runner_agents[0]
+        runner_position = list(self.runner_spawn)
+
+        reset_positions[runner_agent] = runner_position
+
+        self.goal_position = self._sample_goal(runner_position)
+
+        for interceptor_agent in self.interceptor_agents:
+            interceptor_position = self._sample_interceptor_spawn(
+                runner_position,
+                self.goal_position,
+                reset_positions,
+            )
+
+            reset_positions[interceptor_agent] = interceptor_position
+
+        self.reset_planner.validate_reset_positions(reset_positions)
+
+        return reset_positions
 
     # ------------------------------------------------------------------
     # Per-step action processing — boundary brake + slew limit (both agents)
