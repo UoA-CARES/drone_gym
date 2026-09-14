@@ -59,8 +59,8 @@ class MarlTag(MarlDroneEnvironment):
         max_velocity_z: float = 0.03,
         step_time: float = 0.5,
         xy_limit: float = 2.0,
-        z_min: float = 0.8,
-        z_max: float = 1.2,
+        z_min: float = 0.4,
+        z_max: float = 2.5,
         reset_height: float = 1.0,
         reset_spacing: float = 0.5,
         episode_length: int = 80,
@@ -134,7 +134,7 @@ class MarlTag(MarlDroneEnvironment):
         # the Crazyflie if applied as instantaneous velocity reversals. The SARL
         # task only needed to smooth the runner (its interceptor ran a smooth
         # expert policy); here the interceptor needs the same treatment.
-        self.boundary_brake_margin = 0.25
+        self.boundary_brake_margin = 0.2
         self.z_brake_margin = 0.10
         # Max change in commanded velocity per step, per axis (m/s). Matches the
         # SARL effective cap: 0.2 (normalized) * 0.25 (max_velocity) = 0.05 m/s.
@@ -146,14 +146,12 @@ class MarlTag(MarlDroneEnvironment):
         # --- Reward parameters ----------------------------------------------
         self.success_reward = 100.0  # runner reaches goal
         self.capture_reward = 100.0  # interceptor catches runner
-        self.out_of_bounds_penalty = (
-            100.0  # runner leaves the arena (magnitude; applied negative)
-        )
+        self.boundary_penalty_at_limit = -1.0  # penalty at the boundary limit
         self.goal_progress_multiplier = 100.0  # runner: reward closing on the goal
         self.capture_progress_multiplier = (
             100.0  # interceptor: reward closing on the runner
         )
-        self.step_penalty = 1.0  # both: small per-step cost (act fast)
+        # self.step_penalty = 1.0  # both: small per-step cost (act fast)
         self.danger_radius = 0.6  # runner: evasion shaping kicks in inside this
         self.danger_penalty = 5.0  # runner: max shaping penalty at zero separation
 
@@ -163,7 +161,9 @@ class MarlTag(MarlDroneEnvironment):
         self.reached_goal = False
         self.winner: str | None = None
         self.previous_goal_distance = self.max_distance_3d
-        self.previous_capture_distance = self.max_distance_3d
+        self.previous_capture_distances: dict[str, float] = {
+            interceptor: self.max_distance_3d for interceptor in self.interceptor_agents
+        }
         self.runner_success_count = 0
         self.interceptor_success_count = 0
 
@@ -261,12 +261,16 @@ class MarlTag(MarlDroneEnvironment):
         for agent in self.possible_agents:
             self._prev_applied_action[agent] = [0.0, 0.0, 0.0]
 
-        # Seed the progress trackers from the true starting geometry so the first
-        # step's progress reward is measured against the spawn, not a stale value.
         runner_pos = self.drones[self.runner_agents].get_position()
-        interceptor_pos = self.drones[self.interceptor_agents].get_position()
         self.previous_goal_distance = self._distance_3d(runner_pos, self.goal_position)
-        self.previous_capture_distance = self._distance_3d(interceptor_pos, runner_pos)
+
+        self.previous_capture_distances = {
+            interceptor: self._distance_3d(
+                self.drones[interceptor].get_position(),
+                runner_pos,
+            )
+            for interceptor in self.interceptor_agents
+        }
 
         if self.use_simulator:
             self._set_target_marker(position=self.goal_position, marker_name="tag_goal")
@@ -599,60 +603,133 @@ class MarlTag(MarlDroneEnvironment):
 
         return observations
 
-    # ------------------------------------------------------------------
-    # Rewards — near-zero-sum: each agent's reward mirrors the other's
-    # ------------------------------------------------------------------
+    # -------
+    # Rewards
+    # -------
 
     def _calculate_rewards(
         self, state_dicts: dict[str, dict[str, Any]]
     ) -> dict[str, float]:
+        runner_agent = self.runner_agents[0]
+
         goal_distance = self._runner_goal_distance(state_dicts)
-        capture_distance = self._capture_distance(state_dicts)
+        capture_distances = self._capture_distances(state_dicts)
         runner_pos = self._runner_position(state_dicts)
 
-        runner_oob = self._is_out_of_task_bounds(runner_pos)
-        caught = capture_distance < self.capture_threshold
+        caught = self._capture_occurred(capture_distances)
         reached = goal_distance < self.goal_threshold
+        runner_oob = self._is_out_of_task_bounds(runner_pos)
 
-        # --- Runner reward ---
-        if runner_oob:
-            r_runner = -self.out_of_bounds_penalty
-        elif caught:
-            r_runner = -self.capture_reward
-        elif reached:
-            r_runner = self.success_reward
-        else:
-            r_runner = (
-                self.previous_goal_distance - goal_distance
-            ) * self.goal_progress_multiplier
-            r_runner -= self.step_penalty
-            if capture_distance < self.danger_radius:
-                closeness = 1.0 - (capture_distance / self.danger_radius)
-                r_runner -= self.danger_penalty * closeness
+        # Runner reward
+        runner_reward = (
+            self.previous_goal_distance - goal_distance
+        ) * self.goal_progress_multiplier
 
-        # --- Interceptor reward (mirror) ---
-        if caught:
-            r_interceptor = self.capture_reward
-        elif reached:
-            r_interceptor = -self.success_reward  # runner escaped to the goal
-        elif runner_oob:
-            r_interceptor = (
-                0.0  # runner eliminated itself; interceptor neither rewarded nor blamed
+        # Interceptor reward
+        interceptor_rewards: dict[str, float] = {}
+
+        for interceptor in self.interceptor_agents:
+            capture_distance = capture_distances[interceptor]
+
+            progress = self.previous_capture_distances[interceptor] - capture_distance
+
+            interceptor_rewards[interceptor] = (
+                progress * self.capture_progress_multiplier
             )
-        else:
-            r_interceptor = (
-                self.previous_capture_distance - capture_distance
-            ) * self.capture_progress_multiplier
-            r_interceptor -= self.step_penalty
+
+        if caught:
+            runner_reward -= self.capture_reward
+            for interceptor in self.interceptor_agents:
+                interceptor_rewards[interceptor] += self.capture_reward
+        elif reached:
+            runner_reward += self.success_reward
+            for interceptor in self.interceptor_agents:
+                interceptor_rewards[interceptor] -= self.success_reward
 
         self.previous_goal_distance = goal_distance
-        self.previous_capture_distance = capture_distance
+        self.previous_capture_distances = capture_distances
 
         rewards = {
-            self.runner_agents: float(r_runner),
-            self.interceptor_agents: float(r_interceptor),
+            runner_agent: float(runner_reward),
+            **interceptor_rewards,
         }
-        return {agent: rewards[agent] for agent in self.agents}
+
+        for agent in self.agents:
+            position = state_dicts[agent]["position"]
+            rewards[agent] += self._boundary_penalty(position)
+
+        return rewards
+
+    def _boundary_penalty(self, position: list[float]) -> float:
+        """Return the individual boundary shaping penalty for one drone."""
+
+        def _risk(
+            distance_from_centre: float,
+            penalty_start: float,
+            hard_limit: float,
+        ) -> float:
+            if distance_from_centre <= penalty_start:
+                return 0.0
+
+            penalty_width = hard_limit - penalty_start
+
+            if penalty_width <= 0.0:
+                return 1.0
+
+            # Linear increase through the boundary margin.
+            if distance_from_centre <= hard_limit:
+                return (distance_from_centre - penalty_start) / penalty_width
+
+            # Exponential increase beyond the hard boundary.
+            overshoot = distance_from_centre - hard_limit
+            normalised_overshoot = overshoot / penalty_width
+
+            return float(
+                # Exponential boundary rate.
+                np.exp(1.0 * normalised_overshoot)
+            )
+
+        # XY boundary penalty.
+        xy_penalty_start = self.xy_limit - self.boundary_brake_margin
+
+        x_risk = _risk(
+            abs(position[0]),
+            xy_penalty_start,
+            self.xy_limit,
+        )
+
+        y_risk = _risk(
+            abs(position[1]),
+            xy_penalty_start,
+            self.xy_limit,
+        )
+
+        # Z boundary penalty.
+        z_mid = (self.z_min + self.z_max) / 2.0
+
+        if position[2] >= z_mid:
+            z_distance = position[2] - z_mid
+            hard_z_extent = self.z_max - z_mid
+            z_penalty_start = self.z_max - self.z_brake_margin - z_mid
+        else:
+            z_distance = z_mid - position[2]
+            hard_z_extent = z_mid - self.z_min
+            z_penalty_start = z_mid - self.z_min - self.z_brake_margin
+
+        z_risk = _risk(
+            z_distance,
+            z_penalty_start,
+            hard_z_extent,
+        )
+
+        # Use the most severe boundary risk.
+        boundary_risk = max(
+            x_risk,
+            y_risk,
+            z_risk,
+        )
+
+        return self.boundary_penalty_at_limit * boundary_risk
 
     # ------------------------------------------------------------------
     # Terminations / truncations
@@ -851,6 +928,40 @@ class MarlTag(MarlDroneEnvironment):
         return self._distance_3d(
             self.drones[self.interceptor_agents].get_position(),
             self.drones[self.runner_agents].get_position(),
+        )
+
+    def _capture_distances(
+        self,
+        state_dicts: dict[str, dict[str, Any]],
+    ) -> dict[str, float]:
+        runner_agent = self.runner_agents[0]
+
+        if runner_agent in state_dicts:
+            runner_position = state_dicts[runner_agent]["position"]
+        else:
+            runner_position = self.drones[runner_agent].get_position()
+
+        distances: dict[str, float] = {}
+
+        for interceptor in self.interceptor_agents:
+            if interceptor in state_dicts:
+                interceptor_position = state_dicts[interceptor]["position"]
+            else:
+                interceptor_position = self.drones[interceptor].get_position()
+
+            distances[interceptor] = self._distance_3d(
+                interceptor_position,
+                runner_position,
+            )
+
+        return distances
+
+    def _capture_occurred(
+        self,
+        capture_distances: dict[str, float],
+    ) -> bool:
+        return any(
+            distance < self.capture_threshold for distance in capture_distances.values()
         )
 
     def _runner_position(self, state_dicts: dict[str, dict[str, Any]]) -> list[float]:
