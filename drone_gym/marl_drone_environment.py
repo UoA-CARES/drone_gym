@@ -231,12 +231,12 @@ class MarlDroneEnvironment(ParallelEnv):
         """
         Take a step in the environment using the provided actions.
 
-        Actions are expected to be normalized in the range [-1, 1]. They are
-        denormalized to velocity commands based on `max_velocity` and
+        Actions are expected to be normalised in the range [-1, 1]. They are
+        denormalised to velocity commands based on `max_velocity` and
         `max_velocity_z`.
 
         Args:
-            actions: Normalized action commands for each active agent.
+            actions: normalised action commands for each active agent.
 
         Returns:
             A tuple containing:
@@ -256,11 +256,11 @@ class MarlDroneEnvironment(ParallelEnv):
         self.prior_states = self._generate_state_dicts(old_positions)
 
         # Apply all actions
-        denormalized_actions = {}
+        denormalised_actions = {}
         action_filter_infos = {}
 
         for agent in self.agents:
-            vx, vy, vz = self._denormalize_action(actions[agent])
+            vx, vy, vz = self._denormalise_action(agent, actions[agent])
 
             vx, vy, vz, action_filter_info = self._apply_task_action_processing(
                 agent=agent,
@@ -270,7 +270,7 @@ class MarlDroneEnvironment(ParallelEnv):
                 current_position=old_positions[agent],
             )
 
-            denormalized_actions[agent] = [vx, vy, vz]
+            denormalised_actions[agent] = [vx, vy, vz]
             action_filter_infos[agent] = action_filter_info
 
             self.drones[agent].set_velocity_vector(vx, vy, vz)
@@ -306,8 +306,8 @@ class MarlDroneEnvironment(ParallelEnv):
 
         infos = self._get_infos(
             state_dicts=state_dicts,
-            denormalized_actions=denormalized_actions,
-            normalized_actions=actions,
+            denormalised_actions=denormalised_actions,
+            normalised_actions=actions,
             old_positions=old_positions,
             new_positions=new_positions,
             action_filter_infos=action_filter_infos,
@@ -1522,15 +1522,19 @@ class MarlDroneEnvironment(ParallelEnv):
         )
         return False
 
-    def _denormalize_action(self, action: np.ndarray) -> tuple[float, float, float]:
+    def _denormalise_action(
+        self, agent: str, action: np.ndarray
+    ) -> tuple[float, float, float]:
         """
-        Convert a normalized action into velocity commands.
+        Convert a normalised action into velocity commands.
 
         The x and y velocity components are scaled by `max_velocity`, while the z
         velocity component is scaled by `max_velocity_z`.
         """
-        vx = float(action[0]) * self.max_velocity
-        vy = float(action[1]) * self.max_velocity
+        max_velocity = self._get_agent_max_velocity(agent)
+
+        vx = float(action[0]) * max_velocity
+        vy = float(action[1]) * max_velocity
         vz = float(action[2]) * self.max_velocity_z
 
         return vx, vy, vz
@@ -1560,23 +1564,24 @@ class MarlDroneEnvironment(ParallelEnv):
 
         Args:
             agent: Agent whose action is being processed.
-            vx: Desired x-axis velocity command.
-            vy: Desired y-axis velocity command.
-            vz: Desired z-axis velocity command.
+            vx, vy, vz: Velocity commands derived from the policy action.
             current_position: Current position of the agent's drone.
 
         Returns:
             A tuple containing:
 
-            - vx: Processed x-axis velocity command.
-            - vy: Processed y-axis velocity command.
-            - vz: Processed z-axis velocity command.
+            - vx, vy, vz: Processed velocity commands after task-specific modifications.
             - action_info: Additional task-specific action metadata.
         """
         return vx, vy, vz, {}
 
-    def _normalize_pos(self, position: list[float]) -> np.ndarray:
-        """Normalize a 3D position based on environment boundaries."""
+    def _get_agent_max_velocity(self, agent: str) -> float:
+        """Return the maximum XY velocity for an agent.
+        Can be overridden by task environments to provide agent-specific limits."""
+        return self.max_velocity
+
+    def _normalise_pos(self, position: list[float]) -> np.ndarray:
+        """Normalise a 3D position based on environment boundaries."""
         x, y, z = position
 
         x_norm = x / self.xy_limit
@@ -1588,21 +1593,29 @@ class MarlDroneEnvironment(ParallelEnv):
 
         return np.array([x_norm, y_norm, z_norm], dtype=np.float32)
 
-    def _normalize_vel(self, velocity_xyz: list[float]) -> np.ndarray:
-        """Normalize a velocity vector based on maximum velocity limits."""
+    def _normalise_vel(
+        self, velocity_xyz: list[float], agent: str | None = None
+    ) -> np.ndarray:
+        """Normalise a velocity vector based on maximum velocity limits."""
         vx, vy, vz = velocity_xyz
+
+        max_velocity = (
+            self._get_agent_max_velocity(agent)
+            if agent is not None
+            else self.max_velocity
+        )
 
         return np.array(
             [
-                vx / self.max_velocity,
-                vy / self.max_velocity,
+                vx / max_velocity,
+                vy / max_velocity,
                 vz / self.max_velocity_z,
             ],
             dtype=np.float32,
         )
 
-    def _normalize_relative_pos(self, rel_xyz: list[float]) -> np.ndarray:
-        """Normalize a relative position vector based on maximum possible distances."""
+    def _normalise_relative_pos(self, rel_xyz: list[float]) -> np.ndarray:
+        """Normalise a relative position vector based on maximum possible distances."""
         rx, ry, rz = rel_xyz
 
         return np.array(
@@ -1746,7 +1759,7 @@ class MarlDroneEnvironment(ParallelEnv):
 
     @abstractmethod
     def _get_observations(self) -> dict[str, np.ndarray]:
-        """Return one normalized observation vector per active agent."""
+        """Return one normalised observation vector per active agent."""
 
     @abstractmethod
     def _calculate_rewards(
@@ -1773,8 +1786,8 @@ class MarlDroneEnvironment(ParallelEnv):
     def _get_infos(
         self,
         state_dicts: dict[str, dict[str, Any]] | None = None,
-        denormalized_actions: dict[str, list[float]] | None = None,
-        normalized_actions: dict[str, np.ndarray] | None = None,
+        denormalised_actions: dict[str, list[float]] | None = None,
+        normalised_actions: dict[str, np.ndarray] | None = None,
         old_positions: dict[str, list[float]] | None = None,
         new_positions: dict[str, list[float]] | None = None,
         action_filter_infos: dict[str, dict[str, Any]] | None = None,

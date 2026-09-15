@@ -90,6 +90,9 @@ class MarlTag(MarlDroneEnvironment):
         self.runner_agents: list[str] = [self.possible_agents[0]]
         self.interceptor_agents: list[str] = self.possible_agents[1:]
 
+        self.runner_max_velocity = max_velocity
+        self.interceptor_max_velocity = max_velocity
+
         self.episode_length = episode_length
 
         # --- Win conditions --------------------------------------------------
@@ -478,7 +481,7 @@ class MarlTag(MarlDroneEnvironment):
                 other_pos = self.drones[other].get_position()
                 rel_pos = self._relative_position(other_pos, own_pos)
                 other_agents_rel_pos = np.concatenate(
-                    (other_agents_rel_pos, self._normalize_relative_pos(rel_pos))
+                    (other_agents_rel_pos, self._normalise_relative_pos(rel_pos))
                 )
 
         # Other runner agent vel
@@ -492,18 +495,18 @@ class MarlTag(MarlDroneEnvironment):
                     float(vel.get("z", 0.0)),
                 ]
                 other_good_agents_vel = np.concatenate(
-                    (other_good_agents_vel, self._normalize_vel(other_vel))
+                    (other_good_agents_vel, self._normalise_vel(other_vel, agent=other))
                 )
 
         goal_pos = self.goal_position
         goal_rel = self._relative_position(goal_pos, own_pos)
 
         obs_parts = [
-            self._normalize_vel(own_vel),  # 3
-            self._normalize_pos(own_pos),  # 3
+            self._normalise_vel(own_vel, agent),  # 3
+            self._normalise_pos(own_pos),  # 3
             other_agents_rel_pos,  # 3 * (num_agents - 1)
             other_good_agents_vel,  # 3 * (num_runner_agents - 1)
-            self._normalize_relative_pos(goal_rel),  # 3
+            self._normalise_relative_pos(goal_rel),  # 3
         ]
         return np.concatenate(obs_parts).astype(np.float32)
 
@@ -525,7 +528,7 @@ class MarlTag(MarlDroneEnvironment):
                 other_pos = self.drones[other].get_position()
                 rel_pos = self._relative_position(other_pos, own_pos)
                 other_agents_rel_pos = np.concatenate(
-                    (other_agents_rel_pos, self._normalize_relative_pos(rel_pos))
+                    (other_agents_rel_pos, self._normalise_relative_pos(rel_pos))
                 )
 
         # Other runner agent vel
@@ -538,12 +541,12 @@ class MarlTag(MarlDroneEnvironment):
                 float(vel.get("z", 0.0)),
             ]
             other_good_agents_vel = np.concatenate(
-                (other_good_agents_vel, self._normalize_vel(other_vel))
+                (other_good_agents_vel, self._normalise_vel(other_vel, agent=other))
             )
 
         obs_parts = [
-            self._normalize_vel(own_vel),  # 3
-            self._normalize_pos(own_pos),  # 3
+            self._normalise_vel(own_vel, agent),  # 3
+            self._normalise_pos(own_pos),  # 3
             other_agents_rel_pos,  # 3 * (num_agents - 1)
             other_good_agents_vel,  # 3 * num_runner_agents
         ]
@@ -776,8 +779,8 @@ class MarlTag(MarlDroneEnvironment):
     def _get_infos(
         self,
         state_dicts: dict[str, dict[str, Any]] | None = None,
-        denormalized_actions: dict[str, list[float]] | None = None,
-        normalized_actions: dict[str, np.ndarray] | None = None,
+        denormalised_actions: dict[str, list[float]] | None = None,
+        normalised_actions: dict[str, np.ndarray] | None = None,
         old_positions: dict[str, list[float]] | None = None,
         new_positions: dict[str, list[float]] | None = None,
         action_filter_infos: dict[str, dict[str, Any]] | None = None,
@@ -811,11 +814,11 @@ class MarlTag(MarlDroneEnvironment):
                 "in_boundaries": state_dicts[agent]["in_boundaries"],
                 "battery": state_dicts[agent]["battery"],
             }
-            if denormalized_actions is not None:
-                info["denormalized_action"] = denormalized_actions.get(agent)
-            if normalized_actions is not None:
-                a = normalized_actions.get(agent)
-                info["normalized_action"] = a.tolist() if a is not None else None
+            if denormalised_actions is not None:
+                info["denormalised_action"] = denormalised_actions.get(agent)
+            if normalised_actions is not None:
+                a = normalised_actions.get(agent)
+                info["normalised_action"] = a.tolist() if a is not None else None
             if action_filter_infos is not None:
                 info["action_filter_info"] = action_filter_infos.get(agent)
             if self._is_evaluating:
@@ -827,19 +830,20 @@ class MarlTag(MarlDroneEnvironment):
     def _get_global_state(self) -> np.ndarray:
         parts = []
         for agent in self.possible_agents:
-            parts.append(self._normalize_pos(self.drones[agent].get_position()))
+            parts.append(self._normalise_pos(self.drones[agent].get_position()))
         for agent in self.possible_agents:
             vel = self.drones[agent].get_calculated_velocity()
             parts.append(
-                self._normalize_vel(
+                self._normalise_vel(
                     [
                         float(vel.get("x", 0.0)),
                         float(vel.get("y", 0.0)),
                         float(vel.get("z", 0.0)),
-                    ]
+                    ],
+                    agent=agent,
                 )
             )
-        parts.append(self._normalize_pos(self.goal_position))
+        parts.append(self._normalise_pos(self.goal_position))
         return np.concatenate(parts).astype(np.float32)
 
     def _render_task_specific_info(self) -> None:
@@ -960,3 +964,11 @@ class MarlTag(MarlDroneEnvironment):
             return self._runner_observation_space
         if agent in self.interceptor_agents:
             return self._interceptor_observation_space
+
+    def _get_agent_max_velocity(self, agent: str) -> float:
+        if agent in self.runner_agents:
+            return self.runner_max_velocity
+
+        if agent in self.interceptor_agents:
+            return self.interceptor_max_velocity
+        raise ValueError(f"Unknown agent: {agent}")
