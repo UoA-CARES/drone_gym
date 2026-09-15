@@ -47,6 +47,9 @@ from gymnasium import spaces
 
 from drone_gym.marl_drone_environment import MarlDroneEnvironment
 
+RUNNER = "runner"
+INTERCEPTOR = "interceptor"
+
 
 class MarlTag(MarlDroneEnvironment):
     """Competitive 3D pursuit–evasion for two learning drones."""
@@ -736,41 +739,41 @@ class MarlTag(MarlDroneEnvironment):
     # ------------------------------------------------------------------
 
     def _check_terminations(
-        self, state_dicts: dict[str, dict[str, Any]]
+        self,
+        state_dicts: dict[str, dict[str, Any]],
     ) -> dict[str, bool]:
         goal_distance = self._runner_goal_distance(state_dicts)
-        capture_distance = self._capture_distance(state_dicts)
-        runner_pos = self._runner_position(state_dicts)
+        capture_distances = self._capture_distances(state_dicts)
 
+        self.caught = self._capture_occurred(capture_distances)
         self.reached_goal = goal_distance < self.goal_threshold
-        self.caught = capture_distance < self.capture_threshold
-        runner_oob = self._is_out_of_task_bounds(runner_pos)
 
-        terminal = self.reached_goal or self.caught or runner_oob
+        terminal = self.caught or self.reached_goal
 
         if terminal and self.winner is None:
-            if self.reached_goal:
-                self.winner = self.runner_agents
-                self.runner_success_count += 1
-                if self._is_evaluating:
-                    self.success_counts[self.runner_agents] = (
-                        self.success_counts.get(self.runner_agents, 0) + 1
-                    )
-            elif self.caught:
-                self.winner = self.interceptor_agents
+            # Capture takes priority if capture and goal occur on the same step.
+            if self.caught:
+                self.winner = INTERCEPTOR
                 self.interceptor_success_count += 1
-                if self._is_evaluating:
-                    self.success_counts[self.interceptor_agents] = (
-                        self.success_counts.get(self.interceptor_agents, 0) + 1
-                    )
-            else:
-                self.winner = "none"  # runner out of bounds — no winner
 
-        # Competitive episode: it ends for both agents at once.
+                if self._is_evaluating:
+                    self.success_counts[INTERCEPTOR] = (
+                        self.success_counts.get(INTERCEPTOR, 0) + 1
+                    )
+
+            elif self.reached_goal:
+                self.winner = RUNNER
+                self.runner_success_count += 1
+
+                if self._is_evaluating:
+                    self.success_counts[RUNNER] = self.success_counts.get(RUNNER, 0) + 1
+
+        # Competitive episode: one task outcome ends the episode for everyone.
         return {agent: terminal for agent in self.agents}
 
     def _check_truncations(
-        self, state_dicts: dict[str, dict[str, Any]]
+        self,
+        state_dicts: dict[str, dict[str, Any]],
     ) -> dict[str, bool]:
         time_limit_reached = self.steps >= self.episode_length
 
@@ -778,6 +781,20 @@ class MarlTag(MarlDroneEnvironment):
             state_dicts[agent]["battery"] < self.battery_threshold
             for agent in self.agents
         )
+
+        # TODO: Have to look into how these are handled for Sim vs Real with new boundary
+        #  reward system
+        # boundary_violations = [
+        #     agent
+        #     for agent in self.agents
+        #     if self._is_out_of_task_bounds(state_dicts[agent]["position"])
+        # ]
+
+        # if boundary_violations:
+        #     print(
+        #         f"[MarlTag] boundary violation "
+        #         f"{boundary_violations} — truncating episode"
+        #     )
 
         # A z-band violation (either drone) usually means an EKF thrust-spike
         # launch — truncate before it drifts into the internal kill boundary.
@@ -789,7 +806,13 @@ class MarlTag(MarlDroneEnvironment):
         if z_violation:
             print(f"[MarlTag] z-boundary violation {z_violation} — truncating episode")
 
-        truncate_all = time_limit_reached or any_low_battery or bool(z_violation)
+        truncate_all = (
+            # time_limit_reached or any_low_battery or bool(boundary_violations)
+            time_limit_reached
+            or any_low_battery
+            or bool(z_violation)
+        )
+
         return {agent: truncate_all for agent in self.agents}
 
     # ------------------------------------------------------------------
@@ -817,7 +840,7 @@ class MarlTag(MarlDroneEnvironment):
         infos: dict[str, dict[str, Any]] = {}
         for agent in self.agents:
             info: dict[str, Any] = {
-                "role": "runner" if agent == self.runner_agents else "interceptor",
+                "role": "runner" if agent in self.runner_agents else "interceptor",
                 "goal_position": self.goal_position[:],
                 "distance_to_goal": goal_distance,
                 "separation": capture_distance,
@@ -829,8 +852,8 @@ class MarlTag(MarlDroneEnvironment):
                 # success-rate / time-to-outcome plots (any "*_success"
                 # column) once MARLDroneEnvironment hoists them to the top
                 # level of the logged info.
-                "runner_success": int(self.winner == self.RUNNER),
-                "interceptor_success": int(self.winner == self.INTERCEPTOR),
+                "runner_success": int(self.winner == RUNNER),
+                "interceptor_success": int(self.winner == INTERCEPTOR),
                 "in_boundaries": state_dicts[agent]["in_boundaries"],
                 "battery": state_dicts[agent]["battery"],
             }
@@ -971,8 +994,8 @@ class MarlTag(MarlDroneEnvironment):
 
     def _generate_possible_agents(self) -> list[str]:
         return [
-            "runner_0",
-            *[f"interceptor_{i}" for i in range(self.num_agents_config - 1)],
+            f"{RUNNER}_0",
+            *[f"{INTERCEPTOR}_{i}" for i in range(self.num_agents_config - 1)],
         ]
 
     def observation_space(self, agent: str) -> spaces.Space:
