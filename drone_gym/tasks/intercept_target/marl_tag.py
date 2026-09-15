@@ -91,7 +91,6 @@ class MarlTag(MarlDroneEnvironment):
         self.interceptor_agents: list[str] = self.possible_agents[1:]
 
         self.episode_length = episode_length
-        self.time_tolerance = 0.15  # look-ahead slack for the boundary brake
 
         # --- Win conditions --------------------------------------------------
         self.capture_threshold = (
@@ -132,20 +131,6 @@ class MarlTag(MarlDroneEnvironment):
         self._episode_count = 0
         self._recent_runner_outcomes = deque(maxlen=self.curriculum_window)
 
-        # --- Stability: boundary brake + slew limit --------------------------
-        # BOTH agents now learn, so BOTH emit high-entropy actions that topple
-        # the Crazyflie if applied as instantaneous velocity reversals. The SARL
-        # task only needed to smooth the runner (its interceptor ran a smooth
-        # expert policy); here the interceptor needs the same treatment.
-        self.boundary_brake_margin = 0.2
-        self.z_brake_margin = 0.10
-        # Max change in commanded velocity per step, per axis (m/s). Matches the
-        # SARL effective cap: 0.2 (normalized) * 0.25 (max_velocity) = 0.05 m/s.
-        self.max_velocity_delta = 0.05
-        self._prev_applied_action: dict[str, list[float]] = {
-            agent: [0.0, 0.0, 0.0] for agent in self.possible_agents
-        }
-
         # --- Reward parameters ----------------------------------------------
         self.success_reward = 100.0  # runner reaches goal
         self.capture_reward = 100.0  # interceptor catches runner
@@ -154,6 +139,8 @@ class MarlTag(MarlDroneEnvironment):
         self.capture_progress_multiplier = (
             100.0  # interceptor: reward closing on the runner
         )
+        self.boundary_penalty_margin = 0.2
+        self.z_boundary_penalty_margin = 0.10
         # self.step_penalty = 1.0  # both: small per-step cost (act fast)
         self.danger_radius = 0.6  # runner: evasion shaping kicks in inside this
         self.danger_penalty = 5.0  # runner: max shaping penalty at zero separation
@@ -259,10 +246,6 @@ class MarlTag(MarlDroneEnvironment):
         self.caught = False
         self.reached_goal = False
         self.winner = None
-
-        # Both agents start the episode at rest.
-        for agent in self.possible_agents:
-            self._prev_applied_action[agent] = [0.0, 0.0, 0.0]
 
         runner_pos = self.drones[self.runner_agents].get_position()
         self.previous_goal_distance = self._distance_3d(runner_pos, self.goal_position)
@@ -441,7 +424,7 @@ class MarlTag(MarlDroneEnvironment):
         )
 
     # ------------------------------------------------------------------
-    # Per-step action processing — boundary brake + slew limit (both agents)
+    # Per-step action processing — interceptor curriculum speed cap
     # ------------------------------------------------------------------
 
     def _apply_task_action_processing(
@@ -452,55 +435,26 @@ class MarlTag(MarlDroneEnvironment):
         vz: float,
         current_position: list[float],
     ) -> tuple[float, float, float, dict[str, Any]]:
-        """Zero any velocity component that would push a drone further out of
-        bounds, then slew-limit the change from last step so a full reversal
-        ramps over several steps instead of toppling the Crazyflie.
-
-        (Per-agent speed asymmetry — e.g. a faster interceptor — would go here:
-        scale this agent's components and re-clip. Kept symmetric for v1 because
-        ``_denormalize_action`` has no agent argument.)
+        """Apply task-specific processing to an agent's velocity command.
+        Apply curriculum learning speed cap to the interceptor's commanded xy velocity.
         """
         requested = [vx, vy, vz]
 
         # Curriculum speed cap: scale the interceptor's commanded xy velocity so
         # its top speed = interceptor_speed. The runner is unaffected.
-        if agent == self.interceptor_agents and self.curriculum_enabled:
+        if agent in self.interceptor_agents and self.curriculum_enabled:
             ratio = self.interceptor_speed / max(self.max_velocity, 1e-6)
             vx *= ratio
             vy *= ratio
 
-        prediction_time = self.step_time + self.time_tolerance
+        sent = [vx, vy, vz]
 
-        px = current_position[0] + vx * prediction_time
-        py = current_position[1] + vy * prediction_time
-        pz = current_position[2] + vz * prediction_time
+        info = {
+            "requested_velocity": requested,
+            "sent_velocity": sent,
+        }
 
-        xy_brake = self.xy_limit - self.boundary_brake_margin
-        if px > xy_brake and vx > 0:
-            vx = 0.0
-        elif px < -xy_brake and vx < 0:
-            vx = 0.0
-        if py > xy_brake and vy > 0:
-            vy = 0.0
-        elif py < -xy_brake and vy < 0:
-            vy = 0.0
-
-        z_hi = self.z_max - self.z_brake_margin
-        z_lo = self.z_min + self.z_brake_margin
-        if pz > z_hi and vz > 0:
-            vz = 0.0
-        elif pz < z_lo and vz < 0:
-            vz = 0.0
-
-        prev = self._prev_applied_action[agent]
-        limited = []
-        for cur, p in zip((vx, vy, vz), prev):
-            delta = max(-self.max_velocity_delta, min(self.max_velocity_delta, cur - p))
-            limited.append(p + delta)
-        self._prev_applied_action[agent] = limited
-
-        info = {"requested_velocity": requested, "sent_velocity": list(limited)}
-        return limited[0], limited[1], limited[2], info
+        return vx, vy, vz, info
 
     # -------------
     # Observations
@@ -693,7 +647,7 @@ class MarlTag(MarlDroneEnvironment):
             )
 
         # XY boundary penalty.
-        xy_penalty_start = self.xy_limit - self.boundary_brake_margin
+        xy_penalty_start = self.xy_limit - self.boundary_penalty_margin
 
         x_risk = _risk(
             abs(position[0]),
@@ -713,11 +667,11 @@ class MarlTag(MarlDroneEnvironment):
         if position[2] >= z_mid:
             z_distance = position[2] - z_mid
             hard_z_extent = self.z_max - z_mid
-            z_penalty_start = self.z_max - self.z_brake_margin - z_mid
+            z_penalty_start = self.z_max - self.z_boundary_penalty_margin - z_mid
         else:
             z_distance = z_mid - position[2]
             hard_z_extent = z_mid - self.z_min
-            z_penalty_start = z_mid - self.z_min - self.z_brake_margin
+            z_penalty_start = z_mid - self.z_min - self.z_boundary_penalty_margin
 
         z_risk = _risk(
             z_distance,
