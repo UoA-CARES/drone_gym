@@ -47,12 +47,18 @@ from gymnasium import spaces
 
 from drone_gym.marl_drone_environment import MarlDroneEnvironment
 
-RUNNER = "runner"
-INTERCEPTOR = "interceptor"
-
 
 class MarlTag(MarlDroneEnvironment):
     """Competitive 3D pursuit–evasion for two learning drones."""
+
+    RUNNER = "runner"
+    INTERCEPTOR = "interceptor"
+    CURRICULUM_STAGES = [
+        {"interceptor_speed_factor": 0.40},
+        {"interceptor_speed_factor": 0.60},
+        {"interceptor_speed_factor": 0.80},
+        {"interceptor_speed_factor": 1.00},
+    ]
 
     def __init__(
         self,
@@ -103,7 +109,6 @@ class MarlTag(MarlDroneEnvironment):
 
         # --- Geometry (mirrors sarl_tag) ------------------------------------
         self.out_of_bounds_tolerance = 0.05
-        self.interceptor_speed_ratio = 1.0
 
         # --- Reset geometry ---------------------------------------------------
         self.goal_min_distance_ratio = 0.60
@@ -120,17 +125,10 @@ class MarlTag(MarlDroneEnvironment):
         # (applied in _apply_task_action_processing). Start slow so the runner
         # can learn to navigate, then raise the cap as its success rate climbs.
         self.curriculum_enabled = True
-        self.interceptor_speed_min = 0.05  # starting cap (m/s)
-        self.interceptor_speed_max = self.max_velocity  # ceiling = runner's max speed
+        self.curriculum_stage = 0
         self.curriculum_window = 50
         self.curriculum_success_threshold = 0.6
-        self.curriculum_speed_step = 0.02
-        self.interceptor_speed = (
-            self.interceptor_speed_min if self.curriculum_enabled else self.max_velocity
-        )
-        self.interceptor_speed_ratio = self.interceptor_speed / max(
-            self.max_velocity, 1e-6
-        )
+        self.curriculum_interceptor_vel_factor = 1.0
         self._episode_count = 0
         self._recent_runner_outcomes = deque(maxlen=self.curriculum_window)
 
@@ -193,39 +191,65 @@ class MarlTag(MarlDroneEnvironment):
     # ------------------------------------------------------------------
     # Reset — sample fresh geometry, then teleport both drones to spawns
     # ------------------------------------------------------------------
-
-    def _update_interceptor_curriculum(self, training: bool = True) -> None:
-        """Raise the interceptor's speed cap as the runner's success rate climbs.
-        Ratchets up only; stalls if the runner plateaus."""
+    def _update_interceptor_curriculum(
+        self,
+        training: bool = True,
+    ) -> None:
         if not self.curriculum_enabled or not training:
             return
-        # self.winner still holds the just-finished episode's result here
-        # (_reset_task_state clears it later during super().reset()).
+
+        max_stage = len(self.CURRICULUM_STAGES) - 1
+        if self.curriculum_stage >= max_stage:
+            return
+
         if self._episode_count > 1:
             self._recent_runner_outcomes.append(
-                1.0 if self.winner == self.runner_agents else 0.0
+                1.0 if self.winner == self.RUNNER else 0.0
             )
+
         if len(self._recent_runner_outcomes) < self.curriculum_window:
             return
+
         success_rate = sum(self._recent_runner_outcomes) / len(
             self._recent_runner_outcomes
         )
-        if (
-            success_rate >= self.curriculum_success_threshold
-            and self.interceptor_speed < self.interceptor_speed_max
-        ):
-            self.interceptor_speed = min(
-                self.interceptor_speed_max,
-                self.interceptor_speed + self.curriculum_speed_step,
-            )
-            self.interceptor_speed_ratio = self.interceptor_speed / max(
-                self.max_velocity, 1e-6
-            )
-            self._recent_runner_outcomes.clear()
+
+        if success_rate < self.curriculum_success_threshold:
+            self.advance_curriculum()
             print(
-                f"[MarlTag][curriculum] runner success {success_rate:.0%} -> "
-                f"interceptor speed {self.interceptor_speed:.3f} m/s"
+                f"[MarlTag][curriculum] "
+                f"runner success {success_rate:.0%} -> "
+                f"stage {self.curriculum_stage}"
             )
+
+    def _apply_curriculum_stage(self) -> None:
+        if not self.curriculum_enabled:
+            self.curriculum_interceptor_vel_factor = 1.0
+            return
+
+        stage = self.CURRICULUM_STAGES[self.curriculum_stage]
+
+        speed_factor = stage["interceptor_speed_factor"]
+
+        self.curriculum_interceptor_vel_factor = speed_factor
+
+    def advance_curriculum(self) -> None:
+        """Advance to the next curriculum stage."""
+        max_stage = len(self.CURRICULUM_STAGES) - 1
+
+        if self.curriculum_stage < max_stage:
+            self.curriculum_stage += 1
+            self._recent_runner_outcomes.clear()
+
+    def set_curriculum_stage(self, stage: int) -> None:
+        """Set curriculum stage directly."""
+        max_stage = len(self.CURRICULUM_STAGES) - 1
+
+        self.curriculum_stage = max(
+            0,
+            min(stage, max_stage),
+        )
+        self._recent_runner_outcomes.clear()
 
     def reset(
         self, seed: int | None = None, options: dict[str, Any] | None = None
@@ -235,9 +259,10 @@ class MarlTag(MarlDroneEnvironment):
         reset (land -> teleport -> take off -> velocity control)."""
         training = (options or {}).get("training", True)
         self._episode_count += 1
-        # Update speed BEFORE sampling the spawn so the new interceptor_speed_ratio
-        # feeds the fair-spawn placement.
+
+        # Update and apply the current curriculum stage.
         self._update_interceptor_curriculum(training)
+        self._apply_curriculum_stage()
 
         self.reset_positions = self._generate_reset_positions()
 
@@ -443,12 +468,10 @@ class MarlTag(MarlDroneEnvironment):
         """
         requested = [vx, vy, vz]
 
-        # Curriculum speed cap: scale the interceptor's commanded xy velocity so
-        # its top speed = interceptor_speed. The runner is unaffected.
         if agent in self.interceptor_agents and self.curriculum_enabled:
-            ratio = self.interceptor_speed / max(self.max_velocity, 1e-6)
-            vx *= ratio
-            vy *= ratio
+            vx *= self.curriculum_interceptor_vel_factor
+            vy *= self.curriculum_interceptor_vel_factor
+            vz *= self.curriculum_interceptor_vel_factor
 
         sent = [vx, vy, vz]
 
@@ -710,20 +733,22 @@ class MarlTag(MarlDroneEnvironment):
         if terminal and self.winner is None:
             # Capture takes priority if capture and goal occur on the same step.
             if self.caught:
-                self.winner = INTERCEPTOR
+                self.winner = self.INTERCEPTOR
                 self.interceptor_success_count += 1
 
                 if self._is_evaluating:
-                    self.success_counts[INTERCEPTOR] = (
-                        self.success_counts.get(INTERCEPTOR, 0) + 1
+                    self.success_counts[self.INTERCEPTOR] = (
+                        self.success_counts.get(self.INTERCEPTOR, 0) + 1
                     )
 
             elif self.reached_goal:
-                self.winner = RUNNER
+                self.winner = self.RUNNER
                 self.runner_success_count += 1
 
                 if self._is_evaluating:
-                    self.success_counts[RUNNER] = self.success_counts.get(RUNNER, 0) + 1
+                    self.success_counts[self.RUNNER] = (
+                        self.success_counts.get(self.RUNNER, 0) + 1
+                    )
 
         # Competitive episode: one task outcome ends the episode for everyone.
         return {agent: terminal for agent in self.agents}
@@ -809,8 +834,8 @@ class MarlTag(MarlDroneEnvironment):
                 # success-rate / time-to-outcome plots (any "*_success"
                 # column) once MARLDroneEnvironment hoists them to the top
                 # level of the logged info.
-                "runner_success": int(self.winner == RUNNER),
-                "interceptor_success": int(self.winner == INTERCEPTOR),
+                "runner_success": int(self.winner == self.RUNNER),
+                "interceptor_success": int(self.winner == self.INTERCEPTOR),
                 "in_boundaries": state_dicts[agent]["in_boundaries"],
                 "battery": state_dicts[agent]["battery"],
             }
@@ -952,8 +977,8 @@ class MarlTag(MarlDroneEnvironment):
 
     def _generate_possible_agents(self) -> list[str]:
         return [
-            f"{RUNNER}_0",
-            *[f"{INTERCEPTOR}_{i}" for i in range(self.num_agents_config - 1)],
+            f"{self.RUNNER}_0",
+            *[f"{self.INTERCEPTOR}_{i}" for i in range(self.num_agents_config - 1)],
         ]
 
     def observation_space(self, agent: str) -> spaces.Space:

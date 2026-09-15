@@ -1,6 +1,6 @@
+from typing import Any, Literal
 import numpy as np
 from gymnasium import spaces
-from typing import Any, Literal
 
 from drone_gym.marl_drone_environment import MarlDroneEnvironment
 
@@ -104,7 +104,9 @@ class MarlMoveToTargets2D(MarlDroneEnvironment):
             dtype=np.float32,
         )
 
-    def _denormalise_action(self, action: np.ndarray) -> tuple[float, float, float]:
+    def _denormalise_action(
+        self, agent: str, action: np.ndarray
+    ) -> tuple[float, float, float]:
         """
         Convert normalised 2D action [ax, ay] into drone velocity command.
 
