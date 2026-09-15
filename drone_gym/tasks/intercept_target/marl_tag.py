@@ -214,7 +214,7 @@ class MarlTag(MarlDroneEnvironment):
             self._recent_runner_outcomes
         )
 
-        if success_rate < self.curriculum_success_threshold:
+        if success_rate >= self.curriculum_success_threshold:
             self.advance_curriculum()
             print(
                 f"[MarlTag][curriculum] "
