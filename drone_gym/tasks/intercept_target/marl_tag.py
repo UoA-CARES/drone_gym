@@ -1,37 +1,4 @@
-"""MARL 3D tag (pursuit–evasion) — both drones learn.
-
-This is the multi-agent counterpart of the SARL ``sarl_tag`` task. There, the
-runner learned while an *expert* pure-pursuit policy drove the interceptor. Here
-**both** drones are learning agents controlled by the trainer:
-
-  * **runner** (``drone_0``) — spawns at the centre and must reach a random 3D
-    goal while evading the interceptor.
-  * **interceptor** (``drone_1``) — spawns on the runner's likely path and must
-    catch the runner (get within ``capture_threshold``) before it reaches the
-    goal.
-
-It is a near-zero-sum competitive game: the runner's success is the
-interceptor's failure and vice-versa. The reward for each agent is therefore the
-mirror of the other's (see :meth:`_calculate_rewards`).
-
-Structurally this subclasses :class:`MarlDroneEnvironment`, so it inherits the
-PettingZoo parallel API (dict observations/actions/rewards/terminations) and the
-land → teleport → take-off reset that repositions every drone's *model* to its
-spawn each episode (the dead-drone fix — nobody flies home from a crash site).
-
-Homogeneous spaces (required by the shared ``observation_space(agent)`` /
-``action_space(agent)``):
-
-  * action  = ``[vx, vy, vz]`` in ``[-1, 1]`` (scaled by ``max_velocity`` /
-    ``max_velocity_z``), same for both agents.
-  * observation (14) = own state (6) + opponent block (4) + goal block (4). Both
-    agents observe the goal: the interceptor uses it to anticipate where the
-    runner is headed and cut it off.
-
-Launch with the multi-agent SITL so both ports exist::
-
-    ./sitl_multiagent_square.sh -m crazyflie -n 2   # 19850 runner, 19851 interceptor
-
+"""
 NOTE (safety): unlike the SARL task, this does not yet run the high-rate
 background collision guard that stops both drones the instant they are within
 ``capture_threshold``. Capture is detected at the step boundary. For hardware or
@@ -80,6 +47,13 @@ class MarlTag(MarlDroneEnvironment):
         self.num_interceptor_agents = num_agents - 1
         self.num_runner_agents = 1
 
+        # Hard safety boundary
+        if use_simulator:
+            # No risk in sim, allow for larger unbounded flight area.
+            boundaries = {"x": 10.0, "y": 10.0, "z_min": 0.1, "z_max": 10.0}
+        else:
+            boundaries = {"x": 2.5, "y": 2.5, "z_min": 0.1, "z_max": 3.0}
+
         super().__init__(
             use_simulator=use_simulator,
             num_agents=num_agents,
@@ -91,6 +65,7 @@ class MarlTag(MarlDroneEnvironment):
             z_max=z_max,
             reset_height=reset_height,
             reset_spacing=reset_spacing,
+            boundaries=boundaries
         )
 
         self.runner_agents: list[str] = [self.possible_agents[0]]
@@ -102,18 +77,12 @@ class MarlTag(MarlDroneEnvironment):
         self.episode_length = episode_length
 
         # --- Win conditions --------------------------------------------------
-        self.capture_threshold = (
-            capture_threshold  # interceptor "catches" the runner (3D)
-        )
-        self.goal_threshold = goal_threshold  # runner reaches the goal (3D)
-
-        # --- Geometry (mirrors sarl_tag) ------------------------------------
-        self.out_of_bounds_tolerance = 0.05
+        self.capture_threshold = capture_threshold
+        self.goal_threshold = goal_threshold
 
         # --- Reset geometry ---------------------------------------------------
         self.goal_min_distance_ratio = 0.60
         self.interceptor_min_distance_ratio = 0.25
-        # self.interceptor_goal_min_distance_ratio = 0.15
 
         self.z_margin = 0.1
 
@@ -599,11 +568,9 @@ class MarlTag(MarlDroneEnvironment):
 
         goal_distance = self._runner_goal_distance(state_dicts)
         capture_distances = self._capture_distances(state_dicts)
-        runner_pos = self._runner_position(state_dicts)
 
         caught = self._capture_occurred(capture_distances)
         reached = goal_distance < self.goal_threshold
-        runner_oob = self._is_out_of_task_bounds(runner_pos)
 
         # Runner reward
         runner_reward = (
@@ -765,23 +732,9 @@ class MarlTag(MarlDroneEnvironment):
             state_dicts[agent]["battery"] < self.battery_threshold
             for agent in self.agents
         )
+        if any_low_battery:
+            print("[MarlTag] low battery — truncating episode")
 
-        # TODO: Have to look into how these are handled for Sim vs Real with new boundary
-        #  reward system
-        # boundary_violations = [
-        #     agent
-        #     for agent in self.agents
-        #     if self._is_out_of_task_bounds(state_dicts[agent]["position"])
-        # ]
-
-        # if boundary_violations:
-        #     print(
-        #         f"[MarlTag] boundary violation "
-        #         f"{boundary_violations} — truncating episode"
-        #     )
-
-        # A z-band violation (either drone) usually means an EKF thrust-spike
-        # launch — truncate before it drifts into the internal kill boundary.
         z_violation = [
             agent
             for agent in self.agents
@@ -791,7 +744,6 @@ class MarlTag(MarlDroneEnvironment):
             print(f"[MarlTag] z-boundary violation {z_violation} — truncating episode")
 
         truncate_all = (
-            # time_limit_reached or any_low_battery or bool(boundary_violations)
             time_limit_reached
             or any_low_battery
             or bool(z_violation)
@@ -833,11 +785,6 @@ class MarlTag(MarlDroneEnvironment):
                 "caught": self.caught,
                 "reached_goal": self.reached_goal,
                 "winner": self.winner,
-                # Per-drone outcome flags (1/0), shared across both agents'
-                # info dicts. Picked up automatically by the generic
-                # success-rate / time-to-outcome plots (any "*_success"
-                # column) once MARLDroneEnvironment hoists them to the top
-                # level of the logged info.
                 "runner_success": int(self.winner == self.RUNNER),
                 "interceptor_success": int(self.winner == self.INTERCEPTOR),
                 "in_boundaries": state_dicts[agent]["in_boundaries"],
@@ -908,15 +855,6 @@ class MarlTag(MarlDroneEnvironment):
     @staticmethod
     def _distance_3d(a: list[float], b: list[float]) -> float:
         return math.sqrt((a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2 + (a[2] - b[2]) ** 2)
-
-    def _is_out_of_task_bounds(self, position: list[float]) -> bool:
-        tol = self.out_of_bounds_tolerance
-        return (
-            abs(position[0]) > self.xy_limit + tol
-            or abs(position[1]) > self.xy_limit + tol
-            or position[2] < self.z_min - tol
-            or position[2] > self.z_max + tol
-        )
 
     # --- state_dict accessors (robust to an agent already being deactivated) ---
 
