@@ -1,4 +1,6 @@
 from abc import abstractmethod
+from itertools import combinations
+import threading
 import time
 from typing import Any, Literal
 
@@ -31,6 +33,8 @@ class MarlDroneEnvironment(ParallelEnv):
         reset_spacing: float = 0.5,
         reset_safety_distance: float = 0.25,
         position_max_age: float | None = 0.05,
+        collision_safety_distance: float | None = None,
+        collision_monitor_hz: float = 20.0,
     ):
         super().__init__()
 
@@ -69,6 +73,16 @@ class MarlDroneEnvironment(ParallelEnv):
         )
         # Hard safety boundary
         self.boundaries = boundaries
+
+        # Collision safety monitor
+        self.collision_safety_distance = collision_safety_distance
+        self.collision_monitor_hz = collision_monitor_hz
+        self._collision_safety_event = threading.Event()
+        self._collision_monitor_stop_event = threading.Event()
+        self._collision_monitor_thread: threading.Thread | None = None
+        self._collision_safety_pairs: tuple[tuple[str, str, float], ...] = ()
+
+        self._motion_command_lock = threading.Lock()
 
         # Reset
         self.reset_height = reset_height
@@ -189,6 +203,10 @@ class MarlDroneEnvironment(ParallelEnv):
             - observations: Initial observations for each active agent.
             - infos: Initial info dictionaries for each active agent.
         """
+
+        self._stop_collision_monitor()
+        self._clear_collision_safety_state()
+
         options = options or {}
         training = options.get("training", True)
 
@@ -221,6 +239,8 @@ class MarlDroneEnvironment(ParallelEnv):
 
         observations = self._get_observations()
         infos = self._get_infos()
+
+        self._start_collision_monitor()
 
         return observations, infos
 
@@ -276,7 +296,22 @@ class MarlDroneEnvironment(ParallelEnv):
             denormalised_actions[agent] = [vx, vy, vz]
             action_filter_infos[agent] = action_filter_info
 
-            self.drones[agent].set_velocity_vector(vx, vy, vz)
+        with self._motion_command_lock:
+            collision_latched = self._collision_safety_event.is_set()
+
+            for agent in self.agents:
+                if collision_latched:
+                    vx = 0.0
+                    vy = 0.0
+                    vz = 0.0
+
+                    denormalised_actions[agent] = [0.0, 0.0, 0.0]
+                    action_filter_infos[agent]["collision_safety_latched"] = True
+
+                else:
+                    vx, vy, vz = denormalised_actions[agent]
+
+                self.drones[agent].set_velocity_vector(vx, vy, vz)
 
         # Advance simulation / wait control interval
         time.sleep(self.step_time)
@@ -340,7 +375,7 @@ class MarlDroneEnvironment(ParallelEnv):
 
     def close(self) -> None:
         """Clean up all drone interfaces and the simulator."""
-
+        self._stop_collision_monitor()
         drones = list(self.drones.items())
 
         try:
@@ -404,7 +439,7 @@ class MarlDroneEnvironment(ParallelEnv):
                 self.drones[agent] = DroneSim(
                     uri=self.drone_uris[agent],
                     agent_id=agent,
-                    boundaries=self.boundaries
+                    boundaries=self.boundaries,
                 )
             else:
                 self.drones[agent] = Drone(
@@ -1424,6 +1459,7 @@ class MarlDroneEnvironment(ParallelEnv):
 
         IMPORTANT: Does not land drones
         """
+        self._stop_collision_monitor()
         for agent, drone in list(self.drones.items()):
             try:
                 print(f"[MARL] Stopping old interface for {agent}...")
@@ -1755,6 +1791,124 @@ class MarlDroneEnvironment(ParallelEnv):
 
             except Exception as e:
                 print(f"[{agent}] Failed to send zero velocity command: {e}")
+
+    def _clear_collision_safety_state(self) -> None:
+        """Clear collision-safety state for a new episode."""
+        self._collision_safety_event.clear()
+        self._collision_safety_pairs = ()
+
+    def _start_collision_monitor(self) -> None:
+        """Start the inter-drone proximity monitor if configured."""
+        if self.collision_safety_distance is None:
+            return
+
+        if (
+            self._collision_monitor_thread is not None
+            and self._collision_monitor_thread.is_alive()
+        ):
+            return
+
+        self._collision_monitor_stop_event.clear()
+
+        self._collision_monitor_thread = threading.Thread(
+            target=self._collision_monitor_loop,
+            name="MARLCollisionMonitor",
+        )
+        self._collision_monitor_thread.start()
+
+    def _stop_collision_monitor(self) -> None:
+        """Stop the inter-drone proximity monitor."""
+        self._collision_monitor_stop_event.set()
+
+        thread = self._collision_monitor_thread
+
+        if (
+            thread is not None
+            and thread.is_alive()
+            and thread is not threading.current_thread()
+        ):
+            thread.join(timeout=2.0)
+        self._collision_monitor_thread = None
+
+    def _collision_monitor_loop(self) -> None:
+        """Monitor all drone pairs for unsafe proximity.
+
+        When one or more pairs are within ``collision_safety_distance``,
+        immediately command all drones to stop and latch the triggering
+        pair information.
+
+        The monitor does not decide whether the event represents task
+        termination or truncation. That remains the responsibility of
+        the concrete task.
+        """
+        if self.collision_safety_distance is None:
+            return
+
+        period = 1.0 / self.collision_monitor_hz
+
+        while not self._collision_monitor_stop_event.is_set():
+
+            if self._collision_safety_event.is_set():
+                return
+
+            positions = {
+                agent: self.drones[agent].get_position()
+                for agent in self.possible_agents
+            }
+
+            unsafe_pairs: list[tuple[str, str, float]] = []
+
+            for agent_a, agent_b in combinations(positions, 2):
+                pos_a = np.asarray(
+                    positions[agent_a],
+                    dtype=np.float64,
+                )
+                pos_b = np.asarray(
+                    positions[agent_b],
+                    dtype=np.float64,
+                )
+
+                distance = float(np.linalg.norm(pos_a - pos_b))
+
+                if distance <= self.collision_safety_distance:
+                    unsafe_pairs.append((agent_a, agent_b, distance))
+
+            if unsafe_pairs:
+                self._collision_safety_pairs = tuple(unsafe_pairs)
+
+                # Latch first so step() knows not to send another
+                # normal action batch.
+                self._collision_safety_event.set()
+
+                with self._motion_command_lock:
+                    self._stop_drones_motion(
+                        agents=list(self.drones),
+                        reason="collision safety monitor",
+                    )
+
+                pairs_text = ", ".join(
+                    f"{agent_a}<->{agent_b}: {distance:.3f} m"
+                    for agent_a, agent_b, distance in unsafe_pairs
+                )
+
+                print(
+                    "[MARL COLLISION SAFETY] "
+                    f"Minimum separation violated: {pairs_text}"
+                )
+
+                return
+
+            self._collision_monitor_stop_event.wait(period)
+
+    def _collision_safety_triggered(self) -> bool:
+        """Whether the inter-drone safety monitor has triggered."""
+        return self._collision_safety_event.is_set()
+
+    def _get_collision_safety_pairs(
+        self,
+    ) -> tuple[tuple[str, str, float], ...]:
+        """Return the pairs that triggered collision safety."""
+        return self._collision_safety_pairs
 
     # Abstract methods to be implemented by task-specific environments
 
