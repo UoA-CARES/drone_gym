@@ -26,6 +26,7 @@ class MarlDroneEnvironment(ParallelEnv):
         xy_limit: float = 1.0,
         z_min: float = 0.5,
         z_max: float = 1.5,
+        boundaries: dict[str, float] = None,
         reset_height: float = 1.0,
         reset_spacing: float = 0.5,
         reset_safety_distance: float = 0.25,
@@ -56,7 +57,7 @@ class MarlDroneEnvironment(ParallelEnv):
         self.max_velocity_z = max_velocity_z
         self.step_time = step_time
 
-        # Movement boundary
+        # Task Movement boundary
         self.xy_limit = xy_limit
         self.z_min = z_min
         self.z_max = z_max
@@ -66,6 +67,8 @@ class MarlDroneEnvironment(ParallelEnv):
         self.max_distance_3d = np.sqrt(
             self.max_xy_range**2 + self.max_xy_range**2 + self.max_z_range**2
         )
+        # Hard safety boundary
+        self.boundaries = boundaries
 
         # Reset
         self.reset_height = reset_height
@@ -401,6 +404,7 @@ class MarlDroneEnvironment(ParallelEnv):
                 self.drones[agent] = DroneSim(
                     uri=self.drone_uris[agent],
                     agent_id=agent,
+                    boundaries=self.boundaries
                 )
             else:
                 self.drones[agent] = Drone(
@@ -411,6 +415,7 @@ class MarlDroneEnvironment(ParallelEnv):
                         label=agent,
                     ),
                     uri=self.drone_uris[agent],
+                    boundaries=self.boundaries,
                 )
 
     def _generate_grid_reset_positions(self) -> dict[str, list[float]]:
