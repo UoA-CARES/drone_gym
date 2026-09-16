@@ -1,10 +1,3 @@
-"""
-NOTE (safety): unlike the SARL task, this does not yet run the high-rate
-background collision guard that stops both drones the instant they are within
-``capture_threshold``. Capture is detected at the step boundary. For hardware or
-faster interceptors, port ``_safety_monitor_loop`` from ``sarl_tag`` before use.
-"""
-
 import math
 from collections import deque
 from typing import Any, Literal
@@ -40,7 +33,7 @@ class MarlTag(MarlDroneEnvironment):
         reset_height: float = 1.0,
         reset_spacing: float = 0.5,
         episode_length: int = 80,
-        capture_threshold: float = 0.30,
+        capture_threshold: float = 0.20,
         goal_threshold: float = 0.20,
     ) -> None:
 
@@ -65,7 +58,8 @@ class MarlTag(MarlDroneEnvironment):
             z_max=z_max,
             reset_height=reset_height,
             reset_spacing=reset_spacing,
-            boundaries=boundaries
+            boundaries=boundaries,
+            collision_safety_distance=capture_threshold,
         )
 
         self.runner_agents: list[str] = [self.possible_agents[0]]
@@ -126,6 +120,7 @@ class MarlTag(MarlDroneEnvironment):
         }
         self.runner_success_count = 0
         self.interceptor_success_count = 0
+        self._step_collision_outcomes: tuple[bool, bool] = (False, False)
 
         # --- Spaces (homogeneous across agents) ------------------------------
         self._action_space = spaces.Box(
@@ -569,8 +564,11 @@ class MarlTag(MarlDroneEnvironment):
         goal_distance = self._runner_goal_distance(state_dicts)
         capture_distances = self._capture_distances(state_dicts)
 
-        caught = self._capture_occurred(capture_distances)
-        reached = goal_distance < self.goal_threshold
+        self._step_collision_outcomes = self._get_collision_safety_outcomes()
+        capture_collision, non_capture_collision = self._step_collision_outcomes
+
+        caught = capture_collision and not non_capture_collision
+        reached = goal_distance < self.goal_threshold and not non_capture_collision
 
         # Runner reward
         runner_reward = (
@@ -692,10 +690,14 @@ class MarlTag(MarlDroneEnvironment):
         state_dicts: dict[str, dict[str, Any]],
     ) -> dict[str, bool]:
         goal_distance = self._runner_goal_distance(state_dicts)
-        capture_distances = self._capture_distances(state_dicts)
 
-        self.caught = self._capture_occurred(capture_distances)
-        self.reached_goal = goal_distance < self.goal_threshold
+        capture_collision, non_capture_collision = self._step_collision_outcomes
+        if non_capture_collision:
+            self.caught = False
+            self.reached_goal = False
+        else:
+            self.caught = capture_collision
+            self.reached_goal = goal_distance < self.goal_threshold
 
         terminal = self.caught or self.reached_goal
 
@@ -728,6 +730,10 @@ class MarlTag(MarlDroneEnvironment):
     ) -> dict[str, bool]:
         time_limit_reached = self.steps >= self.episode_length
 
+        _, non_capture_collision = self._step_collision_outcomes
+        if non_capture_collision:
+            print("[MarlTag] non-capture collision — truncating episode")
+
         any_low_battery = any(
             state_dicts[agent]["battery"] < self.battery_threshold
             for agent in self.agents
@@ -747,9 +753,41 @@ class MarlTag(MarlDroneEnvironment):
             time_limit_reached
             or any_low_battery
             or bool(z_violation)
+            or non_capture_collision
         )
 
         return {agent: truncate_all for agent in self.agents}
+
+    def _get_collision_safety_outcomes(
+        self,
+    ) -> tuple[bool, bool]:
+        """Interpret collision-monitor pairs for MarlTag.
+
+        Returns:
+            capture_collision:
+                True if a runner-interceptor pair triggered the monitor.
+
+            non_capture_collision:
+                True if any other pair triggered the monitor.
+        """
+        if not self._collision_safety_triggered():
+            return False, False
+
+        capture_collision = False
+        non_capture_collision = False
+
+        for agent_a, agent_b, _distance in self._get_collision_safety_pairs():
+
+            runner_interceptor_pair = (
+                agent_a in self.runner_agents and agent_b in self.interceptor_agents
+            ) or (agent_b in self.runner_agents and agent_a in self.interceptor_agents)
+
+            if runner_interceptor_pair:
+                capture_collision = True
+            else:
+                non_capture_collision = True
+
+        return capture_collision, non_capture_collision
 
     # ------------------------------------------------------------------
     # Info / global state / render
@@ -764,6 +802,8 @@ class MarlTag(MarlDroneEnvironment):
         new_positions: dict[str, list[float]] | None = None,
         action_filter_infos: dict[str, dict[str, Any]] | None = None,
     ) -> dict[str, dict[str, Any]]:
+        capture_collision, non_capture_collision = self._step_collision_outcomes
+
         if state_dicts is None:
             positions = {
                 agent: self.drones[agent].get_position() for agent in self.agents
@@ -789,6 +829,9 @@ class MarlTag(MarlDroneEnvironment):
                 "interceptor_success": int(self.winner == self.INTERCEPTOR),
                 "in_boundaries": state_dicts[agent]["in_boundaries"],
                 "battery": state_dicts[agent]["battery"],
+                "collision_safety_triggered": (self._collision_safety_triggered()),
+                "collision_capture": capture_collision,
+                "collision_safety_truncation": non_capture_collision,
             }
             if denormalised_actions is not None:
                 info["denormalised_action"] = denormalised_actions.get(agent)
@@ -890,14 +933,6 @@ class MarlTag(MarlDroneEnvironment):
             )
 
         return distances
-
-    def _capture_occurred(
-        self,
-        capture_distances: dict[str, float],
-    ) -> bool:
-        return any(
-            distance < self.capture_threshold for distance in capture_distances.values()
-        )
 
     def _runner_position(self, state_dicts: dict[str, dict[str, Any]]) -> list[float]:
         if self.runner_agents[0] in state_dicts:
