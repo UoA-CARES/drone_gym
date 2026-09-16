@@ -957,7 +957,7 @@ class MarlDroneEnvironment(ParallelEnv):
                 for agent in self.possible_agents:
                     self.drones[agent].start_position_control()
 
-                reset_success = self._wait_for_all_reset_events(timeout=10)
+                reset_success = self._wait_for_all_reset_events(timeout=20)
 
                 if not reset_success:
                     raise RuntimeError(
