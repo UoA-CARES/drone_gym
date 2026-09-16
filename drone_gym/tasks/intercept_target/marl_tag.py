@@ -636,7 +636,7 @@ class MarlTag(MarlDroneEnvironment):
 
             return float(
                 # Exponential boundary rate.
-                np.exp(1.0 * normalised_overshoot)
+                np.exp(0.8 * normalised_overshoot)
             )
 
         # XY boundary penalty.
@@ -741,10 +741,11 @@ class MarlTag(MarlDroneEnvironment):
         if any_low_battery:
             print("[MarlTag] low battery — truncating episode")
 
+        z_max = self.z_max + 1 if self.use_simulator else self.z_max
         z_violation = [
             agent
             for agent in self.agents
-            if not (self.z_min <= state_dicts[agent]["position"][2] <= self.z_max)
+            if not (self.z_min <= state_dicts[agent]["position"][2] <= z_max)
         ]
         if z_violation:
             print(f"[MarlTag] z-boundary violation {z_violation} — truncating episode")
