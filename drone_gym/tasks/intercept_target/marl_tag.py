@@ -276,7 +276,7 @@ class MarlTag(MarlDroneEnvironment):
         self.reached_goal = False
         self.winner = None
 
-        runner_pos = self.drones[self.runner_agents].get_position()
+        runner_pos = self.drones[self.runner_agents[0]].get_position()
         self.previous_goal_distance = self._distance_3d(runner_pos, self.goal_position)
 
         self.previous_capture_distances = {
@@ -819,7 +819,9 @@ class MarlTag(MarlDroneEnvironment):
             state_dicts = self._generate_state_dicts(positions)
 
         goal_distance = self._runner_goal_distance(state_dicts)
-        capture_distance = self._capture_distance(state_dicts)
+
+        capture_distances = self._capture_distances(state_dicts)
+        closest_interceptor_distance = min(capture_distances.values())
 
         infos: dict[str, dict[str, Any]] = {}
         for agent in self.agents:
@@ -827,7 +829,7 @@ class MarlTag(MarlDroneEnvironment):
                 "role": "runner" if agent in self.runner_agents else "interceptor",
                 "goal_position": self.goal_position[:],
                 "distance_to_goal": goal_distance,
-                "separation": capture_distance,
+                "closest_interceptor_distance": closest_interceptor_distance,
                 "caught": self.caught,
                 "reached_goal": self.reached_goal,
                 "winner": self.winner,
@@ -861,18 +863,26 @@ class MarlTag(MarlDroneEnvironment):
         return np.concatenate(observations).astype(np.float32)
 
     def _render_task_specific_info(self) -> None:
-        runner_pos = self.drones[self.runner_agents].get_position()
-        interceptor_pos = self.drones[self.interceptor_agents].get_position()
+
         print(f"Goal:               {[round(v, 2) for v in self.goal_position]}")
-        print(f"Runner:             {[round(v, 2) for v in runner_pos]}")
-        print(f"Interceptor:        {[round(v, 2) for v in interceptor_pos]}")
+        runner_pos = self.drones[self.runner_agents[0]].get_position()
+        print(f"Runner: {[round(v, 2) for v in runner_pos]}")
+
+        for interceptor in self.interceptor_agents:
+            interceptor_pos = self.drones[interceptor].get_position()
+            separation = self._distance_3d(
+                runner_pos,
+                interceptor_pos,
+            )
+
+            print(
+                f"{interceptor}: {[round(v, 2) for v in interceptor_pos]} "
+                f"| separation: {separation:.2f} "
+                f"(capture {self.capture_threshold:.2f})"
+            )
         print(
             f"Distance to goal:   {self._distance_3d(runner_pos, self.goal_position):.2f} "
             f"(threshold {self.goal_threshold:.2f})"
-        )
-        print(
-            f"Separation:         {self._distance_3d(runner_pos, interceptor_pos):.2f} "
-            f"(capture {self.capture_threshold:.2f})"
         )
         print(
             f"Reached goal: {self.reached_goal} | Caught: {self.caught} | Winner: {self.winner}"
@@ -889,10 +899,10 @@ class MarlTag(MarlDroneEnvironment):
         runner. This is what lets both progress signals fall straight out of the
         state dict in :meth:`_calculate_rewards`.
         """
-        if agent == self.runner_agents:
+        if agent in self.runner_agents:
             return self._distance_3d(position, self.goal_position)
         return self._distance_3d(
-            position, self.drones[self.runner_agents].get_position()
+            position, self.drones[self.runner_agents[0]].get_position()
         )
 
     @staticmethod
@@ -911,18 +921,10 @@ class MarlTag(MarlDroneEnvironment):
     # --- state_dict accessors (robust to an agent already being deactivated) ---
 
     def _runner_goal_distance(self, state_dicts: dict[str, dict[str, Any]]) -> float:
-        if self.runner_agents in state_dicts:
-            return state_dicts[self.runner_agents]["distance_to_target"]
+        if self.runner_agents[0] in state_dicts:
+            return state_dicts[self.runner_agents[0]]["distance_to_target"]
         return self._distance_3d(
-            self.drones[self.runner_agents].get_position(), self.goal_position
-        )
-
-    def _capture_distance(self, state_dicts: dict[str, dict[str, Any]]) -> float:
-        if self.interceptor_agents in state_dicts:
-            return state_dicts[self.interceptor_agents]["distance_to_target"]
-        return self._distance_3d(
-            self.drones[self.interceptor_agents].get_position(),
-            self.drones[self.runner_agents].get_position(),
+            self.drones[self.runner_agents[0]].get_position(), self.goal_position
         )
 
     def _capture_distances(
@@ -960,9 +962,9 @@ class MarlTag(MarlDroneEnvironment):
         )
 
     def _runner_position(self, state_dicts: dict[str, dict[str, Any]]) -> list[float]:
-        if self.runner_agents in state_dicts:
-            return state_dicts[self.runner_agents]["position"]
-        return self.drones[self.runner_agents].get_position()
+        if self.runner_agents[0] in state_dicts:
+            return state_dicts[self.runner_agents[0]]["position"]
+        return self.drones[self.runner_agents[0]].get_position()
 
     def _generate_possible_agents(self) -> list[str]:
         return [
