@@ -148,6 +148,8 @@ class SarlTag(DroneEnvironment):
             0.030  # gentle vertical cap for the pursuer too
         )
 
+        self.num_interceptor_agents = 1  # only one pursuer in this variant (the expert)
+
         # --- Interceptor speed curriculum (performance-gated ratchet) --------
         # Start the interceptor fast enough to be a real threat from episode 1,
         # then raise its speed further as the runner's success rate climbs.
@@ -196,8 +198,9 @@ class SarlTag(DroneEnvironment):
         # boundary = (xy, xy, z_low, z_high) — used by the base visual boundary + step clamp
         self.boundary = [self.xy_limit, self.xy_limit, self.z_min, self.z_max]
 
-        # Observation: own(6) + goal block(7) + interceptor block(10) = 23
-        self.observation_space = 6 + 7 + 10
+        # Runner observation:
+        # [own vel, own pos, other agents rel pos, other good agents vel, goal rel pos]
+        self.observation_space = 3 + 3 + (self.num_interceptor_agents) * 3 + (0) * 3 + 3
 
         # --- Reward parameters ----------------------------------------------
         self.success_reward = 100.0  # reached the goal — clearly the best outcome
@@ -995,58 +998,48 @@ class SarlTag(DroneEnvironment):
 
         return violating_drones
 
+    def _get_runner_observations(self) -> np.ndarray:
+        """Runner sees its own state, other agents' relative positions,
+        and the goal's relative position."""
+
+        runner = self.rl_drones[self.RL_DRONE_NAME]
+
+        vel = runner.get_calculated_velocity()
+        own_vel = [
+            float(vel.get("x", 0.0)),
+            float(vel.get("y", 0.0)),
+            float(vel.get("z", 0.0)),
+        ]
+        own_pos = runner.get_position()
+
+        # Relative position of every expert drone
+        other_agents_rel_pos = np.array([], dtype=np.float32)
+
+        for other_drone in self.expert_drones.values():
+            other_pos = other_drone.get_position()
+            rel_pos = self._relative_position(other_pos, own_pos)
+
+            other_agents_rel_pos = np.concatenate(
+                (
+                    other_agents_rel_pos,
+                    self._normalise_relative_pos(rel_pos),
+                )
+            )
+
+        # Goal relative to runner
+        goal_rel = self._relative_position(self.goal_position, own_pos)
+
+        obs_parts = [
+            self._normalise_vel(own_vel),  # 3
+            self._normalise_pos(own_pos),  # 3
+            other_agents_rel_pos,  # 3 * num_expert_drones
+            self._normalise_relative_pos(goal_rel),  # 3
+        ]
+
+        return np.concatenate(obs_parts).astype(np.float32)
+
     def _get_state(self) -> np.ndarray:
-        """Runner-centric 3D observation: own state + goal block + interceptor block."""
-        position = self.drone.get_position()
-        vel_x = self.drone.calculated_velocity["x"]
-        vel_y = self.drone.calculated_velocity["y"]
-        vel_z = self.drone.calculated_velocity["z"]
-
-        z_mid = 0.5 * (self.z_min + self.z_max)
-        z_half = 0.5 * self.max_z_range
-
-        # Own state (6): position (3) + velocity (3)
-        state: List[float] = [
-            position[0] / self.xy_limit,
-            position[1] / self.xy_limit,
-            (position[2] - z_mid) / z_half,
-            vel_x / self.max_velocity,
-            vel_y / self.max_velocity,
-            vel_z / self.max_velocity_z,
-        ]
-
-        # Goal block (7): relative pos (3), distance (1), direction (3)
-        gx, gy, gz = self.goal_position
-        g_rel_x, g_rel_y, g_rel_z = gx - position[0], gy - position[1], gz - position[2]
-        g_dist = math.sqrt(g_rel_x**2 + g_rel_y**2 + g_rel_z**2)
-        state += [
-            g_rel_x / self.max_xy_range,
-            g_rel_y / self.max_xy_range,
-            g_rel_z / self.max_z_range,
-            g_dist / self.max_distance,
-            g_rel_x / (g_dist + 1e-6),
-            g_rel_y / (g_dist + 1e-6),
-            g_rel_z / (g_dist + 1e-6),
-        ]
-
-        # Interceptor block (10): relative pos (3), distance (1), direction (3), velocity (3)
-        ix, iy, iz = self.interceptor_position
-        i_rel_x, i_rel_y, i_rel_z = ix - position[0], iy - position[1], iz - position[2]
-        i_dist = math.sqrt(i_rel_x**2 + i_rel_y**2 + i_rel_z**2)
-        state += [
-            i_rel_x / self.max_xy_range,
-            i_rel_y / self.max_xy_range,
-            i_rel_z / self.max_z_range,
-            i_dist / self.max_distance,
-            i_rel_x / (i_dist + 1e-6),
-            i_rel_y / (i_dist + 1e-6),
-            i_rel_z / (i_dist + 1e-6),
-            self.interceptor_velocity[0] / (self.interceptor_max_velocity + 1e-6),
-            self.interceptor_velocity[1] / (self.interceptor_max_velocity + 1e-6),
-            self.interceptor_velocity[2] / (self.interceptor_max_velocity_z + 1e-6),
-        ]
-
-        return np.array(state, dtype=np.float32)
+        return self._get_runner_observations()
 
     def get_overlay_info(self) -> Dict[str, Any]:
         position = self.drone.get_position()

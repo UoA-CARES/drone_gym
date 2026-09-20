@@ -1661,9 +1661,9 @@ class MarlDroneEnvironment(ParallelEnv):
 
         return np.array(
             [
-                np.clip(rx / self.max_xy_range, -1.0, 1.0),
-                np.clip(ry / self.max_xy_range, -1.0, 1.0),
-                np.clip(rz / self.max_z_range, -1.0, 1.0),
+                rx / self.max_xy_range,
+                ry / self.max_xy_range,
+                rz / self.max_z_range,
             ],
             dtype=np.float32,
         )

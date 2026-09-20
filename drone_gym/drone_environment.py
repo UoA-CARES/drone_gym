@@ -87,6 +87,8 @@ class DroneEnvironment(ABC):
         self.z_min = z_min
         self.z_max = z_max
         self.z_limit = z_min
+        self.max_xy_range = xy_limit * 2
+        self.max_z_range = self.z_max - self.z_min
         # Task-specific environments may replace this with their boundary.
         self.boundary: list[float] | None = None
 
@@ -1692,6 +1694,68 @@ class DroneEnvironment(ABC):
             )
             return False  # Exit because the drone is in an uncertain state
         return True
+
+    def _relative_position(
+        self, position: list[float], reference: list[float]
+    ) -> list[float]:
+        """Calculate the relative position of a point with respect to a reference."""
+        return [
+            position[0] - reference[0],
+            position[1] - reference[1],
+            position[2] - reference[2],
+        ]
+
+    def _normalise_vel(
+        self, velocity_xyz: list[float], agent: str | None = None
+    ) -> np.ndarray:
+        """Normalise a velocity vector based on maximum velocity limits."""
+        vx, vy, vz = velocity_xyz
+
+        max_velocity = (
+            self._get_agent_max_velocity(agent)
+            if agent is not None
+            else self.max_velocity
+        )
+
+        return np.array(
+            [
+                vx / max_velocity,
+                vy / max_velocity,
+                vz / self.max_velocity_z,
+            ],
+            dtype=np.float32,
+        )
+
+    def _normalise_relative_pos(self, rel_xyz: list[float]) -> np.ndarray:
+        """Normalise a relative position vector based on maximum possible distances."""
+        rx, ry, rz = rel_xyz
+
+        return np.array(
+            [
+                rx / self.max_xy_range,
+                ry / self.max_xy_range,
+                rz / self.max_z_range,
+            ],
+            dtype=np.float32,
+        )
+
+    def _normalise_pos(self, position: list[float]) -> np.ndarray:
+        """Normalise a 3D position based on environment boundaries."""
+        x, y, z = position
+
+        x_norm = x / self.xy_limit
+        y_norm = y / self.xy_limit
+
+        z_mid = 0.5 * (self.z_min + self.z_max)
+        z_half = 0.5 * (self.z_max - self.z_min)
+        z_norm = (z - z_mid) / z_half
+
+        return np.array([x_norm, y_norm, z_norm], dtype=np.float32)
+
+    def _get_agent_max_velocity(self, agent: str) -> float:
+        """Return the maximum XY velocity for an agent.
+        Can be overridden by task environments to provide agent-specific limits."""
+        return self.max_velocity
 
     @property
     def max_action_value(self):
