@@ -3,6 +3,8 @@ from collections.abc import Iterator
 import time
 from typing import Dict, List, Any, Literal
 import numpy as np
+from itertools import combinations
+import threading
 
 from drone_gym.utils.vicon_position_source import ViconPositionSource, ViconProvider
 from drone_gym.sim_manager import SimManager, SimLaunchConfig
@@ -37,6 +39,8 @@ class DroneEnvironment(ABC):
         reset_height: float = 1.0,
         reset_safety_distance: float = 0.25,
         position_max_age: float | None = 0.05,
+        collision_safety_distance: float | None = None,
+        collision_monitor_hz: float = 20.0,
     ) -> None:
         """
         Args:
@@ -44,8 +48,11 @@ class DroneEnvironment(ABC):
             max_velocity: Maximum x and y velocity in metres per second.
             step_time: Duration each action is applied, in seconds.
             expert_drone_names: Ordered names of optional expert drones.
+            collision_safety_distance: Minimum distance between drones to trigger a collision safety event.
+            collision_monitor_hz: Frequency of the collision monitor in Hz.
         """
-        self._closed = False  # Track if the environment has been closed
+        # Track if the environment has been closed
+        self._closed = False
         # Set the appropriate drone instance based on use_simulator flag
         print("use_simulator", use_simulator)
         self.use_simulator = use_simulator
@@ -65,6 +72,18 @@ class DroneEnvironment(ABC):
 
         else:
             self.sim_manager = None
+
+        # Collision safety monitor
+        self.collision_safety_distance = collision_safety_distance
+        self.collision_monitor_hz = collision_monitor_hz
+
+        self._collision_safety_event = threading.Event()
+        self._collision_monitor_stop_event = threading.Event()
+        self._collision_monitor_thread: threading.Thread | None = None
+        self._collision_safety_pairs: tuple[tuple[str, str, float], ...] = ()
+
+        # Prevent a normal motion command racing with the collision monitor.
+        self._motion_command_lock = threading.Lock()
 
         # Initialize the drone instances
         self.rl_drones: dict[str, Drone | DroneSim] = {}
@@ -334,7 +353,8 @@ class DroneEnvironment(ABC):
         training: bool = True,
     ):
         """Reset all owned drones and task state."""
-
+        self._stop_collision_monitor()
+        self._clear_collision_safety_state()
         if not training and not self._is_evaluating:
             print("--- STARTING NEW EVALUATION BLOCK ---")
             self._is_evaluating = True
@@ -360,6 +380,8 @@ class DroneEnvironment(ABC):
 
         initial_position = self.rl_drone.get_position()
         self.episode_positions.append(initial_position)
+
+        self._start_collision_monitor()
 
         return self._get_state()
 
@@ -441,6 +463,124 @@ class DroneEnvironment(ABC):
                 drone=drone,
                 reason=reason,
             )
+
+    def _clear_collision_safety_state(self) -> None:
+        """Clear the latched collision-safety state."""
+        self._collision_safety_event.clear()
+        self._collision_safety_pairs = ()
+
+    def _start_collision_monitor(self) -> None:
+        """Start the inter-drone proximity monitor if configured."""
+        if self.collision_safety_distance is None:
+            return
+
+        if (
+            self._collision_monitor_thread is not None
+            and self._collision_monitor_thread.is_alive()
+        ):
+            return
+
+        self._collision_monitor_stop_event.clear()
+
+        self._collision_monitor_thread = threading.Thread(
+            target=self._collision_monitor_loop,
+            name="SARLCollisionMonitor",
+        )
+        self._collision_monitor_thread.start()
+
+    def _stop_collision_monitor(self) -> None:
+        """Stop the inter-drone proximity monitor."""
+        self._collision_monitor_stop_event.set()
+
+        thread = self._collision_monitor_thread
+
+        if (
+            thread is not None
+            and thread.is_alive()
+            and thread is not threading.current_thread()
+        ):
+            thread.join(timeout=1.0)
+
+        self._collision_monitor_thread = None
+
+    def _collision_monitor_loop(self) -> None:
+        """Monitor all owned drone pairs for unsafe proximity.
+
+        When one or more pairs are within ``collision_safety_distance``,
+        immediately command all drones to stop and latch the triggering
+        pair information.
+
+        The monitor does not decide whether the collision represents task
+        termination or truncation. That remains the responsibility of the
+        concrete task.
+        """
+        if self.collision_safety_distance is None:
+            return
+
+        period = 1.0 / self.collision_monitor_hz
+
+        while not self._collision_monitor_stop_event.is_set():
+
+            if self._collision_safety_event.is_set():
+                return
+
+            drones = self._get_drone_mapping()
+
+            positions = {
+                drone_name: drone.get_position() for drone_name, drone in drones.items()
+            }
+
+            unsafe_pairs: list[tuple[str, str, float]] = []
+
+            for drone_a, drone_b in combinations(positions, 2):
+                pos_a = np.asarray(
+                    positions[drone_a],
+                    dtype=np.float64,
+                )
+                pos_b = np.asarray(
+                    positions[drone_b],
+                    dtype=np.float64,
+                )
+
+                distance = float(np.linalg.norm(pos_a - pos_b))
+
+                if distance <= self.collision_safety_distance:
+                    unsafe_pairs.append((drone_a, drone_b, distance))
+
+            if unsafe_pairs:
+                self._collision_safety_pairs = tuple(unsafe_pairs)
+
+                # Latch first so no normal action can overwrite the stop.
+                self._collision_safety_event.set()
+
+                with self._motion_command_lock:
+                    self._stop_all_drone_motion(
+                        reason="collision safety monitor",
+                    )
+
+                pairs_text = ", ".join(
+                    f"{drone_a}<->{drone_b}: {distance:.3f} m"
+                    for drone_a, drone_b, distance in unsafe_pairs
+                )
+
+                print(
+                    "[SARL COLLISION SAFETY] "
+                    f"Minimum separation violated: {pairs_text}"
+                )
+
+                return
+
+            self._collision_monitor_stop_event.wait(period)
+
+    def _collision_safety_triggered(self) -> bool:
+        """Whether the inter-drone collision monitor has triggered."""
+        return self._collision_safety_event.is_set()
+
+    def _get_collision_safety_pairs(
+        self,
+    ) -> tuple[tuple[str, str, float], ...]:
+        """Return the pairs that triggered collision safety."""
+        return self._collision_safety_pairs
 
     def _wait_for_all_reset_events(
         self,
@@ -1295,7 +1435,17 @@ class DroneEnvironment(ABC):
         self.prior_state = self._generate_state_dict(current_pos)
 
         # Send velocity command to drone
-        self.drone.set_velocity_vector(vx, vy, vz)
+        with self._motion_command_lock:
+            if self._collision_safety_event.is_set():
+                vx = 0.0
+                vy = 0.0
+                vz = 0.0
+
+            self.drone.set_velocity_vector(
+                vx,
+                vy,
+                vz,
+            )
         # Apply velocity for specified time - can improve this to be non-blocking
         time.sleep(self.step_time)
 
@@ -1397,7 +1547,7 @@ class DroneEnvironment(ABC):
         self._closed = True
 
         drones = list(self._iter_drones())
-
+        self._stop_collision_monitor()
         try:
             for drone_name, drone in drones:
                 try:

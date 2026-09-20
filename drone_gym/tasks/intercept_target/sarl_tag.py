@@ -63,12 +63,14 @@ class SarlTag(DroneEnvironment):
         exploration_steps: int = 1000,
         episode_length: int = 80,
         interceptor_max_velocity: float = 0.125,
+        capture_threshold: float = 0.2,
     ):
         super().__init__(
             use_simulator=use_simulator,
             max_velocity=max_velocity,
             step_time=step_time,
             expert_drone_names=[self.INTERCEPTOR_NAME],
+            collision_safety_distance=capture_threshold,
         )
 
         # Gentle vertical speed cap — CrazySim's z-velocity control is twitchy and
@@ -134,9 +136,7 @@ class SarlTag(DroneEnvironment):
 
         self._apply_curriculum_stage()
 
-        self.capture_threshold = (
-            0.20  # metres (3D) — interceptor "catches" the runner (no real collision)
-        )
+        self.capture_threshold = capture_threshold
         self.goal_threshold = 0.20  # metres (3D) — runner has reached the goal
 
         self.max_xy_range = self.xy_limit * 2
@@ -217,17 +217,6 @@ class SarlTag(DroneEnvironment):
         # checks z_min <= z <= z_max, not abs(z) <= z). A bare "z" key here would
         # KeyError in the interceptor's boundary thread.
         self._configure_interceptor_drone()
-
-        # --- Collision safety monitor ----------------------------------------
-        # The RL step is 0.5 s, but a faster interceptor can close >0.25 m within
-        # a single step — far enough to physically overlap before the step-boundary
-        # distance check ever runs. A high-rate background monitor watches the 3D
-        # separation continuously and the instant the two drones are within
-        # capture_threshold it zeroes BOTH velocities (so they stop ~0.20 m apart)
-        # and latches a collision. The episode then ends as a catch.
-        self._collision_event = threading.Event()
-        self._safety_monitor_running = False
-        self._safety_thread = None
 
         # Distance tracking for reward calculation
         self.previous_goal_distance = self.max_distance
@@ -519,20 +508,6 @@ class SarlTag(DroneEnvironment):
     # Collision safety monitor — zeroes both drones within capture_threshold
     # ------------------------------------------------------------------
 
-    SAFETY_MONITOR_HZ = 20.0  # how often the background monitor checks separation
-
-    def _stop_both_drones(self):
-        """Immediately command zero velocity to the runner and the interceptor."""
-        try:
-            self.drone.set_velocity_vector(0, 0, 0)
-        except Exception:
-            pass
-        try:
-            self.interceptor.body.apply_velocity(0, 0, 0)
-            self.interceptor.velocity = [0.0, 0.0, 0.0]
-        except Exception:
-            pass
-
     def _freeze_interceptor(self):
         """Zero the interceptor's velocity setpoint (setpoints persist until replaced).
 
@@ -548,87 +523,6 @@ class SarlTag(DroneEnvironment):
             self.interceptor.velocity = [0.0, 0.0, 0.0]
         except Exception:
             pass
-
-    def _start_safety_monitor(self):
-        self._collision_event.clear()
-        if self._safety_monitor_running:
-            return
-        self._safety_monitor_running = True
-        self._safety_thread = threading.Thread(
-            target=self._safety_monitor_loop, daemon=True
-        )
-        self._safety_thread.start()
-
-    def _stop_safety_monitor(self):
-        self._safety_monitor_running = False
-        if self._safety_thread is not None:
-            self._safety_thread.join(timeout=1.0)
-            self._safety_thread = None
-
-    def _safety_monitor_loop(self):
-        """Background guard: stop both drones on capture, and brake either drone
-        that approaches the fatal boundary (3D).
-
-        Runs much faster than the RL step so neither drone can blow past the 0.20 m
-        capture distance — nor coast into the internal kill boundary — inside a
-        single 0.5 s step. Priorities each tick:
-          1. If within capture_threshold: stop both drones and latch the collision.
-          2. Otherwise, if a drone has crossed a containment line: BRAKE it (zero
-             velocity) so it halts before the drone's internal emergency-land
-             boundary (the "outside boundary crash").
-
-        Containment deliberately BRAKES rather than driving the drone back inward:
-        commanding an inward velocity from this background thread fights the RL /
-        pursuit velocity command and the sudden setpoint reversal topples the
-        Crazyflie in CrazySim. Zeroing velocity is the same proven-safe operation
-        the collision guard uses, and still halts the drone (~0.4 m short of the
-        kill boundary); the episode then ends out-of-bounds and reset recovers.
-        """
-        dt = 1.0 / self.SAFETY_MONITOR_HZ
-
-        # A drone that is (re)initialising — e.g. mid-recovery, before its
-        # position system is up — reports exactly (0,0,0). Treating that as a
-        # real position makes the guard "see" a ~0 m separation and latch a
-        # BOGUS capture, which cascades into spurious truncations and a
-        # two-drone restart storm.
-        def _placeholder(p):
-            return p[0] == 0.0 and p[1] == 0.0 and p[2] == 0.0
-
-        while self._safety_monitor_running:
-            # Read each drone independently: one drone being mid-recovery
-            # (placeholder position or a raising link) must NOT disable the
-            # containment brake for the OTHER drone — that gap is exactly how
-            # the interceptor used to sail out after its stale pursuit command
-            # while the runner was being recovered.
-            rp = ip = None
-            try:
-                rp = self.drone.get_position()
-            except Exception:
-                pass
-            try:
-                ip = self.interceptor.body.get_position()
-            except Exception:
-                pass
-            rp_ok = rp is not None and not _placeholder(rp)
-            ip_ok = ip is not None and not _placeholder(ip)
-
-            captured = False
-            if rp_ok and ip_ok:
-                separation = math.sqrt(
-                    (rp[0] - ip[0]) ** 2 + (rp[1] - ip[1]) ** 2 + (rp[2] - ip[2]) ** 2
-                )
-                if separation < self.capture_threshold:
-                    captured = True
-                    self._stop_both_drones()
-                    if not self._collision_event.is_set():
-                        self.caught = True
-                        self._collision_event.set()
-                        print(
-                            f"[SarlTag] COLLISION GUARD: drones within "
-                            f"{separation:.2f} m (< {self.capture_threshold:.2f}) — both stopped"
-                        )
-
-            time.sleep(dt)
 
     # ------------------------------------------------------------------
     # DroneEnvironment overrides
@@ -714,11 +608,6 @@ class SarlTag(DroneEnvironment):
         if not training and not self._is_evaluating:
             self.successful_episodes_count = 0
 
-        # The monitor must not treat valid reset movement as capture
-        # or boundary drift.
-        self._stop_safety_monitor()
-        self._collision_event.clear()
-
         # Stop the existing expert command while reset preparation
         # and any recovery operations are performed.
         self._freeze_interceptor()
@@ -771,9 +660,6 @@ class SarlTag(DroneEnvironment):
 
         time.sleep(0.5)
 
-        # Both drones are now at separated targets.
-        self._start_safety_monitor()
-
         return self._get_state()
 
     def step(self, action):
@@ -791,17 +677,6 @@ class SarlTag(DroneEnvironment):
             processed_action = [action[0], action[1], action[2]]
         else:
             processed_action = [action[0] * 2 - 1, action[1] * 2 - 1, action[2] * 2 - 1]
-
-        # If the safety monitor has already latched a collision, end the episode
-        # immediately without commanding any further motion. Both drones are held
-        # at zero velocity by the monitor; a no-op parent step returns the terminal
-        # observation/reward/done (caught is already True).
-        if self._collision_event.is_set():
-            self._stop_both_drones()
-            result = super().step([0, 0, 0])
-            self.interceptor.refresh()
-            self._sync_interceptor()
-            return result
 
         runner_pos = self.drone.get_position()
         # Command the expert interceptor BEFORE super().step() so both drones fly
@@ -919,10 +794,7 @@ class SarlTag(DroneEnvironment):
         # Caught by the interceptor is a terminal failure. The safety monitor may
         # have latched the collision mid-step even if the step-boundary distance
         # reads slightly above threshold, so honour the latched event too.
-        if (
-            self._collision_event.is_set()
-            or interceptor_distance < self.capture_threshold
-        ):
+        if self._collision_safety_triggered():
             self.previous_goal_distance = goal_distance
             return self.intercepted_penalty
 
@@ -960,10 +832,7 @@ class SarlTag(DroneEnvironment):
                 self.successful_episodes_count += 1
             return True
 
-        if (
-            self._collision_event.is_set()
-            or interceptor_distance < self.capture_threshold
-        ):
+        if self._collision_safety_triggered():
             self.caught = True
             self.done = True
             return True
