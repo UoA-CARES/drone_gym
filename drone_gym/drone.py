@@ -49,7 +49,11 @@ class Drone(DroneSetup):
             )
 
         # Vicon Integration
-        self.drone_name = f"Crzayme_{agent_id}"
+        # self.drone_name = f"Crzayme_{agent_id}"
+        # TODO: After testing, this can be removed
+        self.drone_name = (
+            "Crzayme_0"  # Hardcoded for now, only for vicon legacy testing
+        )
 
         super().__init__(
             boundaries=boundaries,

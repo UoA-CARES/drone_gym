@@ -1,4 +1,6 @@
 from abc import abstractmethod
+from itertools import combinations
+import threading
 import time
 from typing import Any, Literal
 
@@ -26,10 +28,13 @@ class MarlDroneEnvironment(ParallelEnv):
         xy_limit: float = 1.0,
         z_min: float = 0.5,
         z_max: float = 1.5,
+        boundaries: dict[str, float] = None,
         reset_height: float = 1.0,
         reset_spacing: float = 0.5,
         reset_safety_distance: float = 0.25,
         position_max_age: float | None = 0.05,
+        collision_safety_distance: float | None = None,
+        collision_monitor_hz: float = 20.0,
     ):
         super().__init__()
 
@@ -56,7 +61,7 @@ class MarlDroneEnvironment(ParallelEnv):
         self.max_velocity_z = max_velocity_z
         self.step_time = step_time
 
-        # Movement boundary
+        # Task Movement boundary
         self.xy_limit = xy_limit
         self.z_min = z_min
         self.z_max = z_max
@@ -66,6 +71,18 @@ class MarlDroneEnvironment(ParallelEnv):
         self.max_distance_3d = np.sqrt(
             self.max_xy_range**2 + self.max_xy_range**2 + self.max_z_range**2
         )
+        # Hard safety boundary
+        self.boundaries = boundaries
+
+        # Collision safety monitor
+        self.collision_safety_distance = collision_safety_distance
+        self.collision_monitor_hz = collision_monitor_hz
+        self._collision_safety_event = threading.Event()
+        self._collision_monitor_stop_event = threading.Event()
+        self._collision_monitor_thread: threading.Thread | None = None
+        self._collision_safety_pairs: tuple[tuple[str, str, float], ...] = ()
+
+        self._motion_command_lock = threading.Lock()
 
         # Reset
         self.reset_height = reset_height
@@ -86,7 +103,7 @@ class MarlDroneEnvironment(ParallelEnv):
         self.battery_episode_margin = 0.2
 
         # PettingZoo agent lists
-        self.possible_agents = [f"drone_{i}" for i in range(self.num_agents_config)]
+        self.possible_agents = self._generate_possible_agents()
         self.agents = []
 
         if self.use_simulator:
@@ -186,6 +203,10 @@ class MarlDroneEnvironment(ParallelEnv):
             - observations: Initial observations for each active agent.
             - infos: Initial info dictionaries for each active agent.
         """
+
+        self._stop_collision_monitor()
+        self._clear_collision_safety_state()
+
         options = options or {}
         training = options.get("training", True)
 
@@ -219,6 +240,8 @@ class MarlDroneEnvironment(ParallelEnv):
         observations = self._get_observations()
         infos = self._get_infos()
 
+        self._start_collision_monitor()
+
         return observations, infos
 
     def step(self, actions: dict[str, np.ndarray]) -> tuple[
@@ -231,12 +254,12 @@ class MarlDroneEnvironment(ParallelEnv):
         """
         Take a step in the environment using the provided actions.
 
-        Actions are expected to be normalized in the range [-1, 1]. They are
-        denormalized to velocity commands based on `max_velocity` and
+        Actions are expected to be normalised in the range [-1, 1]. They are
+        denormalised to velocity commands based on `max_velocity` and
         `max_velocity_z`.
 
         Args:
-            actions: Normalized action commands for each active agent.
+            actions: normalised action commands for each active agent.
 
         Returns:
             A tuple containing:
@@ -256,11 +279,11 @@ class MarlDroneEnvironment(ParallelEnv):
         self.prior_states = self._generate_state_dicts(old_positions)
 
         # Apply all actions
-        denormalized_actions = {}
+        denormalised_actions = {}
         action_filter_infos = {}
 
         for agent in self.agents:
-            vx, vy, vz = self._denormalize_action(actions[agent])
+            vx, vy, vz = self._denormalise_action(agent, actions[agent])
 
             vx, vy, vz, action_filter_info = self._apply_task_action_processing(
                 agent=agent,
@@ -270,10 +293,25 @@ class MarlDroneEnvironment(ParallelEnv):
                 current_position=old_positions[agent],
             )
 
-            denormalized_actions[agent] = [vx, vy, vz]
+            denormalised_actions[agent] = [vx, vy, vz]
             action_filter_infos[agent] = action_filter_info
 
-            self.drones[agent].set_velocity_vector(vx, vy, vz)
+        with self._motion_command_lock:
+            collision_latched = self._collision_safety_event.is_set()
+
+            for agent in self.agents:
+                if collision_latched:
+                    vx = 0.0
+                    vy = 0.0
+                    vz = 0.0
+
+                    denormalised_actions[agent] = [0.0, 0.0, 0.0]
+                    action_filter_infos[agent]["collision_safety_latched"] = True
+
+                else:
+                    vx, vy, vz = denormalised_actions[agent]
+
+                self.drones[agent].set_velocity_vector(vx, vy, vz)
 
         # Advance simulation / wait control interval
         time.sleep(self.step_time)
@@ -306,8 +344,8 @@ class MarlDroneEnvironment(ParallelEnv):
 
         infos = self._get_infos(
             state_dicts=state_dicts,
-            denormalized_actions=denormalized_actions,
-            normalized_actions=actions,
+            denormalised_actions=denormalised_actions,
+            normalised_actions=actions,
             old_positions=old_positions,
             new_positions=new_positions,
             action_filter_infos=action_filter_infos,
@@ -337,7 +375,7 @@ class MarlDroneEnvironment(ParallelEnv):
 
     def close(self) -> None:
         """Clean up all drone interfaces and the simulator."""
-
+        self._stop_collision_monitor()
         drones = list(self.drones.items())
 
         try:
@@ -401,6 +439,7 @@ class MarlDroneEnvironment(ParallelEnv):
                 self.drones[agent] = DroneSim(
                     uri=self.drone_uris[agent],
                     agent_id=agent,
+                    boundaries=self.boundaries,
                 )
             else:
                 self.drones[agent] = Drone(
@@ -411,6 +450,7 @@ class MarlDroneEnvironment(ParallelEnv):
                         label=agent,
                     ),
                     uri=self.drone_uris[agent],
+                    boundaries=self.boundaries,
                 )
 
     def _generate_grid_reset_positions(self) -> dict[str, list[float]]:
@@ -502,6 +542,10 @@ class MarlDroneEnvironment(ParallelEnv):
             reset_positions[agent] = [float(x), float(y), float(z)]
 
         return reset_positions
+
+    def _generate_possible_agents(self) -> list[str]:
+        """Generate a list of possible agent names."""
+        return [f"drone_{i}" for i in range(self.num_agents_config)]
 
     def _generate_default_sim_uris(self) -> dict[str, str]:
         """Generate default simulator URIs for all possible agents."""
@@ -913,7 +957,7 @@ class MarlDroneEnvironment(ParallelEnv):
                 for agent in self.possible_agents:
                     self.drones[agent].start_position_control()
 
-                reset_success = self._wait_for_all_reset_events(timeout=10)
+                reset_success = self._wait_for_all_reset_events(timeout=20)
 
                 if not reset_success:
                     raise RuntimeError(
@@ -1415,6 +1459,7 @@ class MarlDroneEnvironment(ParallelEnv):
 
         IMPORTANT: Does not land drones
         """
+        self._stop_collision_monitor()
         for agent, drone in list(self.drones.items()):
             try:
                 print(f"[MARL] Stopping old interface for {agent}...")
@@ -1518,15 +1563,19 @@ class MarlDroneEnvironment(ParallelEnv):
         )
         return False
 
-    def _denormalize_action(self, action: np.ndarray) -> tuple[float, float, float]:
+    def _denormalise_action(
+        self, agent: str, action: np.ndarray
+    ) -> tuple[float, float, float]:
         """
-        Convert a normalized action into velocity commands.
+        Convert a normalised action into velocity commands.
 
         The x and y velocity components are scaled by `max_velocity`, while the z
         velocity component is scaled by `max_velocity_z`.
         """
-        vx = float(action[0]) * self.max_velocity
-        vy = float(action[1]) * self.max_velocity
+        max_velocity = self._get_agent_max_velocity(agent)
+
+        vx = float(action[0]) * max_velocity
+        vy = float(action[1]) * max_velocity
         vz = float(action[2]) * self.max_velocity_z
 
         return vx, vy, vz
@@ -1556,23 +1605,24 @@ class MarlDroneEnvironment(ParallelEnv):
 
         Args:
             agent: Agent whose action is being processed.
-            vx: Desired x-axis velocity command.
-            vy: Desired y-axis velocity command.
-            vz: Desired z-axis velocity command.
+            vx, vy, vz: Velocity commands derived from the policy action.
             current_position: Current position of the agent's drone.
 
         Returns:
             A tuple containing:
 
-            - vx: Processed x-axis velocity command.
-            - vy: Processed y-axis velocity command.
-            - vz: Processed z-axis velocity command.
+            - vx, vy, vz: Processed velocity commands after task-specific modifications.
             - action_info: Additional task-specific action metadata.
         """
         return vx, vy, vz, {}
 
-    def _normalize_position(self, position: list[float]) -> np.ndarray:
-        """Normalize a 3D position based on environment boundaries."""
+    def _get_agent_max_velocity(self, agent: str) -> float:
+        """Return the maximum XY velocity for an agent.
+        Can be overridden by task environments to provide agent-specific limits."""
+        return self.max_velocity
+
+    def _normalise_pos(self, position: list[float]) -> np.ndarray:
+        """Normalise a 3D position based on environment boundaries."""
         x, y, z = position
 
         x_norm = x / self.xy_limit
@@ -1584,21 +1634,29 @@ class MarlDroneEnvironment(ParallelEnv):
 
         return np.array([x_norm, y_norm, z_norm], dtype=np.float32)
 
-    def _normalize_velocity(self, velocity_xyz: list[float]) -> np.ndarray:
-        """Normalize a velocity vector based on maximum velocity limits."""
+    def _normalise_vel(
+        self, velocity_xyz: list[float], agent: str | None = None
+    ) -> np.ndarray:
+        """Normalise a velocity vector based on maximum velocity limits."""
         vx, vy, vz = velocity_xyz
+
+        max_velocity = (
+            self._get_agent_max_velocity(agent)
+            if agent is not None
+            else self.max_velocity
+        )
 
         return np.array(
             [
-                vx / self.max_velocity,
-                vy / self.max_velocity,
+                vx / max_velocity,
+                vy / max_velocity,
                 vz / self.max_velocity_z,
             ],
             dtype=np.float32,
         )
 
-    def _normalize_relative_position(self, rel_xyz: list[float]) -> np.ndarray:
-        """Normalize a relative position vector based on maximum possible distances."""
+    def _normalise_relative_pos(self, rel_xyz: list[float]) -> np.ndarray:
+        """Normalise a relative position vector based on maximum possible distances."""
         rx, ry, rz = rel_xyz
 
         return np.array(
@@ -1609,6 +1667,16 @@ class MarlDroneEnvironment(ParallelEnv):
             ],
             dtype=np.float32,
         )
+
+    def _relative_position(
+        self, position: list[float], reference: list[float]
+    ) -> list[float]:
+        """Calculate the relative position of a point with respect to a reference."""
+        return [
+            position[0] - reference[0],
+            position[1] - reference[1],
+            position[2] - reference[2],
+        ]
 
     def _generate_state_dicts(
         self,
@@ -1724,6 +1792,124 @@ class MarlDroneEnvironment(ParallelEnv):
             except Exception as e:
                 print(f"[{agent}] Failed to send zero velocity command: {e}")
 
+    def _clear_collision_safety_state(self) -> None:
+        """Clear collision-safety state for a new episode."""
+        self._collision_safety_event.clear()
+        self._collision_safety_pairs = ()
+
+    def _start_collision_monitor(self) -> None:
+        """Start the inter-drone proximity monitor if configured."""
+        if self.collision_safety_distance is None:
+            return
+
+        if (
+            self._collision_monitor_thread is not None
+            and self._collision_monitor_thread.is_alive()
+        ):
+            return
+
+        self._collision_monitor_stop_event.clear()
+
+        self._collision_monitor_thread = threading.Thread(
+            target=self._collision_monitor_loop,
+            name="MARLCollisionMonitor",
+        )
+        self._collision_monitor_thread.start()
+
+    def _stop_collision_monitor(self) -> None:
+        """Stop the inter-drone proximity monitor."""
+        self._collision_monitor_stop_event.set()
+
+        thread = self._collision_monitor_thread
+
+        if (
+            thread is not None
+            and thread.is_alive()
+            and thread is not threading.current_thread()
+        ):
+            thread.join(timeout=2.0)
+        self._collision_monitor_thread = None
+
+    def _collision_monitor_loop(self) -> None:
+        """Monitor all drone pairs for unsafe proximity.
+
+        When one or more pairs are within ``collision_safety_distance``,
+        immediately command all drones to stop and latch the triggering
+        pair information.
+
+        The monitor does not decide whether the event represents task
+        termination or truncation. That remains the responsibility of
+        the concrete task.
+        """
+        if self.collision_safety_distance is None:
+            return
+
+        period = 1.0 / self.collision_monitor_hz
+
+        while not self._collision_monitor_stop_event.is_set():
+
+            if self._collision_safety_event.is_set():
+                return
+
+            positions = {
+                agent: self.drones[agent].get_position()
+                for agent in self.possible_agents
+            }
+
+            unsafe_pairs: list[tuple[str, str, float]] = []
+
+            for agent_a, agent_b in combinations(positions, 2):
+                pos_a = np.asarray(
+                    positions[agent_a],
+                    dtype=np.float64,
+                )
+                pos_b = np.asarray(
+                    positions[agent_b],
+                    dtype=np.float64,
+                )
+
+                distance = float(np.linalg.norm(pos_a - pos_b))
+
+                if distance <= self.collision_safety_distance:
+                    unsafe_pairs.append((agent_a, agent_b, distance))
+
+            if unsafe_pairs:
+                self._collision_safety_pairs = tuple(unsafe_pairs)
+
+                # Latch first so step() knows not to send another
+                # normal action batch.
+                self._collision_safety_event.set()
+
+                with self._motion_command_lock:
+                    self._stop_drones_motion(
+                        agents=list(self.drones),
+                        reason="collision safety monitor",
+                    )
+
+                pairs_text = ", ".join(
+                    f"{agent_a}<->{agent_b}: {distance:.3f} m"
+                    for agent_a, agent_b, distance in unsafe_pairs
+                )
+
+                print(
+                    "[MARL COLLISION SAFETY] "
+                    f"Minimum separation violated: {pairs_text}"
+                )
+
+                return
+
+            self._collision_monitor_stop_event.wait(period)
+
+    def _collision_safety_triggered(self) -> bool:
+        """Whether the inter-drone safety monitor has triggered."""
+        return self._collision_safety_event.is_set()
+
+    def _get_collision_safety_pairs(
+        self,
+    ) -> tuple[tuple[str, str, float], ...]:
+        """Return the pairs that triggered collision safety."""
+        return self._collision_safety_pairs
+
     # Abstract methods to be implemented by task-specific environments
 
     @abstractmethod
@@ -1732,7 +1918,7 @@ class MarlDroneEnvironment(ParallelEnv):
 
     @abstractmethod
     def _get_observations(self) -> dict[str, np.ndarray]:
-        """Return one normalized observation vector per active agent."""
+        """Return one normalised observation vector per active agent."""
 
     @abstractmethod
     def _calculate_rewards(
@@ -1759,8 +1945,8 @@ class MarlDroneEnvironment(ParallelEnv):
     def _get_infos(
         self,
         state_dicts: dict[str, dict[str, Any]] | None = None,
-        denormalized_actions: dict[str, list[float]] | None = None,
-        normalized_actions: dict[str, np.ndarray] | None = None,
+        denormalised_actions: dict[str, list[float]] | None = None,
+        normalised_actions: dict[str, np.ndarray] | None = None,
         old_positions: dict[str, list[float]] | None = None,
         new_positions: dict[str, list[float]] | None = None,
         action_filter_infos: dict[str, dict[str, Any]] | None = None,
