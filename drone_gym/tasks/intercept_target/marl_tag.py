@@ -104,10 +104,12 @@ class MarlTag(MarlDroneEnvironment):
         self.goal_progress_multiplier = 100.0  # runner: goal shaping reward
         self.capture_progress_multiplier = 100.0  # interceptor: capture shaping reward
 
-        # penalty at the boundary limit, mulitplied by linear within margin, exponential beyond limit
+        # Penalty at the boundary limit
+        # Multiplied by linear within margin, exponential beyond limit
         self.boundary_penalty_at_limit = -1.0
-        self.boundary_penalty_margin = 0.2 # margin before the boundary where linear penalty starts
-        # margin in the z-direction before the boundary limit where linear penalty starts
+        # Margin before the boundary where linear penalty starts
+        self.boundary_penalty_margin = 0.2
+        # Margin in the z-direction before the boundary limit where linear penalty starts
         self.z_boundary_penalty_margin = 0.10
 
         # Task state
@@ -148,8 +150,8 @@ class MarlTag(MarlDroneEnvironment):
 
         # Global state space
         state_dim = (
-            runner_obs_dim * self.num_runner_agents +
-            interceptor_obs_dim * self.num_interceptor_agents
+            runner_obs_dim * self.num_runner_agents
+            + interceptor_obs_dim * self.num_interceptor_agents
         )
         self.state_space = spaces.Box(
             low=-np.inf, high=np.inf, shape=(state_dim,), dtype=np.float32
@@ -159,7 +161,7 @@ class MarlTag(MarlDroneEnvironment):
     # Agent configuration
     # ------------------------------------------------------------------
     def _generate_possible_agents(self) -> list[str]:
-        """ Generate agent names for MarlTag task."""
+        """Generate agent names for MarlTag task."""
         return [
             f"{self.RUNNER}_0",
             *[f"{self.INTERCEPTOR}_{i}" for i in range(self.num_interceptor_agents)],
@@ -187,7 +189,7 @@ class MarlTag(MarlDroneEnvironment):
     def reset(
         self, seed: int | None = None, options: dict[str, Any] | None = None
     ) -> tuple[dict[str, np.ndarray], dict[str, Any]]:
-        """Update curriculum stage and generate a new reset layout before calling 
+        """Update curriculum stage and generate a new reset layout before calling
         the base reset."""
         training = (options or {}).get("training", True)
         self._episode_count += 1
@@ -220,7 +222,9 @@ class MarlTag(MarlDroneEnvironment):
         }
 
         if self.use_simulator:
-            self._set_target_marker(position=self.goal_position, marker_name="runner_goal")
+            self._set_target_marker(
+                position=self.goal_position, marker_name="runner_goal"
+            )
 
     def _update_interceptor_curriculum(
         self,
@@ -255,7 +259,7 @@ class MarlTag(MarlDroneEnvironment):
             )
 
     def _apply_curriculum_stage(self) -> None:
-        """Apply the current curriculum stage to the interceptor agents, if 
+        """Apply the current curriculum stage to the interceptor agents, if
         enabled, limiting their maximum velocity."""
         if not self.curriculum_enabled:
             self.curriculum_interceptor_vel_factor = 1.0
@@ -289,7 +293,7 @@ class MarlTag(MarlDroneEnvironment):
     # Reset layout and goal generation
     # ------------------------------------------------------------------
     def _generate_reset_positions(self) -> dict[str, list[float]]:
-        """Generate a valid reset layout for the MarlTag task. Loops until a 
+        """Generate a valid reset layout for the MarlTag task. Loops until a
         valid layout is found or the maximum number of attempts is reached."""
         usable_xy_size = 2.0 * self.reset_planner.usable_xy_limit
 
@@ -407,7 +411,7 @@ class MarlTag(MarlDroneEnvironment):
         self,
         runner_position: list[float],
         minimum_distance: float,
-    ) -> list[float] | None:
+    ) -> list[float]:
         """Sample a goal position that is at least `minimum_distance` away from the runner."""
         while True:
             goal_position = self._sample_random_position()
@@ -427,7 +431,7 @@ class MarlTag(MarlDroneEnvironment):
         reset_positions: dict[str, list[float]],
         minimum_runner_distance: float,
     ) -> list[float] | None:
-        """Sample a valid interceptor spawn position that is at least `minimum_runner_distance` 
+        """Sample a valid interceptor spawn position that is at least `minimum_runner_distance`
         away from the runner and does not collide with other reset positions."""
         for _ in range(self.max_position_sampling_attempts):
             position = self._sample_random_position()
@@ -451,7 +455,6 @@ class MarlTag(MarlDroneEnvironment):
             return position
 
         return None
-
 
     # ------------------------------------------------------------------
     # Action processing
@@ -487,7 +490,7 @@ class MarlTag(MarlDroneEnvironment):
     # Observations and global state
     # ------------------------------------------------------------------
     def _get_runner_observations(self, agent: str) -> np.ndarray:
-        """Runner sees its own state, other agents' relative position, other 
+        """Runner sees its own state, other agents' relative position, other
         good agents' velocity and the goal's relative position."""
         vel = self.drones[agent].get_calculated_velocity()
         own_vel = [
@@ -534,7 +537,7 @@ class MarlTag(MarlDroneEnvironment):
         return np.concatenate(obs_parts).astype(np.float32)
 
     def _get_interceptor_observations(self, agent: str) -> np.ndarray:
-        """Interceptor sees its own state, other agents' relative position, 
+        """Interceptor sees its own state, other agents' relative position,
         and the runners' velocity."""
         vel = self.drones[agent].get_calculated_velocity()
         own_vel = [
@@ -600,7 +603,7 @@ class MarlTag(MarlDroneEnvironment):
         self, state_dicts: dict[str, dict[str, Any]]
     ) -> dict[str, float]:
         """Calculate rewards for the MarlTag task.
-        Shaping rewards are based on progress toward the goal for the runner and 
+        Shaping rewards are based on progress toward the goal for the runner and
         progress toward capture for the interceptors.
         Terminal rewards are given for catching the runner or reaching the goal.
         Boundary penalties are applied when agents go out of bounds.
