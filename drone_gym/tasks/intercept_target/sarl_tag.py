@@ -148,6 +148,16 @@ class SarlTag(DroneEnvironment):
             0.030  # gentle vertical cap for the pursuer too
         )
 
+        # Reset geometry
+        self.goal_min_distance_ratio = 0.60
+        self.interceptor_min_distance_ratio = 0.25
+
+        self.z_margin = 0.1
+
+        self.max_layout_sampling_attempts = 100
+        self.max_position_sampling_attempts = 300
+        self.reset_positions: dict[str, list[float]] = {}
+
         self.num_interceptor_agents = 1  # only one pursuer in this variant (the expert)
 
         # --- Interceptor speed curriculum (performance-gated ratchet) --------
@@ -410,126 +420,147 @@ class SarlTag(DroneEnvironment):
     # ------------------------------------------------------------------
     # Geometry sampling (3D)
     # ------------------------------------------------------------------
+    def _generate_reset_positions(self) -> dict[str, list[float]]:
+        """Loops until a valid runner, goal, and interceptor layout is found
+        or the maximum number of attempts is reached."""
+        usable_xy_size = 2.0 * self.reset_planner.usable_xy_limit
 
-    def _sample_goal(self, runner_pos: List[float]) -> List[float]:
-        """Sample a goal between goal_min/max_distance (3D) from the runner."""
-        xy = self.xy_limit - self.goal_margin
-        z_lo, z_hi = self.z_min + self.z_margin, self.z_max - self.z_margin
-        for _ in range(300):
-            x = float(np.random.uniform(-xy, xy))
-            y = float(np.random.uniform(-xy, xy))
-            z = float(np.random.uniform(z_lo, z_hi))
-            d = math.sqrt(
-                (x - runner_pos[0]) ** 2
-                + (y - runner_pos[1]) ** 2
-                + (z - runner_pos[2]) ** 2
+        goal_min_distance = self.goal_min_distance_ratio * usable_xy_size
+
+        interceptor_runner_min_distance = max(
+            self.interceptor_min_distance_ratio * usable_xy_size,
+            self.reset_planner.slot_clearance,
+        )
+
+        for _ in range(self.max_layout_sampling_attempts):
+            # 1. Sample runner.
+            runner_position = self._sample_random_position()
+
+            # 2. Reject runner positions from which no valid goal can exist.
+            if not self._runner_has_valid_goal_region(
+                runner_position,
+                goal_min_distance,
+            ):
+                continue
+
+            # 3. Sample goal.
+            goal_position = self._sample_goal(
+                runner_position,
+                goal_min_distance,
             )
-            if self.goal_min_distance <= d <= self.goal_max_distance:
-                return [x, y, z]
-        # Fallback: mirror the runner across the origin in xy, hold mid altitude
+
+            reset_positions = {
+                self.RL_DRONE_NAME: runner_position,
+            }
+
+            # 4. Sample interceptor.
+            interceptor_position = self._sample_interceptor_spawn(
+                runner_position=runner_position,
+                reset_positions=reset_positions,
+                minimum_runner_distance=interceptor_runner_min_distance,
+            )
+
+            if interceptor_position is None:
+                continue
+
+            reset_positions[self.INTERCEPTOR_NAME] = interceptor_position
+
+            # 5. Final physical safety validation.
+            try:
+                self.reset_planner.validate_reset_positions(reset_positions)
+            except self.reset_planner.ConfigurationError:
+                continue
+
+            self.goal_position = goal_position
+
+            return reset_positions
+
+        raise RuntimeError(
+            "Unable to generate a valid SarlTag reset layout after "
+            f"{self.max_layout_sampling_attempts} attempts."
+        )
+
+    def _sample_random_position(self) -> list[float]:
+        """Sample a random position within the usable xy area and z limits."""
+        xy = self.reset_planner.usable_xy_limit
+
+        z_lo = self.z_min + self.z_margin
+        z_hi = self.z_max - self.z_margin
+
         return [
-            float(np.clip(-runner_pos[0], -xy, xy)),
-            float(np.clip(-runner_pos[1], -xy, xy)),
-            self.fixed_z,
+            float(np.random.uniform(-xy, xy)),
+            float(np.random.uniform(-xy, xy)),
+            float(np.random.uniform(z_lo, z_hi)),
         ]
+
+    def _runner_has_valid_goal_region(
+        self,
+        runner_position: list[float],
+        minimum_goal_distance: float,
+    ) -> bool:
+        """Check whether a valid goal can exist for this runner position."""
+        xy = self.reset_planner.usable_xy_limit
+
+        max_dx = max(
+            abs(runner_position[0] - (-xy)),
+            abs(runner_position[0] - xy),
+        )
+        max_dy = max(
+            abs(runner_position[1] - (-xy)),
+            abs(runner_position[1] - xy),
+        )
+
+        max_possible_distance = math.hypot(max_dx, max_dy)
+
+        return max_possible_distance >= minimum_goal_distance
+
+    def _sample_goal(
+        self,
+        runner_position: list[float],
+        minimum_distance: float,
+    ) -> list[float]:
+        """Sample a goal sufficiently far from the runner in xy."""
+        while True:
+            goal_position = self._sample_random_position()
+
+            if (
+                self.reset_planner.distance_xy(
+                    runner_position,
+                    goal_position,
+                )
+                >= minimum_distance
+            ):
+                return goal_position
 
     def _sample_interceptor_spawn(
-        self, runner_pos: List[float], goal_pos: List[float]
-    ) -> List[float]:
-        """Seed the interceptor for a FAIR race to contest the runner's path.
+        self,
+        runner_position: list[float],
+        reset_positions: dict[str, list[float]],
+        minimum_runner_distance: float,
+    ) -> list[float] | None:
+        """Sample a valid interceptor reset position."""
+        for _ in range(self.max_position_sampling_attempts):
+            position = self._sample_random_position()
 
-        A contest point P is chosen a fraction ``f`` of the way along the
-        runner->goal line. The runner reaches P after ~ ``f * D / v_runner``. We
-        place the interceptor abeam P at a lateral distance ``L`` such that it
-        reaches P after ~ ``L / v_interceptor`` ≈ the runner's time — i.e.
-        ``L = (v_interceptor / v_runner) * f * D``. So the interceptor arrives at
-        the contested point at roughly the same moment as the runner: it has a
-        real shot, but cannot trivially win. Clearances keep it out of point-blank
-        range of the runner and off the goal. Everything is clamped into the box.
-        """
-        xy = self.xy_limit - self.spawn_margin
-        z_lo, z_hi = self.z_min + self.z_margin, self.z_max - self.z_margin
-
-        dx = goal_pos[0] - runner_pos[0]
-        dy = goal_pos[1] - runner_pos[1]
-        dz = goal_pos[2] - runner_pos[2]
-        D = math.sqrt(dx * dx + dy * dy + dz * dz) or 1.0
-        xy_len = math.hypot(dx, dy) or 1.0
-        px, py = -dy / xy_len, dx / xy_len  # unit perpendicular to the path in xy
-        speed_ratio = self.interceptor_max_velocity / max(self.max_velocity, 1e-6)
-
-        def _clearances_ok(p):
-            d_runner = math.sqrt(
-                (p[0] - runner_pos[0]) ** 2
-                + (p[1] - runner_pos[1]) ** 2
-                + (p[2] - runner_pos[2]) ** 2
-            )
-            d_goal = math.sqrt(
-                (p[0] - goal_pos[0]) ** 2
-                + (p[1] - goal_pos[1]) ** 2
-                + (p[2] - goal_pos[2]) ** 2
-            )
-            return (
-                d_runner >= self.min_runner_clearance
-                and d_goal >= self.min_goal_clearance
-            )
-
-        fallback = None
-        for _ in range(400):
-            f = float(np.random.uniform(*self.intercept_frac))
-            # contest point on the runner->goal line
-            cx = runner_pos[0] + f * dx
-            cy = runner_pos[1] + f * dy
-            cz = runner_pos[2] + f * dz
-            # fair lateral distance so interceptor and runner reach P together
-            L = (
-                speed_ratio
-                * f
-                * D
-                * float(
-                    np.random.uniform(
-                        1.0 - self.fairness_jitter, 1.0 + self.fairness_jitter
-                    )
+            if (
+                self.reset_planner.distance_xy(
+                    position,
+                    runner_position,
                 )
-            )
-            side = 1.0 if np.random.random() < 0.5 else -1.0
-            ix = cx + side * px * L
-            iy = cy + side * py * L
-            iz = float(
-                np.clip(
-                    cz
-                    + float(
-                        np.random.uniform(
-                            -self.interceptor_z_jitter, self.interceptor_z_jitter
-                        )
-                    ),
-                    z_lo,
-                    z_hi,
-                )
-            )
-            candidate = [ix, iy, iz]
+                < minimum_runner_distance
+            ):
+                continue
 
-            in_box = abs(ix) <= xy and abs(iy) <= xy
-            if in_box and _clearances_ok(candidate):
-                return candidate
-            # Keep a clamped candidate as a fallback in case nothing fits cleanly.
-            if fallback is None:
-                clamped = [float(np.clip(ix, -xy, xy)), float(np.clip(iy, -xy, xy)), iz]
-                if _clearances_ok(clamped):
-                    fallback = clamped
+            if not self.reset_planner.is_xy_position_clear(
+                position,
+                reset_positions,
+                self.reset_planner.slot_clearance,
+            ):
+                continue
 
-        if fallback is not None:
-            return fallback
-        # Last resort: abeam the midpoint at the runner-clearance distance.
-        cx = runner_pos[0] + 0.55 * dx
-        cy = runner_pos[1] + 0.55 * dy
-        cz = runner_pos[2] + 0.55 * dz
-        L = max(self.min_runner_clearance, 1.0)
-        return [
-            float(np.clip(cx + px * L, -xy, xy)),
-            float(np.clip(cy + py * L, -xy, xy)),
-            float(np.clip(cz, z_lo, z_hi)),
-        ]
+            return position
+
+        return None
 
     # ------------------------------------------------------------------
     # Distances (3D)
@@ -820,21 +851,7 @@ class SarlTag(DroneEnvironment):
         # the configured speed affects fair placement.
         self._update_interceptor_curriculum(training)
 
-        # Sample the new runner spawn.
-        self.runner_spawn[2] = float(np.random.uniform(*self.runner_spawn_z_range))
-
-        # Sample task geometry.
-        self.goal_position = self._sample_goal(self.runner_spawn)
-
-        interceptor_spawn = self._sample_interceptor_spawn(
-            self.runner_spawn,
-            self.goal_position,
-        )
-
-        self.reset_positions = {
-            self.RL_DRONE_NAME: list(self.runner_spawn),
-            self.INTERCEPTOR_NAME: list(interceptor_spawn),
-        }
+        self.reset_positions = self._generate_reset_positions()
 
         state = super().reset(training)
         # Fatal simulator recovery may recreate the DroneSim objects.
