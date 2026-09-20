@@ -134,22 +134,6 @@ class SarlTag(DroneEnvironment):
 
         self._apply_curriculum_stage()
 
-        # Slew-rate limit for the interceptor's commanded velocity — same
-        # tilt/thrust-spike mechanism as max_action_delta above (see its
-        # comment), but for the pursuer: PN pursuit can reverse direction
-        # instantly step-to-step, which is exactly the hard direction change
-        # that tilts the drone and has been triggering its firmware crash
-        # latch. Capped as a fraction of the speed ceiling so it stays
-        # meaningful across the curriculum.
-        self.interceptor_max_velocity_delta = 0.2 * self.interceptor_speed_max
-        self._prev_interceptor_velocity = [0.0, 0.0, 0.0]
-
-        # Brake margins: the per-step clamp zeroes a velocity component before the
-        # actual boundary, leaving room for the drone to coast to a stop instead of
-        # sailing through the wall/ceiling on momentum (the out-of-bounds loop).
-        self.boundary_brake_margin = 0.25  # xy: start braking this far inside xy_limit
-        self.z_brake_margin = 0.10  # z: start braking this far inside the z band
-
         self.capture_threshold = (
             0.20  # metres (3D) — interceptor "catches" the runner (no real collision)
         )
@@ -160,7 +144,6 @@ class SarlTag(DroneEnvironment):
         self.max_distance = math.sqrt(
             self.max_xy_range**2 + self.max_xy_range**2 + self.max_z_range**2
         )
-        self.time_tolerance = 0.15
 
         # boundary = (xy, xy, z_low, z_high) — used by the base visual boundary + step clamp
         self.boundary = [self.xy_limit, self.xy_limit, self.z_min, self.z_max]
@@ -246,29 +229,6 @@ class SarlTag(DroneEnvironment):
         self._safety_monitor_running = False
         self._safety_thread = None
 
-        # --- Action smoothing (topple prevention) ---------------------------
-        # The velocity controller applies commanded velocity INSTANTLY (its slew
-        # limiter is unwired and max_velocity_change_rate=100 ≈ no limit). SAC is a
-        # maximum-entropy policy, so it outputs high-variance actions that swing
-        # violently between steps (e.g. +0.25 → −0.25 m/s in xy); applying such an
-        # instantaneous velocity reversal pitches the Crazyflie over and flips it in
-        # CrazySim. TD3's near-deterministic actions are smooth and never hit this.
-        # We slew-limit the commanded action per step so every velocity change is
-        # gentle — a full reversal ramps over several steps instead of toppling.
-        #
-        # This slew cap is ALSO a horizontal-acceleration cap, which is the real
-        # lever on the launch bug: to accelerate horizontally the quad must TILT,
-        # and a tilted drone corrupts its own downward altitude sensor (the ToF
-        # z/cos(tilt) model amplifies error), which is what triggers the firmware
-        # thrust-spike launch. Smaller per-step velocity change -> smaller tilt ->
-        # valid altitude estimate. The implied acceleration cap is
-        #   max_action_delta * max_velocity / step_time
-        #   = 0.2 * 0.25 / 0.5 = 0.10 m/s^2   (was 0.20 m/s^2 at 0.4)
-        # i.e. the drone now tilts about half as hard to change course.
-        # Lower this further to reduce tilt/launches more; raise for agility. [0, 2].
-        self.max_action_delta = 0.2
-        self._prev_applied_action = [0.0, 0.0, 0.0]
-
         # Distance tracking for reward calculation
         self.previous_goal_distance = self.max_distance
 
@@ -309,16 +269,10 @@ class SarlTag(DroneEnvironment):
           [3] Nahin, P. J. (2012). Chases and Escapes, Ch. 3. Princeton UP.
         """
         pos = np.array(state.position, dtype=float)
-        soft = self.xy_limit - 0.3
 
         # Clamp the evader's position into the arena: a boundary-escaped runner
         # must never pull the aim-point outside it.
-        runner = context["runner_pos"]
-        rx = float(np.clip(runner[0], -soft, soft))
-        ry = float(np.clip(runner[1], -soft, soft))
-        rz = float(np.clip(runner[2], self.z_min, self.z_max))
-        target_pos = np.array([rx, ry, rz])
-
+        target_pos = np.array(context["runner_pos"], dtype=float)
         runner_vel = np.array(context.get("runner_vel", [0.0, 0.0, 0.0]), dtype=float)
 
         # Iterative solve for the predicted intercept point.
@@ -328,17 +282,7 @@ class SarlTag(DroneEnvironment):
             if d < 1e-6:
                 break
             t_go = d / self.interceptor_max_velocity
-            pip = np.array(
-                [
-                    float(np.clip(target_pos[0] + runner_vel[0] * t_go, -soft, soft)),
-                    float(np.clip(target_pos[1] + runner_vel[1] * t_go, -soft, soft)),
-                    float(
-                        np.clip(
-                            target_pos[2] + runner_vel[2] * t_go, self.z_min, self.z_max
-                        )
-                    ),
-                ]
-            )
+            pip = target_pos + runner_vel * t_go
 
         aim = pip - pos
         aim_dist = float(np.linalg.norm(aim))
@@ -353,26 +297,7 @@ class SarlTag(DroneEnvironment):
             )
         )
 
-        if (pos[0] <= -soft and vx < 0) or (pos[0] >= soft and vx > 0):
-            vx = 0.0
-        if (pos[1] <= -soft and vy < 0) or (pos[1] >= soft and vy > 0):
-            vy = 0.0
-        if (pos[2] <= self.z_min and vz < 0) or (pos[2] >= self.z_max and vz > 0):
-            vz = 0.0
-
-        # Slew-limit the commanded velocity so no single step can reverse it
-        # outright (see interceptor_max_velocity_delta above).
-        limited = list(self._prev_interceptor_velocity)
-        for i, target in enumerate((vx, vy, vz)):
-            delta = target - limited[i]
-            delta = max(
-                -self.interceptor_max_velocity_delta,
-                min(self.interceptor_max_velocity_delta, delta),
-            )
-            limited[i] = limited[i] + delta
-        self._prev_interceptor_velocity = limited
-
-        return limited
+        return [vx, vy, vz]
 
     # ------------------------------------------------------------------
     # Geometry sampling (3D)
@@ -574,15 +499,6 @@ class SarlTag(DroneEnvironment):
         ]
         self.interceptor.act({"runner_pos": runner_pos, "runner_vel": runner_vel})
 
-    def _position_past_containment(self, pos) -> bool:
-        """True if `pos` has drifted past the containment lines (toward the kill)."""
-        return (
-            abs(pos[0]) > self.CONTAINMENT_XY
-            or abs(pos[1]) > self.CONTAINMENT_XY
-            or pos[2] > self.CONTAINMENT_Z_HIGH
-            or pos[2] < self.CONTAINMENT_Z_LOW
-        )
-
     def _configure_interceptor_drone(
         self,
     ) -> None:
@@ -604,16 +520,6 @@ class SarlTag(DroneEnvironment):
     # ------------------------------------------------------------------
 
     SAFETY_MONITOR_HZ = 20.0  # how often the background monitor checks separation
-
-    # Containment thresholds — the guard steers a drone back inside once it
-    # crosses these. Set ABOVE normal operation (the step clamp keeps the runner
-    # inside ~xy 1.75 / z 0.7-1.3, and interceptor spawns sit within ±1.5 / 0.7-1.3)
-    # but well BELOW the drone's internal fatal kill boundary (xy 2.5, z 2.25;
-    # interceptor z 3.0). That gap is the runway the guard uses to correct a
-    # drifting/overshooting drone before the destructive emergency-land can fire.
-    CONTAINMENT_XY = 2.1
-    CONTAINMENT_Z_HIGH = 1.8
-    CONTAINMENT_Z_LOW = 0.25
 
     def _stop_both_drones(self):
         """Immediately command zero velocity to the runner and the interceptor."""
@@ -722,20 +628,6 @@ class SarlTag(DroneEnvironment):
                             f"{separation:.2f} m (< {self.capture_threshold:.2f}) — both stopped"
                         )
 
-            if not captured and not self._collision_event.is_set():
-                # Containment — brake (not reverse) any drone past the line,
-                # each judged on its own (valid) reading only.
-                if rp_ok and self._position_past_containment(rp):
-                    try:
-                        self.drone.set_velocity_vector(0, 0, 0)
-                    except Exception:
-                        pass
-                if ip_ok and self._position_past_containment(ip):
-                    try:
-                        self.interceptor.body.apply_velocity(0, 0, 0)
-                        self.interceptor.velocity = [0.0, 0.0, 0.0]
-                    except Exception:
-                        pass
             time.sleep(dt)
 
     # ------------------------------------------------------------------
@@ -875,11 +767,6 @@ class SarlTag(DroneEnvironment):
         # so caught, reached_goal and done have been cleared.
         self.previous_goal_distance = self._distance_to_target(runner_pos)
 
-        self._prev_applied_action = [
-            0.0,
-            0.0,
-            0.0,
-        ]
         self._prev_interceptor_velocity = [0.0, 0.0, 0.0]
 
         time.sleep(0.5)
@@ -921,46 +808,7 @@ class SarlTag(DroneEnvironment):
         # simultaneously during the step_time sleep inside the parent step.
         self._command_interceptor(runner_pos)
 
-        # Per-axis boundary clamp: only zero a velocity component that would push the
-        # runner FURTHER out of bounds. Inward motion is always allowed so a drone
-        # that has drifted out can return (and the runner can slide along walls).
-        position = self.drone.get_position()
-        time_step = self.step_time + self.time_tolerance
-        clamped_action = list(processed_action)
-
-        xy_brake = self.xy_limit - self.boundary_brake_margin
-        z_hi = self.z_max - self.z_brake_margin
-        z_lo = self.z_min + self.z_brake_margin
-
-        predicted_x = position[0] + time_step * clamped_action[0] * self.max_velocity
-        if predicted_x > xy_brake and clamped_action[0] > 0:
-            clamped_action[0] = 0.0
-        elif predicted_x < -xy_brake and clamped_action[0] < 0:
-            clamped_action[0] = 0.0
-
-        predicted_y = position[1] + time_step * clamped_action[1] * self.max_velocity
-        if predicted_y > xy_brake and clamped_action[1] > 0:
-            clamped_action[1] = 0.0
-        elif predicted_y < -xy_brake and clamped_action[1] < 0:
-            clamped_action[1] = 0.0
-
-        predicted_z = position[2] + time_step * clamped_action[2] * self.max_velocity_z
-        if predicted_z > z_hi and clamped_action[2] > 0:
-            clamped_action[2] = 0.0
-        elif predicted_z < z_lo and clamped_action[2] < 0:
-            clamped_action[2] = 0.0
-
-        # Slew-rate limit: cap how far the commanded action can move from the last
-        # applied action, so no single velocity change is violent enough to topple
-        # the drone (SAC's high-entropy actions otherwise swing hard step-to-step).
-        limited_action = list(clamped_action)
-        for i in range(3):
-            delta = clamped_action[i] - self._prev_applied_action[i]
-            delta = max(-self.max_action_delta, min(self.max_action_delta, delta))
-            limited_action[i] = self._prev_applied_action[i] + delta
-        self._prev_applied_action = list(limited_action)
-
-        result = super().step(limited_action)
+        result = super().step(processed_action)
 
         # Refresh interceptor tracking after the step (it has flown for step_time).
         self.interceptor.refresh()
