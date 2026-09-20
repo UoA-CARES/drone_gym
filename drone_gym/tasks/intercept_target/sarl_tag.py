@@ -48,6 +48,13 @@ class SarlTag(DroneEnvironment):
 
     INTERCEPTOR_NAME = "interceptor_0"
 
+    CURRICULUM_STAGES = [
+        {"interceptor_speed_factor": 0.40},
+        {"interceptor_speed_factor": 0.60},
+        {"interceptor_speed_factor": 0.80},
+        {"interceptor_speed_factor": 1.00},
+    ]
+
     def __init__(
         self,
         use_simulator: Literal[0, 1],
@@ -94,52 +101,7 @@ class SarlTag(DroneEnvironment):
         # Runner spawn altitude — resampled every episode. Kept a notch inside the
         # z band so the worst-case vertical gap to a goal (~0.5 m) stays closable
         # at max_velocity_z within an 80-step episode (0.5 / (0.03 * 0.5) ≈ 34 steps).
-        self.runner_spawn_z_range = (0.8, 1.2)
-        self.spawn_margin = (
-            0.5  # keep spawns clear of the xy wall (PID overshoot safety)
-        )
-        self.goal_margin = 0.3  # keep the goal clear of the xy wall
-        self.z_margin = (
-            0.1  # keep goal/interceptor spawn off the z floor/ceiling (tight band)
-        )
         self.out_of_bounds_tolerance = 0.05  # small grace for PID overshoot at the wall
-
-        # The runner always spawns at the xy centre (0, 0) — lateral diversity
-        # comes from the random goal + interceptor placement, NOT from moving the
-        # runner. This is the proven-stable pattern from intercept_evader /
-        # evade_pursuers: a long-range lateral reset move on the learner stresses
-        # CrazySim's EKF and makes the drone tumble and fall. The spawn ALTITUDE
-        # is resampled each episode (see runner_spawn_z_range): that only changes
-        # the length of the slow, PID-controlled vertical climb out of the ground
-        # teleport, which the max_velocity_z cap keeps gentle.
-        self.runner_spawn = [0.0, 0.0, self.fixed_z]
-
-        # FAIRNESS — goal placement. The goal must be far enough that a faster
-        # interceptor has a real chance to cut the runner off (if the goal were
-        # right next to the runner, the runner trivially wins and the interceptor
-        # has no chance). goal_max keeps the journey bounded so it stays winnable.
-        self.goal_min_distance = 1.5
-        self.goal_max_distance = 2.4
-
-        # FAIRNESS — interceptor placement. The interceptor is seeded so it must
-        # RACE to contest the runner's path: close enough to threaten, far enough
-        # that the runner has a real chance. We pick a contest point along the
-        # runner->goal line, then offset the interceptor sideways by a distance
-        # scaled by the speed ratio so it arrives at the contest point at roughly
-        # the same time as the runner (a fair race — neither side trivially wins).
-        # Hard clearances stop the two degenerate cases the task must avoid:
-        #   * interceptor right in front of the runner  -> runner has no chance
-        #   * interceptor camped on the goal            -> runner has no chance
-        self.intercept_frac = (
-            0.45,
-            0.65,
-        )  # where along the runner->goal path the contest is set up
-        self.fairness_jitter = 0.15  # ±15% randomness on the fair lateral distance
-        self.interceptor_z_jitter = 0.25  # vertical variety for the interceptor spawn
-        self.min_runner_clearance = (
-            1.0  # interceptor never starts in (near) capture range of the runner
-        )
-        self.min_goal_clearance = 0.6  # interceptor can't start camped on the goal
 
         self.interceptor_max_velocity = (
             interceptor_max_velocity  # > max_velocity so capture is feasible
@@ -160,22 +122,17 @@ class SarlTag(DroneEnvironment):
 
         self.num_interceptor_agents = 1  # only one pursuer in this variant (the expert)
 
-        # --- Interceptor speed curriculum (performance-gated ratchet) --------
-        # Start the interceptor fast enough to be a real threat from episode 1,
-        # then raise its speed further as the runner's success rate climbs.
-        # Speed only ever increases, and stalls automatically if the runner
-        # stops improving.
+        # --- Interceptor speed curriculum ---------------------------------------
+        self.interceptor_speed_max = interceptor_max_velocity
+
         self.curriculum_enabled = True
-        self.interceptor_speed_min = 0.10  # starting speed (m/s) — ~71% of the ceiling
-        self.interceptor_speed_max = (
-            self.interceptor_max_velocity
-        )  # ceiling = the ctor value
-        self.curriculum_window = 50  # episodes judged per difficulty level
-        self.curriculum_success_threshold = 0.6  # runner success rate that earns a bump
-        self.curriculum_speed_step = 0.01  # speed added per bump (m/s)
-        if self.curriculum_enabled:
-            self.interceptor_max_velocity = self.interceptor_speed_min
+        self.curriculum_stage = 0
+        self.curriculum_window = 50
+        self.curriculum_success_threshold = 0.6
+
         self._recent_runner_outcomes = deque(maxlen=self.curriculum_window)
+
+        self._apply_curriculum_stage()
 
         # Slew-rate limit for the interceptor's commanded velocity — same
         # tilt/thrust-spike mechanism as max_action_delta above (see its
@@ -785,34 +742,63 @@ class SarlTag(DroneEnvironment):
     # DroneEnvironment overrides
     # ------------------------------------------------------------------
 
-    def _update_interceptor_curriculum(self, training: bool = True) -> None:
-        """Record the finished episode's runner outcome and, once a full window
-        is in, raise the interceptor's speed if the runner is succeeding often
-        enough. Ratchets up only; stalls if the runner plateaus."""
+    def _update_interceptor_curriculum(
+        self,
+        training: bool = True,
+    ) -> None:
+        """Update the interceptor curriculum based on runner performance."""
         if not self.curriculum_enabled or not training:
             return
-        # self.reached_goal still holds the just-finished episode's result here
-        # (reset clears it later), so record it before the rest of reset runs.
+
+        max_stage = len(self.CURRICULUM_STAGES) - 1
+
+        if self.curriculum_stage >= max_stage:
+            return
+
         if self._episode_count > 1:
             self._recent_runner_outcomes.append(1.0 if self.reached_goal else 0.0)
+
         if len(self._recent_runner_outcomes) < self.curriculum_window:
             return
+
         success_rate = sum(self._recent_runner_outcomes) / len(
             self._recent_runner_outcomes
         )
-        if (
-            success_rate >= self.curriculum_success_threshold
-            and self.interceptor_max_velocity < self.interceptor_speed_max
-        ):
-            self.interceptor_max_velocity = min(
-                self.interceptor_speed_max,
-                self.interceptor_max_velocity + self.curriculum_speed_step,
-            )
-            self._recent_runner_outcomes.clear()  # re-earn the next bump at the new speed
+
+        if success_rate >= self.curriculum_success_threshold:
+            self.advance_curriculum()
+
             print(
-                f"[SarlTag][curriculum] runner success {success_rate:.0%} -> "
-                f"interceptor speed {self.interceptor_max_velocity:.3f} m/s"
+                f"[SarlTag][curriculum] "
+                f"runner success {success_rate:.0%} -> "
+                f"stage {self.curriculum_stage}"
             )
+
+    def _apply_curriculum_stage(self) -> None:
+        """Apply the current curriculum stage to the expert interceptor."""
+        if not self.curriculum_enabled:
+            self.interceptor_max_velocity = self.interceptor_speed_max
+            return
+
+        stage = self.CURRICULUM_STAGES[self.curriculum_stage]
+
+        speed_factor = stage["interceptor_speed_factor"]
+        self.interceptor_max_velocity = self.interceptor_speed_max * speed_factor
+
+    def advance_curriculum(self) -> None:
+        """Advance to the next curriculum stage."""
+        max_stage = len(self.CURRICULUM_STAGES) - 1
+
+        if self.curriculum_stage < max_stage:
+            self.curriculum_stage += 1
+            self._recent_runner_outcomes.clear()
+
+    def set_curriculum_stage(self, stage: int) -> None:
+        """Set curriculum stage directly."""
+        max_stage = len(self.CURRICULUM_STAGES) - 1
+
+        self.curriculum_stage = max(0, min(stage, max_stage))
+        self._recent_runner_outcomes.clear()
 
     def reset(
         self,
