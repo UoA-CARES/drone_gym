@@ -2,7 +2,7 @@ import math
 import time
 import io
 from collections import deque
-from typing import Dict, List, Any, Literal
+from typing import Any, Literal
 import numpy as np
 import matplotlib.pyplot as plt
 import cv2
@@ -10,7 +10,7 @@ from matplotlib.markers import MarkerStyle
 
 from drone_gym.drone_environment import DroneEnvironment
 from drone_gym.agents.bodies import CrazyflieBody
-from drone_gym.agents.policies import CallablePolicy
+from drone_gym.agents.policies import PredictedInterceptPolicy
 from drone_gym.agents.sim_agent import SimAgent
 
 
@@ -133,8 +133,6 @@ class SarlTag(DroneEnvironment):
 
         self._recent_runner_outcomes = deque(maxlen=self.curriculum_window)
 
-        self._apply_curriculum_stage()
-
         self.capture_threshold = capture_threshold
         self.goal_threshold = 0.20  # metres (3D) — runner has reached the goal
 
@@ -173,9 +171,9 @@ class SarlTag(DroneEnvironment):
         self._step_collision_outcomes: tuple[bool, bool] = (False, False)
         self.winner: str | None = None
 
-        self.goal_position: List[float] = [0.0, 0.0, self.fixed_z]
-        self.interceptor_position: List[float] = [0.0, 0.0, self.fixed_z]
-        self.interceptor_velocity: List[float] = [0.0, 0.0, 0.0]
+        self.goal_position: list[float] = [0.0, 0.0, self.fixed_z]
+        self.interceptor_position: list[float] = [0.0, 0.0, self.fixed_z]
+        self.interceptor_velocity: list[float] = [0.0, 0.0, 0.0]
 
         # --- Interceptor agent (second real SITL Crazyflie) ------------------
         # Constructed directly here — agent lifecycle belongs to the environment,
@@ -195,12 +193,15 @@ class SarlTag(DroneEnvironment):
             drone=interceptor_drone,
             fixed_z=self.fixed_z,
         )
+        self.interceptor_policy = PredictedInterceptPolicy(
+            max_velocity=self.interceptor_max_velocity,
+            max_velocity_z=self.interceptor_max_velocity_z,
+        )
 
-        interceptor_policy = CallablePolicy(fn=self._interceptor_pursuit)
         self.interceptor = SimAgent(
             agent_id=1,
             body=interceptor_body,
-            policy=interceptor_policy,
+            policy=self.interceptor_policy,
             role="interceptor",
         )
 
@@ -230,64 +231,6 @@ class SarlTag(DroneEnvironment):
         # lands both drones and re-seeds their estimators on the ground EVERY
         # episode, so drift can never accumulate past a single episode.
         self._episode_count = 0
-
-    # ------------------------------------------------------------------
-    # Interceptor expert policy — 3D Proportional Navigation (PIP)
-    # ------------------------------------------------------------------
-
-    def _interceptor_pursuit(self, state, context) -> List[float]:
-        """3D Proportional Navigation via Predicted Intercept Point (PIP).
-
-        Pure pursuit always steers toward the evader's *current* position,
-        causing a tail-chase that converges slowly. Proportional Navigation
-        (PN) instead drives the line-of-sight angular rate to zero, placing
-        the pursuer on a collision course. For a constant-velocity evader
-        this is equivalent to steering toward the *Predicted Intercept Point*
-        (PIP): where pursuer and evader can arrive simultaneously given the
-        evader's current velocity [1, 2].
-
-        The PIP is solved by fixed-point iteration (2–4 steps suffice):
-            t_go^(0) = |r| / V_pursuer
-            pip^(k)  = runner_pos + runner_vel * t_go^(k)
-            t_go^(k+1) = |pip^(k) − pursuer_pos| / V_pursuer
-
-        References:
-          [1] Shneydor, N. A. (1998). Missile Guidance and Pursuit, Ch. 4.
-          [2] Weintraub, I., Pachter, M., & Garcia, E. (2020). An introduction
-              to pursuit-evasion differential games. Proc. American Control
-              Conference, pp. 1049–1066.
-          [3] Nahin, P. J. (2012). Chases and Escapes, Ch. 3. Princeton UP.
-        """
-        pos = np.array(state.position, dtype=float)
-
-        # Clamp the evader's position into the arena: a boundary-escaped runner
-        # must never pull the aim-point outside it.
-        target_pos = np.array(context["runner_pos"], dtype=float)
-        runner_vel = np.array(context.get("runner_vel", [0.0, 0.0, 0.0]), dtype=float)
-
-        # Iterative solve for the predicted intercept point.
-        pip = target_pos.copy()
-        for _ in range(4):
-            d = float(np.linalg.norm(pip - pos))
-            if d < 1e-6:
-                break
-            t_go = d / self.interceptor_max_velocity
-            pip = target_pos + runner_vel * t_go
-
-        aim = pip - pos
-        aim_dist = float(np.linalg.norm(aim))
-        if aim_dist < 1e-6:
-            return [0.0, 0.0, 0.0]
-
-        scale = self.interceptor_max_velocity / aim_dist
-        vx, vy, vz = scale * aim[0], scale * aim[1], scale * aim[2]
-        vz = float(
-            np.clip(
-                vz, -self.interceptor_max_velocity_z, self.interceptor_max_velocity_z
-            )
-        )
-
-        return [vx, vy, vz]
 
     # ------------------------------------------------------------------
     # Geometry sampling (3D)
@@ -438,7 +381,7 @@ class SarlTag(DroneEnvironment):
     # Distances (3D)
     # ------------------------------------------------------------------
 
-    def _distance_to_target(self, position: List[float]) -> float:
+    def _distance_to_target(self, position: list[float]) -> float:
         """Base hook: 'target' for this task is the GOAL (used by the info dict)."""
         return math.sqrt(
             (position[0] - self.goal_position[0]) ** 2
@@ -446,14 +389,14 @@ class SarlTag(DroneEnvironment):
             + (position[2] - self.goal_position[2]) ** 2
         )
 
-    def _distance_to_interceptor(self, position: List[float]) -> float:
+    def _distance_to_interceptor(self, position: list[float]) -> float:
         return math.sqrt(
             (position[0] - self.interceptor_position[0]) ** 2
             + (position[1] - self.interceptor_position[1]) ** 2
             + (position[2] - self.interceptor_position[2]) ** 2
         )
 
-    def _is_out_of_task_bounds(self, position: List[float]) -> bool:
+    def _is_out_of_task_bounds(self, position: list[float]) -> bool:
         """Out of the task's 3D boundary (with a small grace for PID overshoot).
 
         We check the task limits explicitly rather than trusting the drone's own
@@ -476,18 +419,23 @@ class SarlTag(DroneEnvironment):
         self.interceptor_position = list(self.interceptor.position)
         self.interceptor_velocity = list(self.interceptor.velocity)
 
-    def _command_interceptor(self, runner_pos: List[float]):
-        """Run the PN pursuit policy and command the interceptor (non-blocking).
-
-        Called before super().step() so the interceptor flies toward the runner
-        during the same step_time sleep the runner moves in.
-        """
-        runner_vel = [
+    def _command_interceptor(
+        self,
+        runner_position: list[float],
+    ) -> None:
+        """Command the expert interceptor to pursue the runner."""
+        runner_velocity = [
             self.drone.calculated_velocity.get("x", 0.0),
             self.drone.calculated_velocity.get("y", 0.0),
             self.drone.calculated_velocity.get("z", 0.0),
         ]
-        self.interceptor.act({"runner_pos": runner_pos, "runner_vel": runner_vel})
+
+        self.interceptor.act(
+            {
+                "target_position": runner_position,
+                "target_velocity": runner_velocity,
+            }
+        )
 
     def _configure_interceptor_drone(
         self,
@@ -571,6 +519,7 @@ class SarlTag(DroneEnvironment):
 
         speed_factor = stage["interceptor_speed_factor"]
         self.interceptor_max_velocity = self.interceptor_speed_max * speed_factor
+        self.interceptor_policy.set_max_velocity(self.interceptor_max_velocity)
 
     def advance_curriculum(self) -> None:
         """Advance to the next curriculum stage."""
@@ -618,6 +567,7 @@ class SarlTag(DroneEnvironment):
         # This must happen before interceptor spawn sampling because
         # the configured speed affects fair placement.
         self._update_interceptor_curriculum(training)
+        self._apply_curriculum_stage()
 
         self.reset_positions = self._generate_reset_positions()
 
@@ -747,7 +697,7 @@ class SarlTag(DroneEnvironment):
     def _get_state(self) -> np.ndarray:
         return self._get_runner_observations()
 
-    def get_overlay_info(self) -> Dict[str, Any]:
+    def get_overlay_info(self) -> dict[str, Any]:
         position = self.drone.get_position()
         return {
             "position": position,
@@ -760,7 +710,7 @@ class SarlTag(DroneEnvironment):
             "done": self.done,
         }
 
-    def _calculate_reward(self, current_state: Dict[str, Any]) -> float:
+    def _calculate_reward(self, current_state: dict[str, Any]) -> float:
         """Reward = progress to goal − step cost − evasion shaping, with terminal bonuses."""
         position = current_state["position"]
         goal_distance = current_state["distance_to_target"]
@@ -802,7 +752,7 @@ class SarlTag(DroneEnvironment):
         self.previous_goal_distance = goal_distance
         return reward
 
-    def _check_if_terminated(self, current_state: Dict[str, Any]) -> bool:
+    def _check_if_terminated(self, current_state: dict[str, Any]) -> bool:
         """Episode ends on goal reached (success) or interception."""
         goal_distance = current_state["distance_to_target"]
 
@@ -829,7 +779,7 @@ class SarlTag(DroneEnvironment):
 
     def _check_if_truncated(
         self,
-        current_state: Dict[str, Any],
+        current_state: dict[str, Any],
     ) -> bool:
         """Truncate the episode on time limit, or an invalid drone altitude."""
         time_limit_reached = self.steps >= self.episode_length
@@ -867,7 +817,7 @@ class SarlTag(DroneEnvironment):
 
         return truncate
 
-    def _get_additional_info(self, current_state: Dict[str, Any]) -> Dict[str, Any]:
+    def _get_additional_info(self, current_state: dict[str, Any]) -> dict[str, Any]:
         position = current_state["position"]
         info = {
             "goal_position": self.goal_position[:],

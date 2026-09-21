@@ -17,7 +17,7 @@ called once per episode for stateful policies.
 
 from abc import ABC, abstractmethod
 import math
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable
 
 import numpy as np
 
@@ -25,11 +25,11 @@ import numpy as np
 class BasePolicy(ABC):
     """Base class for all agent policies."""
 
-    def reset(self, state: "Any", context: Dict[str, Any]) -> None:
+    def reset(self, state: "Any", context: dict[str, Any]) -> None:
         """Optional per-episode reset hook. Override for stateful policies."""
 
     @abstractmethod
-    def compute(self, state: "Any", context: Dict[str, Any]) -> List[float]:
+    def compute(self, state: "Any", context: dict[str, Any]) -> list[float]:
         """Return the desired velocity command ``[vx, vy, vz]`` for this step."""
         raise NotImplementedError
 
@@ -44,14 +44,19 @@ class PurePursuitPolicy(BasePolicy):
     momentum into a wall (mirrors the original EvadePursuers2D behaviour).
     """
 
-    def __init__(self, max_velocity: float, target_key: str = "evader_pos",
-                 boundary_limit: Optional[float] = None, soft_margin: float = 0.3):
+    def __init__(
+        self,
+        max_velocity: float,
+        target_key: str = "target_position",
+        boundary_limit: float | None = None,
+        soft_margin: float = 0.3,
+    ):
         self.max_velocity = max_velocity
         self.target_key = target_key
         self.boundary_limit = boundary_limit
         self.soft_margin = soft_margin
 
-    def compute(self, state: "Any", context: Dict[str, Any]) -> List[float]:
+    def compute(self, state: "Any", context: dict[str, Any]) -> list[float]:
         if self.target_key not in context:
             raise KeyError(
                 f"PurePursuitPolicy needs context['{self.target_key}'] "
@@ -81,6 +86,85 @@ class PurePursuitPolicy(BasePolicy):
         return [vx, vy, 0.0]
 
 
+class PredictedInterceptPolicy(BasePolicy):
+    """Pursue a moving target using a predicted intercept point."""
+
+    def __init__(
+        self,
+        max_velocity: float,
+        max_velocity_z: float | None = None,
+        prediction_iterations: int = 4,
+    ) -> None:
+        if max_velocity <= 0:
+            raise ValueError("max_velocity must be greater than zero.")
+
+        if max_velocity_z is not None and max_velocity_z <= 0:
+            raise ValueError("max_velocity_z must be greater than zero.")
+
+        if prediction_iterations < 1:
+            raise ValueError("prediction_iterations must be at least 1.")
+
+        self.max_velocity = max_velocity
+        self.max_velocity_z = max_velocity_z
+        self.prediction_iterations = prediction_iterations
+
+    def set_max_velocity(self, max_velocity: float) -> None:
+        """Update the policy's horizontal/overall speed limit."""
+        if max_velocity <= 0:
+            raise ValueError("max_velocity must be greater than zero.")
+
+        self.max_velocity = max_velocity
+
+    def compute(self, state, context) -> list[float]:
+        """Return a velocity command towards the predicted intercept point."""
+        pursuer_position = np.asarray(
+            state.position,
+            dtype=float,
+        )
+
+        target_position = np.asarray(
+            context["target_position"],
+            dtype=float,
+        )
+
+        target_velocity = np.asarray(
+            context.get(
+                "target_velocity",
+                [0.0, 0.0, 0.0],
+            ),
+            dtype=float,
+        )
+
+        intercept_point = target_position.copy()
+
+        for _ in range(self.prediction_iterations):
+            distance = float(np.linalg.norm(intercept_point - pursuer_position))
+
+            if distance < 1e-6:
+                return [0.0, 0.0, 0.0]
+
+            time_to_go = distance / self.max_velocity
+
+            intercept_point = target_position + target_velocity * time_to_go
+
+        direction = intercept_point - pursuer_position
+        distance = float(np.linalg.norm(direction))
+
+        if distance < 1e-6:
+            return [0.0, 0.0, 0.0]
+
+        velocity = self.max_velocity * direction / distance
+
+        if self.max_velocity_z is not None:
+            velocity[2] = np.clip(
+                velocity[2],
+                -self.max_velocity_z,
+                self.max_velocity_z,
+            )
+
+        return velocity.tolist()
+
+
 class FleePolicy(BasePolicy):
     """Flee from a threat at fixed speed — the mirror of pure pursuit.
 
@@ -92,14 +176,19 @@ class FleePolicy(BasePolicy):
     top of the agent, a random escape heading is chosen.
     """
 
-    def __init__(self, max_velocity: float, threat_key: str = "threat_pos",
-                 boundary_limit: Optional[float] = None, soft_margin: float = 0.3):
+    def __init__(
+        self,
+        max_velocity: float,
+        threat_key: str = "threat_pos",
+        boundary_limit: float | None = None,
+        soft_margin: float = 0.3,
+    ):
         self.max_velocity = max_velocity
         self.threat_key = threat_key
         self.boundary_limit = boundary_limit
         self.soft_margin = soft_margin
 
-    def compute(self, state: "Any", context: Dict[str, Any]) -> List[float]:
+    def compute(self, state: "Any", context: dict[str, Any]) -> list[float]:
         if self.threat_key not in context:
             raise KeyError(
                 f"FleePolicy needs context['{self.threat_key}'] "
@@ -108,7 +197,7 @@ class FleePolicy(BasePolicy):
         threat = context[self.threat_key]
         pos = state.position
 
-        dx = pos[0] - threat[0]   # vector pointing AWAY from the threat
+        dx = pos[0] - threat[0]  # vector pointing AWAY from the threat
         dy = pos[1] - threat[1]
         dist = math.sqrt(dx * dx + dy * dy)
 
@@ -144,18 +233,26 @@ class LineMotionPolicy(BasePolicy):
         self.speed = speed
         self.bounds = bounds
         self.reflect = reflect
-        self.velocity: List[float] = [0.0, 0.0, 0.0]
+        self.velocity: list[float] = [0.0, 0.0, 0.0]
 
-    def reset(self, state: "Any", context: Dict[str, Any]) -> None:
+    def reset(self, state: "Any", context: dict[str, Any]) -> None:
         angle = float(np.random.uniform(0, 2 * math.pi))
-        self.velocity = [self.speed * math.cos(angle), self.speed * math.sin(angle), 0.0]
+        self.velocity = [
+            self.speed * math.cos(angle),
+            self.speed * math.sin(angle),
+            0.0,
+        ]
 
-    def compute(self, state: "Any", context: Dict[str, Any]) -> List[float]:
+    def compute(self, state: "Any", context: dict[str, Any]) -> list[float]:
         if self.reflect:
             x, y = state.position[0], state.position[1]
-            if (x <= -self.bounds and self.velocity[0] < 0) or (x >= self.bounds and self.velocity[0] > 0):
+            if (x <= -self.bounds and self.velocity[0] < 0) or (
+                x >= self.bounds and self.velocity[0] > 0
+            ):
                 self.velocity[0] *= -1
-            if (y <= -self.bounds and self.velocity[1] < 0) or (y >= self.bounds and self.velocity[1] > 0):
+            if (y <= -self.bounds and self.velocity[1] < 0) or (
+                y >= self.bounds and self.velocity[1] > 0
+            ):
                 self.velocity[1] *= -1
         return list(self.velocity)
 
@@ -163,7 +260,7 @@ class LineMotionPolicy(BasePolicy):
 class StationaryPolicy(BasePolicy):
     """Hold position (e.g. for a static obstacle)."""
 
-    def compute(self, state: "Any", context: Dict[str, Any]) -> List[float]:
+    def compute(self, state: "Any", context: dict[str, Any]) -> list[float]:
         return [0.0, 0.0, 0.0]
 
 
@@ -175,15 +272,18 @@ class CallablePolicy(BasePolicy):
     ``reset_fn(state, context)`` can be supplied for per-episode setup.
     """
 
-    def __init__(self, fn: Callable[[Any, Dict[str, Any]], List[float]],
-                 reset_fn: Optional[Callable[[Any, Dict[str, Any]], None]] = None):
+    def __init__(
+        self,
+        fn: Callable[[Any, dict[str, Any]], list[float]],
+        reset_fn: Callable[[Any, dict[str, Any]], None] | None = None,
+    ):
         self._fn = fn
         self._reset_fn = reset_fn
 
-    def reset(self, state: "Any", context: Dict[str, Any]) -> None:
+    def reset(self, state: "Any", context: dict[str, Any]) -> None:
         if self._reset_fn is not None:
             self._reset_fn(state, context)
 
-    def compute(self, state: "Any", context: Dict[str, Any]) -> List[float]:
+    def compute(self, state: "Any", context: dict[str, Any]) -> list[float]:
         v = self._fn(state, context)
         return [v[0], v[1], v[2] if len(v) > 2 else 0.0]

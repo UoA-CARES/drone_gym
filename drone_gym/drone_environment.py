@@ -1,7 +1,7 @@
 from abc import ABC, abstractmethod
 from collections.abc import Iterator
 import time
-from typing import Dict, List, Any, Literal
+from typing import Any, Literal
 from itertools import combinations
 import threading
 import numpy as np
@@ -179,7 +179,7 @@ class DroneEnvironment(ABC):
     @reset_position.setter
     def reset_position(
         self,
-        position: List[float],
+        position: list[float],
     ) -> None:
         """
         Set the RL drone's reset position.
@@ -314,7 +314,7 @@ class DroneEnvironment(ABC):
 
     def _set_target_marker(
         self,
-        position: List[float] | np.ndarray,
+        position: list[float] | np.ndarray,
         marker_name: str = "target",
     ) -> None:
         """
@@ -1486,7 +1486,7 @@ class DroneEnvironment(ABC):
         gotten_state = self._get_state()
         return gotten_state, reward, terminated, truncated, info
 
-    def _generate_state_dict(self, position: List[float]) -> Dict[str, Any]:
+    def _generate_state_dict(self, position: list[float]) -> dict[str, Any]:
         """Generate a state dictionary with common drone information"""
         return {
             "position": position,
@@ -1495,7 +1495,7 @@ class DroneEnvironment(ABC):
             "distance_to_target": self._distance_to_target(position),
         }
 
-    # def _generate_action_dict(self, action: List[float]) -> np.ndarray:
+    # def _generate_action_dict(self, action: list[float]) -> np.ndarray:
     #     """Generate a compact action representation as numpy array"""
     #     action = [
     #         action[0],  # x velocity
@@ -1504,15 +1504,15 @@ class DroneEnvironment(ABC):
     #     ]
     #     return np.array(action, dtype=np.float32)
 
-    def _distance_to_target(self, position: List[float]) -> float:
+    def _distance_to_target(self, position: list[float]) -> float:
         """Calculate distance to target - to be overridden by task"""
         return 0.0
 
-    def get_action_bounds(self) -> Dict:
+    def get_action_bounds(self) -> dict:
         """Get the bounds for action space"""
         return {"low": [-1.0, -1.0, -1.0], "high": [1.0, 1.0, 1.0], "shape": (3,)}
 
-    def get_action_space_info(self) -> Dict:
+    def get_action_space_info(self) -> dict:
         """Get detailed action space information"""
         return {
             "type": "continuous",
@@ -1528,7 +1528,7 @@ class DroneEnvironment(ABC):
             "step_duration_s": self.step_time,
         }
 
-    def set_reset_position(self, position: List[float]):
+    def set_reset_position(self, position: list[float]):
         """Set a new reset position and invalidate the cached target"""
         if len(position) != 3:
             raise ValueError("Reset position must be a 3-element list [x, y, z]")
@@ -1936,19 +1936,19 @@ class DroneEnvironment(ABC):
         """Get the current state representation"""
 
     @abstractmethod
-    def _calculate_reward(self, current_state: Dict[str, Any]) -> float:
+    def _calculate_reward(self, current_state: dict[str, Any]) -> float:
         """Calculate reward based on current state"""
 
     @abstractmethod
-    def _check_if_terminated(self, current_state: Dict[str, Any]) -> bool:
+    def _check_if_terminated(self, current_state: dict[str, Any]) -> bool:
         """Check if episode is done"""
 
     @abstractmethod
-    def _check_if_truncated(self, current_state: Dict[str, Any]) -> bool:
+    def _check_if_truncated(self, current_state: dict[str, Any]) -> bool:
         """Check if episode should be truncated"""
 
     @abstractmethod
-    def _get_additional_info(self, current_state: Dict[str, Any]) -> Dict[str, Any]:
+    def _get_additional_info(self, current_state: dict[str, Any]) -> dict[str, Any]:
         """Get additional task-specific info for the info dict"""
 
     @abstractmethod
