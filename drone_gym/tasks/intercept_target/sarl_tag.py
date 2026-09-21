@@ -45,7 +45,8 @@ class SarlTag(DroneEnvironment):
         ./sitl_multiagent_square.sh -m crazyflie -n 2   # 19850 (runner), 19851 (interceptor)
     """
 
-    INTERCEPTOR_NAME = "interceptor_0"
+    RUNNER = "runner"
+    INTERCEPTOR = "interceptor"
 
     CURRICULUM_STAGES = [
         {"interceptor_speed_factor": 0.40},
@@ -57,6 +58,7 @@ class SarlTag(DroneEnvironment):
     def __init__(
         self,
         use_simulator: Literal[0, 1],
+        num_agents: int = 2,
         max_velocity: float = 0.25,
         step_time: float = 0.5,
         exploration_steps: int = 1000,
@@ -64,11 +66,17 @@ class SarlTag(DroneEnvironment):
         interceptor_max_velocity: float = 0.125,
         capture_threshold: float = 0.2,
     ):
+
+        self.num_interceptor_agents = num_agents - 1
+        self.interceptor_agents = [
+            f"interceptor_{i}" for i in range(self.num_interceptor_agents)
+        ]
+
         super().__init__(
             use_simulator=use_simulator,
             max_velocity=max_velocity,
             step_time=step_time,
-            expert_drone_names=[self.INTERCEPTOR_NAME],
+            expert_drone_names=self.interceptor_agents,
             collision_safety_distance=capture_threshold,
         )
 
@@ -121,8 +129,6 @@ class SarlTag(DroneEnvironment):
         self.max_position_sampling_attempts = 300
         self.reset_positions: dict[str, list[float]] = {}
 
-        self.num_interceptor_agents = 1  # only one pursuer in this variant (the expert)
-
         # --- Interceptor speed curriculum ---------------------------------------
         self.interceptor_speed_max = interceptor_max_velocity
 
@@ -172,8 +178,6 @@ class SarlTag(DroneEnvironment):
         self.winner: str | None = None
 
         self.goal_position: list[float] = [0.0, 0.0, self.fixed_z]
-        self.interceptor_position: list[float] = [0.0, 0.0, self.fixed_z]
-        self.interceptor_velocity: list[float] = [0.0, 0.0, 0.0]
 
         # --- Interceptor agent (second real SITL Crazyflie) ------------------
         # Constructed directly here — agent lifecycle belongs to the environment,
@@ -188,22 +192,32 @@ class SarlTag(DroneEnvironment):
         #     fixed_z=self.fixed_z,
         # )
 
-        interceptor_drone = self.expert_drones[self.INTERCEPTOR_NAME]
-        interceptor_body = CrazyflieBody(
-            drone=interceptor_drone,
-            fixed_z=self.fixed_z,
-        )
-        self.interceptor_policy = PredictedInterceptPolicy(
-            max_velocity=self.interceptor_max_velocity,
-            max_velocity_z=self.interceptor_max_velocity_z,
-        )
+        self.interceptors: dict[str, SimAgent] = {}
+        self.interceptor_policies: dict[str, PredictedInterceptPolicy] = {}
 
-        self.interceptor = SimAgent(
-            agent_id=1,
-            body=interceptor_body,
-            policy=self.interceptor_policy,
-            role="interceptor",
-        )
+        for agent_id, interceptor_name in enumerate(
+            self.interceptor_agents,
+            start=1,
+        ):
+            interceptor_body = CrazyflieBody(
+                drone=self.expert_drones[interceptor_name],
+                fixed_z=self.fixed_z,
+            )
+
+            interceptor_policy = PredictedInterceptPolicy(
+                max_velocity=self.interceptor_max_velocity,
+                max_velocity_z=self.interceptor_max_velocity_z,
+            )
+
+            interceptor = SimAgent(
+                agent_id=agent_id,
+                body=interceptor_body,
+                policy=interceptor_policy,
+                role=self.INTERCEPTOR,
+            )
+
+            self.interceptor_policies[interceptor_name] = interceptor_policy
+            self.interceptors[interceptor_name] = interceptor
 
         # The interceptor repositions via a position-control move to a fresh spawn
         # EVERY episode, which stresses its EKF. The drone's internal safety monitor
@@ -218,7 +232,7 @@ class SarlTag(DroneEnvironment):
         # boundaries uses the post-#28 z_min/z_max schema (the boundary monitor now
         # checks z_min <= z <= z_max, not abs(z) <= z). A bare "z" key here would
         # KeyError in the interceptor's boundary thread.
-        self._configure_interceptor_drone()
+        self._configure_interceptor_drones()
 
         # Distance tracking for reward calculation
         self.previous_goal_distance = self.max_distance
@@ -268,17 +282,38 @@ class SarlTag(DroneEnvironment):
                 self.RL_DRONE_NAME: runner_position,
             }
 
-            # 4. Sample interceptor.
-            interceptor_position = self._sample_interceptor_spawn(
-                runner_position=runner_position,
-                reset_positions=reset_positions,
-                minimum_runner_distance=interceptor_runner_min_distance,
-            )
+            interceptor_positions: list[list[float]] = []
+            layout_failed = False
 
-            if interceptor_position is None:
+            # 4. Sample interceptors.
+            for interceptor_name in self.interceptor_agents:
+                interceptor_position = self._sample_interceptor_spawn(
+                    runner_position=runner_position,
+                    reset_positions=reset_positions,
+                    minimum_runner_distance=interceptor_runner_min_distance,
+                )
+
+                if interceptor_position is None:
+                    layout_failed = True
+                    break
+
+                interceptor_positions.append(interceptor_position)
+
+                # Include it immediately so later interceptor samples
+                # must keep clear of this position.
+                reset_positions[interceptor_name] = interceptor_position
+
+            if layout_failed:
                 continue
 
-            reset_positions[self.INTERCEPTOR_NAME] = interceptor_position
+            # Avoid interceptor identity being correlated with sampling order.
+            np.random.shuffle(interceptor_positions)
+
+            for interceptor_name, position in zip(
+                self.interceptor_agents,
+                interceptor_positions,
+            ):
+                reset_positions[interceptor_name] = position
 
             # 5. Final physical safety validation.
             try:
@@ -389,12 +424,28 @@ class SarlTag(DroneEnvironment):
             + (position[2] - self.goal_position[2]) ** 2
         )
 
-    def _distance_to_interceptor(self, position: list[float]) -> float:
-        return math.sqrt(
-            (position[0] - self.interceptor_position[0]) ** 2
-            + (position[1] - self.interceptor_position[1]) ** 2
-            + (position[2] - self.interceptor_position[2]) ** 2
-        )
+    def _get_interceptor_distances(
+        self,
+        runner_position: list[float],
+    ) -> dict[str, float]:
+        distances: dict[str, float] = {}
+
+        for interceptor_name, interceptor_drone in self.expert_drones.items():
+            interceptor_position = interceptor_drone.get_position()
+
+            distances[interceptor_name] = math.sqrt(
+                (runner_position[0] - interceptor_position[0]) ** 2
+                + (runner_position[1] - interceptor_position[1]) ** 2
+                + (runner_position[2] - interceptor_position[2]) ** 2
+            )
+
+        return distances
+
+    def _distance_to_closest_interceptor(
+        self,
+        runner_position: list[float],
+    ) -> float:
+        return min(self._get_interceptor_distances(runner_position).values())
 
     def _is_out_of_task_bounds(self, position: list[float]) -> bool:
         """Out of the task's 3D boundary (with a small grace for PID overshoot).
@@ -414,11 +465,6 @@ class SarlTag(DroneEnvironment):
     # Interceptor expert control / state tracking
     # ------------------------------------------------------------------
 
-    def _sync_interceptor(self):
-        """Copy the interceptor agent's position/velocity into local tracking."""
-        self.interceptor_position = list(self.interceptor.position)
-        self.interceptor_velocity = list(self.interceptor.velocity)
-
     def _get_velocity_commands(
         self,
         action,
@@ -428,58 +474,45 @@ class SarlTag(DroneEnvironment):
 
         runner_pos = self.rl_drone.get_position()
 
+        runner_velocity = self.rl_drone.get_calculated_velocity()
         runner_vel = [
-            self.rl_drone.calculated_velocity.get("x", 0.0),
-            self.rl_drone.calculated_velocity.get("y", 0.0),
-            self.rl_drone.calculated_velocity.get("z", 0.0),
+            float(runner_velocity.get("x", 0.0)),
+            float(runner_velocity.get("y", 0.0)),
+            float(runner_velocity.get("z", 0.0)),
         ]
+        context = {
+            "target_position": runner_pos,
+            "target_velocity": runner_vel,
+        }
 
-        interceptor_velocity = self.interceptor.compute_velocity(
-            {
-                "runner_pos": runner_pos,
-                "runner_vel": runner_vel,
-            }
-        )
-
-        velocity_commands[self.INTERCEPTOR_NAME] = interceptor_velocity
+        for interceptor_name, interceptor in self.interceptors.items():
+            velocity_commands[interceptor_name] = interceptor.compute_velocity(context)
 
         return velocity_commands
 
-    def _configure_interceptor_drone(
-        self,
-    ) -> None:
-        """Apply SarlTag-specific safety limits to the interceptor drone."""
+    def _configure_interceptor_drones(self) -> None:
         if not self.use_simulator:
             return
 
-        interceptor_drone = self.expert_drones[self.INTERCEPTOR_NAME]
-
-        interceptor_drone.boundaries = {
-            "x": 4,
-            "y": 4,
-            "z_min": -0.5,
-            "z_max": 3.0,
-        }
+        for interceptor_drone in self.expert_drones.values():
+            interceptor_drone.boundaries = {
+                "x": 4,
+                "y": 4,
+                "z_min": -0.5,
+                "z_max": 3.0,
+            }
 
     # ------------------------------------------------------------------
     # Collision safety monitor — zeroes both drones within capture_threshold
     # ------------------------------------------------------------------
 
-    def _freeze_interceptor(self):
-        """Zero the interceptor's velocity setpoint (setpoints persist until replaced).
-
-        Must be called before any long runner-handling window (reset, restart,
-        ground EKF reset): otherwise the interceptor keeps flying on its stale
-        pursuit command — typically toward the wall the runner just died beyond —
-        for the whole window (up to 60 s for a restart) and coasts past its own
-        internal boundary into the emergency kill. This is the "interceptor
-        follows the dead runner and dies too" failure.
-        """
-        try:
-            self.interceptor.body.apply_velocity(0.0, 0.0, 0.0)
-            self.interceptor.velocity = [0.0, 0.0, 0.0]
-        except Exception:
-            pass
+    def _freeze_interceptors(self) -> None:
+        for interceptor in self.interceptors.values():
+            try:
+                interceptor.body.apply_velocity(0.0, 0.0, 0.0)
+                interceptor.velocity = [0.0, 0.0, 0.0]
+            except Exception:
+                pass
 
     # ------------------------------------------------------------------
     # DroneEnvironment overrides
@@ -527,7 +560,8 @@ class SarlTag(DroneEnvironment):
 
         speed_factor = stage["interceptor_speed_factor"]
         self.interceptor_max_velocity = self.interceptor_speed_max * speed_factor
-        self.interceptor_policy.set_max_velocity(self.interceptor_max_velocity)
+        for policy in self.interceptor_policies.values():
+            policy.set_max_velocity(self.interceptor_max_velocity)
 
     def advance_curriculum(self) -> None:
         """Advance to the next curriculum stage."""
@@ -568,7 +602,7 @@ class SarlTag(DroneEnvironment):
 
         # Stop the existing expert command while reset preparation
         # and any recovery operations are performed.
-        self._freeze_interceptor()
+        self._freeze_interceptors()
 
         self._episode_count += 1
 
@@ -583,27 +617,29 @@ class SarlTag(DroneEnvironment):
         # Fatal simulator recovery may recreate the DroneSim objects.
         # Keep the task's interceptor body attached to the current
         # environment-owned expert drone.
-        current_interceptor_drone = self.expert_drones[self.INTERCEPTOR_NAME]
+        for interceptor_name, interceptor in self.interceptors.items():
+            current_drone = self.expert_drones[interceptor_name]
 
-        if self.interceptor.body.drone is not current_interceptor_drone:
-            print("[SarlTag] Rebinding interceptor body to recreated DroneSim.")
-            self.interceptor.body.drone = current_interceptor_drone
+            if interceptor.body.drone is not current_drone:
+                print(
+                    f"[SarlTag] Rebinding {interceptor_name} "
+                    "body to recreated DroneSim."
+                )
+                interceptor.body.drone = current_drone
 
-        self._configure_interceptor_drone()
+        self._configure_interceptor_drones()
 
         runner_pos = self.rl_drone.get_position()
 
         # The environment resets the drone lifecycle. The task still
         # resets the expert policy.
-        self.interceptor.reset_policy(
-            {
-                "runner_pos": runner_pos,
-                "runner_vel": [0.0, 0.0, 0.0],
-            }
-        )
-
-        self.interceptor.refresh()
-        self._sync_interceptor()
+        policy_context = {
+            "target_position": runner_pos,
+            "target_velocity": [0.0, 0.0, 0.0],
+        }
+        for interceptor in self.interceptors.values():
+            interceptor.reset_policy(policy_context)
+            interceptor.refresh()
 
         # Draw the goal after the new geometry has been selected.
         self._set_target_marker(
@@ -614,8 +650,6 @@ class SarlTag(DroneEnvironment):
         # _reset_task_state() is already called by super().reset(),
         # so caught, reached_goal and done have been cleared.
         self.previous_goal_distance = self._distance_to_target(runner_pos)
-
-        self._prev_interceptor_velocity = [0.0, 0.0, 0.0]
 
         time.sleep(0.5)
 
@@ -640,8 +674,8 @@ class SarlTag(DroneEnvironment):
         result = super().step(processed_action)
 
         # Refresh interceptor tracking after the step (it has flown for step_time).
-        self.interceptor.refresh()
-        self._sync_interceptor()
+        for interceptor in self.interceptors.values():
+            interceptor.refresh()
 
         return result
 
@@ -674,7 +708,8 @@ class SarlTag(DroneEnvironment):
         # Relative position of every expert drone
         other_agents_rel_pos = np.array([], dtype=np.float32)
 
-        for other_drone in self.expert_drones.values():
+        for interceptor_name in self.interceptor_agents:
+            other_drone = self.expert_drones[interceptor_name]
             other_pos = other_drone.get_position()
             rel_pos = self._relative_position(other_pos, own_pos)
 
@@ -702,12 +737,18 @@ class SarlTag(DroneEnvironment):
 
     def get_overlay_info(self) -> dict[str, Any]:
         position = self.drone.get_position()
+        interceptor_positions = {
+            name: drone.get_position() for name, drone in self.expert_drones.items()
+        }
+
+        interceptor_distances = self._get_interceptor_distances(position)
         return {
             "position": position,
             "goal_position": self.goal_position[:],
-            "interceptor_position": self.interceptor_position[:],
+            "interceptor_positions": interceptor_positions,
+            "interceptor_distances": interceptor_distances,
             "distance_to_goal": self._distance_to_target(position),
-            "distance_to_interceptor": self._distance_to_interceptor(position),
+            "distance_to_interceptor": min(interceptor_distances.values()),
             "caught": self.caught,
             "reached_goal": self.reached_goal,
             "done": self.done,
@@ -717,24 +758,23 @@ class SarlTag(DroneEnvironment):
         """Reward = progress to goal − step cost − evasion shaping, with terminal bonuses."""
         position = current_state["position"]
         goal_distance = current_state["distance_to_target"]
-        interceptor_distance = self._distance_to_interceptor(position)
+        interceptor_distance = self._distance_to_closest_interceptor(position)
 
         self._step_collision_outcomes = self._get_collision_safety_outcomes()
         capture_collision, non_capture_collision = self._step_collision_outcomes
 
-        # Out of bounds is a terminal failure.
         if self._is_out_of_task_bounds(position):
             self.previous_goal_distance = goal_distance
             return self.out_of_bounds_penalty
 
-        # Caught by the interceptor is a terminal failure. The safety monitor may
-        # have latched the collision mid-step even if the step-boundary distance
-        # reads slightly above threshold, so honour the latched event too.
-        if self._collision_safety_triggered():
+        if non_capture_collision:
+            self.previous_goal_distance = goal_distance
+            return 0.0
+
+        if capture_collision:
             self.previous_goal_distance = goal_distance
             return self.intercepted_penalty
 
-        # Reached the goal is a terminal success.
         if goal_distance < self.goal_threshold:
             self.previous_goal_distance = goal_distance
             return self.success_reward
@@ -772,9 +812,9 @@ class SarlTag(DroneEnvironment):
 
         if terminal and self.winner is None:
             if self.caught:
-                self.winner = self.INTERCEPTOR_NAME
+                self.winner = self.INTERCEPTOR
             elif self.reached_goal:
-                self.winner = self.RL_DRONE_NAME
+                self.winner = self.RUNNER
                 if self._is_evaluating:
                     self.successful_episodes_count += 1
 
@@ -822,11 +862,17 @@ class SarlTag(DroneEnvironment):
 
     def _get_additional_info(self, current_state: dict[str, Any]) -> dict[str, Any]:
         position = current_state["position"]
+        interceptor_positions = {
+            name: drone.get_position() for name, drone in self.expert_drones.items()
+        }
+
+        interceptor_distances = self._get_interceptor_distances(position)
         info = {
             "goal_position": self.goal_position[:],
-            "interceptor_position": self.interceptor_position[:],
+            "interceptor_positions": interceptor_positions,
             "distance_to_goal": self._distance_to_target(position),
-            "distance_to_interceptor": self._distance_to_interceptor(position),
+            "closest_interceptor_distance": min(interceptor_distances.values()),
+            "interceptor_distances": interceptor_distances,
             "caught": self.caught,
             "reached_goal": self.reached_goal,
             "success": self.reached_goal,
@@ -843,38 +889,26 @@ class SarlTag(DroneEnvironment):
             info["success_count"] = self.successful_episodes_count
         return info
 
-    def _get_collision_safety_outcomes(self) -> tuple[bool, bool]:
-        """Classify collision-monitor pairs for SarlTag.
-
-        Returns:
-            capture_occurred:
-                True when the runner and interceptor triggered the monitor.
-
-            unsafe_collision:
-                True when any collision pair is not a valid task capture.
-        """
+    def _get_collision_safety_outcomes(
+        self,
+    ) -> tuple[bool, bool]:
         if not self._collision_safety_triggered():
             return False, False
 
-        capture_pair = frozenset(
-            (
-                self.RL_DRONE_NAME,
-                self.INTERCEPTOR_NAME,
-            )
-        )
+        capture_collision = False
+        non_capture_collision = False
 
-        capture_occurred = False
-        unsafe_collision = False
+        for drone_a, drone_b, _distance in self._get_collision_safety_pairs():
+            runner_interceptor_pair = (
+                drone_a == self.RL_DRONE_NAME and drone_b in self.interceptor_agents
+            ) or (drone_b == self.RL_DRONE_NAME and drone_a in self.interceptor_agents)
 
-        for drone_a, drone_b, _ in self._get_collision_safety_pairs():
-            pair = frozenset((drone_a, drone_b))
-
-            if pair == capture_pair:
-                capture_occurred = True
+            if runner_interceptor_pair:
+                capture_collision = True
             else:
-                unsafe_collision = True
+                non_capture_collision = True
 
-        return capture_occurred, unsafe_collision
+        return capture_collision, non_capture_collision
 
     # ------------------------------------------------------------------
     # Action space — keep SARL's denormalize as a no-op so the parent's
@@ -900,26 +934,40 @@ class SarlTag(DroneEnvironment):
         super().close()
 
     def _render_task_specific_info(self):
-        pos = self.drone.get_position()
+        pos = self.rl_drone.get_position()
         d_goal = self._distance_to_target(pos)
-        d_int = self._distance_to_interceptor(pos)
-        print(f"Runner Position:      [{pos[0]:.2f}, {pos[1]:.2f}, {pos[2]:.2f}]")
+
+        interceptor_distances = self._get_interceptor_distances(pos)
+
+        print(f"Runner Position: [{pos[0]:.2f}, " f"{pos[1]:.2f}, {pos[2]:.2f}]")
         print(
-            f"Goal Position:        [{self.goal_position[0]:.2f}, "
-            f"{self.goal_position[1]:.2f}, {self.goal_position[2]:.2f}]"
+            f"Goal Position:   [{self.goal_position[0]:.2f}, "
+            f"{self.goal_position[1]:.2f}, "
+            f"{self.goal_position[2]:.2f}]"
+        )
+
+        for interceptor_name in self.interceptor_agents:
+            interceptor_position = self.expert_drones[interceptor_name].get_position()
+
+            print(
+                f"{interceptor_name} Position: "
+                f"[{interceptor_position[0]:.2f}, "
+                f"{interceptor_position[1]:.2f}, "
+                f"{interceptor_position[2]:.2f}] "
+                f"(distance {interceptor_distances[interceptor_name]:.2f})"
+            )
+
+        print(
+            f"Distance to Goal: {d_goal:.2f} " f"(threshold {self.goal_threshold:.2f})"
         )
         print(
-            f"Interceptor Position: [{self.interceptor_position[0]:.2f}, "
-            f"{self.interceptor_position[1]:.2f}, {self.interceptor_position[2]:.2f}]"
+            f"Closest Interceptor: "
+            f"{min(interceptor_distances.values()):.2f} "
+            f"(capture {self.capture_threshold:.2f})"
         )
         print(
-            f"Distance to Goal:        {d_goal:.2f}  (threshold {self.goal_threshold:.2f})"
-        )
-        print(
-            f"Distance to Interceptor: {d_int:.2f}  (capture {self.capture_threshold:.2f})"
-        )
-        print(
-            f"Reached goal: {self.reached_goal} | Caught: {self.caught} | Winner: {self.winner}"
+            f"Reached goal: {self.reached_goal} | "
+            f"Caught: {self.caught} | Winner: {self.winner}"
         )
 
     def grab_frame(self, height: int = 540, width: int = 960) -> np.ndarray:
@@ -937,11 +985,26 @@ class SarlTag(DroneEnvironment):
         gs = GridSpec(1, 2, figure=fig, wspace=0.25, width_ratios=[1, 1])
 
         gx, gy, gz = self.goal_position
-        ix, iy, iz = self.interceptor_position
 
+        interceptor_positions = {
+            interceptor_name: self.expert_drones[interceptor_name].get_position()
+            for interceptor_name in self.interceptor_agents
+        }
+
+        # ------------------------------------------------------------------
         # LEFT: 3D trajectory
+        # ------------------------------------------------------------------
         ax1 = fig.add_subplot(gs[0, 0], projection="3d")
-        ax1.plot(x, y, z, label="Runner Path", color="yellow", linewidth=2.5)
+
+        ax1.plot(
+            x,
+            y,
+            z,
+            label="Runner Path",
+            color="yellow",
+            linewidth=2.5,
+        )
+
         ax1.scatter(
             x[0],
             y[0],
@@ -953,6 +1016,7 @@ class SarlTag(DroneEnvironment):
             edgecolors="black",
             linewidth=0.5,
         )
+
         ax1.scatter(
             x[-1],
             y[-1],
@@ -964,6 +1028,7 @@ class SarlTag(DroneEnvironment):
             edgecolors="black",
             linewidth=0.5,
         )
+
         ax1.scatter(
             gx,
             gy,
@@ -976,35 +1041,53 @@ class SarlTag(DroneEnvironment):
             edgecolors="black",
             linewidth=1,
         )
-        ax1.scatter(
-            ix,
-            iy,
-            iz,
-            color="red",
-            marker="^",
-            s=120,
-            label="Interceptor",
-            depthshade=False,
-            edgecolors="black",
-            linewidth=1,
-        )
+
+        for i, interceptor_position in enumerate(interceptor_positions.values()):
+            ix, iy, iz = interceptor_position
+
+            ax1.scatter(
+                ix,
+                iy,
+                iz,
+                color="red",
+                marker="^",
+                s=120,
+                label="Interceptor" if i == 0 else None,
+                depthshade=False,
+                edgecolors="black",
+                linewidth=1,
+            )
+
         ax1.set_xlim(-self.xy_limit - 0.2, self.xy_limit + 0.2)
         ax1.set_ylim(-self.xy_limit - 0.2, self.xy_limit + 0.2)
         ax1.set_zlim(self.z_min - 0.1, self.z_max + 0.1)
+
         ax1.set_xlabel("X (m)", fontsize=10, labelpad=8)
         ax1.set_ylabel("Y (m)", fontsize=10, labelpad=8)
         ax1.set_zlabel("Z (m)", fontsize=9, labelpad=10)
+
         ax1.tick_params(axis="x", labelsize=8)
         ax1.tick_params(axis="y", labelsize=8)
         ax1.tick_params(axis="z", labelsize=8)
+
         ax1.view_init(elev=10, azim=25)
         ax1.set_title("3D Trajectory", fontsize=12, pad=15)
-        ax1.legend(loc="upper left", fontsize=6, framealpha=0.9, markerscale=0.60)
+
+        ax1.legend(
+            loc="upper left",
+            fontsize=6,
+            framealpha=0.9,
+            markerscale=0.60,
+        )
+
         ax1.grid(True, alpha=0.3)
         ax1.set_box_aspect([1, 1, 0.67])
 
+        # ------------------------------------------------------------------
         # RIGHT: top-down X-Y
+        # ------------------------------------------------------------------
         ax2 = fig.add_subplot(gs[0, 1])
+
         boundary_x = [
             -self.xy_limit,
             self.xy_limit,
@@ -1012,6 +1095,7 @@ class SarlTag(DroneEnvironment):
             -self.xy_limit,
             -self.xy_limit,
         ]
+
         boundary_y = [
             -self.xy_limit,
             -self.xy_limit,
@@ -1019,6 +1103,7 @@ class SarlTag(DroneEnvironment):
             self.xy_limit,
             -self.xy_limit,
         ]
+
         ax2.plot(
             boundary_x,
             boundary_y,
@@ -1028,7 +1113,16 @@ class SarlTag(DroneEnvironment):
             label="Boundary",
             zorder=1,
         )
-        ax2.plot(x, y, color="yellow", linewidth=2.5, label="Runner Path", zorder=2)
+
+        ax2.plot(
+            x,
+            y,
+            color="yellow",
+            linewidth=2.5,
+            label="Runner Path",
+            zorder=2,
+        )
+
         ax2.scatter(
             x[0],
             y[0],
@@ -1039,6 +1133,7 @@ class SarlTag(DroneEnvironment):
             linewidth=0.5,
             zorder=4,
         )
+
         ax2.scatter(
             x[-1],
             y[-1],
@@ -1049,6 +1144,7 @@ class SarlTag(DroneEnvironment):
             linewidth=0.5,
             zorder=4,
         )
+
         ax2.scatter(
             gx,
             gy,
@@ -1060,47 +1156,83 @@ class SarlTag(DroneEnvironment):
             linewidth=1,
             zorder=5,
         )
-        ax2.scatter(
-            ix,
-            iy,
-            color="red",
-            marker=MarkerStyle("^"),
-            s=120,
-            label="Interceptor",
-            edgecolors="black",
-            linewidth=1,
-            zorder=5,
-        )
-        ax2.add_patch(
-            plt.Circle(
-                (gx, gy), self.goal_threshold, color="lime", alpha=0.18, zorder=1
+
+        for i, interceptor_position in enumerate(interceptor_positions.values()):
+            ix, iy, _ = interceptor_position
+
+            ax2.scatter(
+                ix,
+                iy,
+                color="red",
+                marker=MarkerStyle("^"),
+                s=120,
+                label="Interceptor" if i == 0 else None,
+                edgecolors="black",
+                linewidth=1,
+                zorder=5,
             )
-        )
+
+            ax2.add_patch(
+                plt.Circle(
+                    (ix, iy),
+                    self.capture_threshold,
+                    color="red",
+                    alpha=0.15,
+                    zorder=1,
+                )
+            )
+
         ax2.add_patch(
             plt.Circle(
-                (ix, iy), self.capture_threshold, color="red", alpha=0.15, zorder=1
+                (gx, gy),
+                self.goal_threshold,
+                color="lime",
+                alpha=0.18,
+                zorder=1,
             )
         )
 
         ax2.set_xlim(-self.xy_limit - 0.2, self.xy_limit + 0.2)
         ax2.set_ylim(-self.xy_limit - 0.2, self.xy_limit + 0.2)
+
         ax2.set_xlabel("X (m)", fontsize=10)
         ax2.set_ylabel("Y (m)", fontsize=10)
         ax2.set_title("Top-Down View (X-Y)", fontsize=12, pad=15)
+
         ax2.set_aspect("equal", adjustable="box")
-        ax2.legend(loc="upper left", fontsize=6, framealpha=0.9, markerscale=0.60)
+
+        ax2.legend(
+            loc="upper left",
+            fontsize=6,
+            framealpha=0.9,
+            markerscale=0.60,
+        )
+
         ax2.grid(True, alpha=0.3)
         ax2.tick_params(axis="both", labelsize=8)
 
+        # ------------------------------------------------------------------
+        # Episode outcome
+        # ------------------------------------------------------------------
         outcome = (
             "Reached Goal"
             if self.reached_goal
             else ("Caught" if self.caught else "In Progress")
         )
-        fig.suptitle(f"SARL Tag (Step {self.steps}) | {outcome}", fontsize=13, y=0.98)
+
+        fig.suptitle(
+            f"SARL Tag (Step {self.steps}) | {outcome}",
+            fontsize=13,
+            y=0.98,
+        )
+
         plt.tight_layout(rect=[0, 0, 1, 0.96])
 
+        # ------------------------------------------------------------------
+        # Convert matplotlib figure to RGB numpy frame
+        # ------------------------------------------------------------------
         buf = io.BytesIO()
+
         fig.savefig(
             buf,
             format="png",
@@ -1109,20 +1241,32 @@ class SarlTag(DroneEnvironment):
             edgecolor="none",
             bbox_inches="tight",
         )
+
         buf.seek(0)
         img_arr = np.frombuffer(buf.getvalue(), dtype=np.uint8)
+
         buf.close()
         plt.close(fig)
 
         frame = cv2.imdecode(img_arr, cv2.IMREAD_COLOR)
+
         if frame is not None:
             current_h, current_w = frame.shape[:2]
+
             if current_h != height or current_w != width:
                 frame = cv2.resize(
-                    frame, (width, height), interpolation=cv2.INTER_LANCZOS4
+                    frame,
+                    (width, height),
+                    interpolation=cv2.INTER_LANCZOS4,
                 )
+
             frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+
         else:
-            frame = np.full((height, width, 3), 255, dtype=np.uint8)
+            frame = np.full(
+                (height, width, 3),
+                255,
+                dtype=np.uint8,
+            )
 
         return frame
