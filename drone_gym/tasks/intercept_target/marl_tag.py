@@ -784,6 +784,8 @@ class MarlTag(MarlDroneEnvironment):
         if non_capture_collision:
             print("[MarlTag] non-capture collision — truncating episode")
 
+        # TODO: Do we keep this or remove this so that episodes don't end early due to
+        # low battery? It may be useful for training, but not for evaluation.
         any_low_battery = any(
             state_dicts[agent]["battery"] < self.battery_threshold
             for agent in self.agents

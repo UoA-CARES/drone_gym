@@ -1,7 +1,6 @@
 import math
 import time
 import io
-import threading
 from collections import deque
 from typing import Dict, List, Any, Literal
 import numpy as np
@@ -171,6 +170,8 @@ class SarlTag(DroneEnvironment):
         self.done = False
         self.caught = False  # True when the interceptor caught the runner
         self.reached_goal = False  # True when the runner reached the goal
+        self._step_collision_outcomes: tuple[bool, bool] = (False, False)
+        self.winner: str | None = None
 
         self.goal_position: List[float] = [0.0, 0.0, self.fixed_z]
         self.interceptor_position: List[float] = [0.0, 0.0, self.fixed_z]
@@ -696,33 +697,12 @@ class SarlTag(DroneEnvironment):
         self.done = False
         self.caught = False
         self.reached_goal = False
+        self.winner = None
         # A post-step interceptor-death check (see step()) can set this for
         # the *next* call to step() and never get consumed if that call never
         # comes because the episode ended on this very step. Left uncleared,
         # it silently truncates the following episode after a single step.
         self.truncate_next = False
-
-    def _drones_with_z_boundary_violation(
-        self,
-        current_state: Dict[str, Any],
-    ) -> list[str]:
-        """
-        Return owned drones whose altitude is outside the task's
-        allowed z range.
-        """
-
-        violating_drones = []
-
-        for drone_name, drone in self._iter_drones():
-            if drone_name == self.RL_DRONE_NAME:
-                position = current_state["position"]
-            else:
-                position = drone.get_position()
-
-            if not (self.z_min <= position[2] <= self.z_max):
-                violating_drones.append(drone_name)
-
-        return violating_drones
 
     def _get_runner_observations(self) -> np.ndarray:
         """Runner sees its own state, other agents' relative positions,
@@ -786,6 +766,9 @@ class SarlTag(DroneEnvironment):
         goal_distance = current_state["distance_to_target"]
         interceptor_distance = self._distance_to_interceptor(position)
 
+        self._step_collision_outcomes = self._get_collision_safety_outcomes()
+        capture_collision, non_capture_collision = self._step_collision_outcomes
+
         # Out of bounds is a terminal failure.
         if self._is_out_of_task_bounds(position):
             self.previous_goal_distance = goal_distance
@@ -820,68 +803,69 @@ class SarlTag(DroneEnvironment):
         return reward
 
     def _check_if_terminated(self, current_state: Dict[str, Any]) -> bool:
-        """Episode ends on goal reached (success), interception, or out of bounds (failures)."""
-        position = current_state["position"]
+        """Episode ends on goal reached (success) or interception."""
         goal_distance = current_state["distance_to_target"]
-        interceptor_distance = self._distance_to_interceptor(position)
 
-        if goal_distance < self.goal_threshold:
-            self.reached_goal = True
-            self.done = True
-            if self._is_evaluating:
-                self.successful_episodes_count += 1
-            return True
+        capture_collision, non_capture_collision = self._step_collision_outcomes
 
-        if self._collision_safety_triggered():
-            self.caught = True
-            self.done = True
-            return True
+        if non_capture_collision:
+            self.caught = False
+            self.reached_goal = False
+        else:
+            self.caught = capture_collision
+            self.reached_goal = goal_distance < self.goal_threshold
 
-        if self._is_out_of_task_bounds(position):
-            self.done = True
-            return True
+        terminal = self.caught or self.reached_goal
 
-        return False
+        if terminal and self.winner is None:
+            if self.caught:
+                self.winner = self.INTERCEPTOR_NAME
+            elif self.reached_goal:
+                self.winner = self.RL_DRONE_NAME
+                if self._is_evaluating:
+                    self.successful_episodes_count += 1
 
-    def is_in_testing_zone(self):
-        # Judge against the task's own 3D bounds — the base is_in_boundaries
-        # derives its height range from reset_position[2], which now varies
-        # with the per-episode spawn altitude.
-        return not self._is_out_of_task_bounds(self.drone.get_position())
+        return terminal
 
     def _check_if_truncated(
         self,
         current_state: Dict[str, Any],
     ) -> bool:
-        """
-        Truncate the episode on time limit, fatal simulator failure,
-        or an invalid drone altitude.
-        """
+        """Truncate the episode on time limit, or an invalid drone altitude."""
+        time_limit_reached = self.steps >= self.episode_length
 
-        # A fatal DroneSim error requires the base environment to
-        # restart CrazySim during the following reset.
-        if self.use_simulator and self._get_fatal_sim_drone_names():
-            return True
+        _, non_capture_collision = self._step_collision_outcomes
+        if non_capture_collision:
+            print("[SarlTag] Non-capture collision detected. - Truncating episode.")
 
-        z_violation_drones = self._drones_with_z_boundary_violation(current_state)
+        z_max = self.z_max + 1 if self.use_simulator else self.z_max
+        z_violation_drones = []
+        for drone_name, drone in self._iter_drones():
+            if drone_name == self.RL_DRONE_NAME:
+                position = current_state["position"]
+            else:
+                position = drone.get_position()
+
+            if not self.z_min <= position[2] <= z_max:
+                z_violation_drones.append(drone_name)
 
         if z_violation_drones:
             print(
-                "[SarlTag] Z boundary violation detected for: "
-                f"{z_violation_drones}. "
-                "Truncating episode."
+                "[SarlTag] Z-boundary violation "
+                f"{z_violation_drones} — truncating episode."
             )
 
-            return True
-
-        if self.steps >= self.episode_length:
-            return True
+        truncate = (
+            time_limit_reached
+            or bool(z_violation_drones)
+            or non_capture_collision
+            or self.truncate_next
+        )
 
         if self.truncate_next:
             self.truncate_next = False
-            return True
 
-        return False
+        return truncate
 
     def _get_additional_info(self, current_state: Dict[str, Any]) -> Dict[str, Any]:
         position = current_state["position"]
@@ -905,6 +889,39 @@ class SarlTag(DroneEnvironment):
         if self._is_evaluating:
             info["success_count"] = self.successful_episodes_count
         return info
+
+    def _get_collision_safety_outcomes(self) -> tuple[bool, bool]:
+        """Classify collision-monitor pairs for SarlTag.
+
+        Returns:
+            capture_occurred:
+                True when the runner and interceptor triggered the monitor.
+
+            unsafe_collision:
+                True when any collision pair is not a valid task capture.
+        """
+        if not self._collision_safety_triggered():
+            return False, False
+
+        capture_pair = frozenset(
+            (
+                self.RL_DRONE_NAME,
+                self.INTERCEPTOR_NAME,
+            )
+        )
+
+        capture_occurred = False
+        unsafe_collision = False
+
+        for drone_a, drone_b, _ in self._get_collision_safety_pairs():
+            pair = frozenset((drone_a, drone_b))
+
+            if pair == capture_pair:
+                capture_occurred = True
+            else:
+                unsafe_collision = True
+
+        return capture_occurred, unsafe_collision
 
     # ------------------------------------------------------------------
     # Action space — keep SARL's denormalize as a no-op so the parent's
@@ -948,7 +965,9 @@ class SarlTag(DroneEnvironment):
         print(
             f"Distance to Interceptor: {d_int:.2f}  (capture {self.capture_threshold:.2f})"
         )
-        print(f"Reached Goal: {self.reached_goal} | Caught: {self.caught}")
+        print(
+            f"Reached goal: {self.reached_goal} | Caught: {self.caught} | Winner: {self.winner}"
+        )
 
     def grab_frame(self, height: int = 540, width: int = 960) -> np.ndarray:
         fig = plt.figure(figsize=(width / 120, height / 120), dpi=120)
