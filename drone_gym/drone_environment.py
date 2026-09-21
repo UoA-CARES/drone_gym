@@ -1412,6 +1412,28 @@ class DroneEnvironment(ABC):
 
         return True
 
+    def _get_velocity_commands(
+        self,
+        action,
+    ) -> dict[str, list[float]]:
+        """
+        Generate the physical velocity command for each owned drone.
+
+        The base implementation converts the RL agent's normalised action
+        into a physical velocity. Tasks with expert drones can override this
+        method to add their expert velocity commands.
+        """
+        if len(action) != 3:
+            raise ValueError("Action must be a 3-element array [vx, vy, vz]")
+
+        return {
+            self.RL_DRONE_NAME: [
+                action[0] * self.max_velocity,
+                action[1] * self.max_velocity,
+                action[2] * self.max_velocity_z,
+            ]
+        }
+
     def step(self, action):
         """Execute one step in the environment"""
 
@@ -1420,32 +1442,23 @@ class DroneEnvironment(ABC):
         if len(action) != 3:
             raise ValueError("Action must be a 3-element array [vx, vy, vz]")
 
-        # Denormalize action from [-1, 1] to [-max_velocity, max_velocity]
-        vx = action[0] * self.max_velocity
-        vy = action[1] * self.max_velocity
-        vz = (
-            action[2] * self.max_velocity_z
-        )  # topples when moving up --> limit z velocity
-        # vz = 0
-
-        print("Normalised action aka velocity is:", [vx, vy, vz])
-
         current_pos = self.drone.get_position()
         # Store previous state for reward calculation
         self.prior_state = self._generate_state_dict(current_pos)
 
+        velocity_commands = self._get_velocity_commands(action)
+        print("Velocity commands: ", velocity_commands)
+
         # Send velocity command to drone
         with self._motion_command_lock:
             if self._collision_safety_event.is_set():
-                vx = 0.0
-                vy = 0.0
-                vz = 0.0
+                velocity_commands = {
+                    drone_name: [0.0, 0.0, 0.0] for drone_name in velocity_commands
+                }
+            for drone_name, drone in self._iter_drones():
+                vel = velocity_commands[drone_name]
+                drone.set_velocity_vector(vel[0], vel[1], vel[2])
 
-            self.drone.set_velocity_vector(
-                vx,
-                vy,
-                vz,
-            )
         # Apply velocity for specified time - can improve this to be non-blocking
         time.sleep(self.step_time)
 
@@ -1471,12 +1484,13 @@ class DroneEnvironment(ABC):
         if terminated or truncated:
             self._stop_all_drone_motion()
 
+        rl_velocity = velocity_commands[self.RL_DRONE_NAME]
         # Generate info dict
         info = {
             "current_position": new_pos,
             "previous_position": current_pos,
             "distance_to_target": self._distance_to_target(new_pos),
-            "applied_velocity": [vx, vy, vz],  # Store the denorm
+            "applied_velocity": rl_velocity,
             "normalized_action": action,  # Store the original normalized action
             "in_boundaries": self.drone.in_boundaries,
             "steps": self.steps,

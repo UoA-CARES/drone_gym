@@ -419,23 +419,31 @@ class SarlTag(DroneEnvironment):
         self.interceptor_position = list(self.interceptor.position)
         self.interceptor_velocity = list(self.interceptor.velocity)
 
-    def _command_interceptor(
+    def _get_velocity_commands(
         self,
-        runner_position: list[float],
-    ) -> None:
-        """Command the expert interceptor to pursue the runner."""
-        runner_velocity = [
-            self.drone.calculated_velocity.get("x", 0.0),
-            self.drone.calculated_velocity.get("y", 0.0),
-            self.drone.calculated_velocity.get("z", 0.0),
+        action,
+    ) -> dict[str, list[float]]:
+        """Generate runner and expert interceptor velocity commands."""
+        velocity_commands = super()._get_velocity_commands(action)
+
+        runner_pos = self.rl_drone.get_position()
+
+        runner_vel = [
+            self.rl_drone.calculated_velocity.get("x", 0.0),
+            self.rl_drone.calculated_velocity.get("y", 0.0),
+            self.rl_drone.calculated_velocity.get("z", 0.0),
         ]
 
-        self.interceptor.act(
+        interceptor_velocity = self.interceptor.compute_velocity(
             {
-                "target_position": runner_position,
-                "target_velocity": runner_velocity,
+                "runner_pos": runner_pos,
+                "runner_vel": runner_vel,
             }
         )
+
+        velocity_commands[self.INTERCEPTOR_NAME] = interceptor_velocity
+
+        return velocity_commands
 
     def _configure_interceptor_drone(
         self,
@@ -628,11 +636,6 @@ class SarlTag(DroneEnvironment):
             processed_action = [action[0], action[1], action[2]]
         else:
             processed_action = [action[0] * 2 - 1, action[1] * 2 - 1, action[2] * 2 - 1]
-
-        runner_pos = self.drone.get_position()
-        # Command the expert interceptor BEFORE super().step() so both drones fly
-        # simultaneously during the step_time sleep inside the parent step.
-        self._command_interceptor(runner_pos)
 
         result = super().step(processed_action)
 
