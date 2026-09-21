@@ -2,9 +2,9 @@ from abc import ABC, abstractmethod
 from collections.abc import Iterator
 import time
 from typing import Dict, List, Any, Literal
-import numpy as np
 from itertools import combinations
 import threading
+import numpy as np
 
 from drone_gym.utils.vicon_position_source import ViconPositionSource, ViconProvider
 from drone_gym.sim_manager import SimManager, SimLaunchConfig
@@ -1466,9 +1466,9 @@ class DroneEnvironment(ABC):
         print(f"Episode steps: {self.steps}")
 
         # Check if episode is done using task-specific logic
-        done = self._check_if_done(current_state)
+        terminated = self._check_if_terminated(current_state)
         truncated = self._check_if_truncated(current_state)
-        if done or truncated:
+        if terminated or truncated:
             self._stop_all_drone_motion()
 
         # Generate info dict
@@ -1484,7 +1484,7 @@ class DroneEnvironment(ABC):
             **self._get_additional_info(current_state),
         }
         gotten_state = self._get_state()
-        return gotten_state, reward, done, truncated, info
+        return gotten_state, reward, terminated, truncated, info
 
     def _generate_state_dict(self, position: List[float]) -> Dict[str, Any]:
         """Generate a state dictionary with common drone information"""
@@ -1940,7 +1940,7 @@ class DroneEnvironment(ABC):
         """Calculate reward based on current state"""
 
     @abstractmethod
-    def _check_if_done(self, current_state: Dict[str, Any]) -> bool:
+    def _check_if_terminated(self, current_state: Dict[str, Any]) -> bool:
         """Check if episode is done"""
 
     @abstractmethod

@@ -819,7 +819,7 @@ class SarlTag(DroneEnvironment):
         self.previous_goal_distance = goal_distance
         return reward
 
-    def _check_if_done(self, current_state: Dict[str, Any]) -> bool:
+    def _check_if_terminated(self, current_state: Dict[str, Any]) -> bool:
         """Episode ends on goal reached (success), interception, or out of bounds (failures)."""
         position = current_state["position"]
         goal_distance = current_state["distance_to_target"]
@@ -926,7 +926,7 @@ class SarlTag(DroneEnvironment):
         return np.random.uniform(-1.0, 1.0, size=(3,))
 
     def close(self) -> None:
-        self._stop_safety_monitor()
+        # self._stop_safety_monitor()
         super().close()
 
     def _render_task_specific_info(self):
