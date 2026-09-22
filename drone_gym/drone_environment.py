@@ -1500,6 +1500,7 @@ class DroneEnvironment(ABC):
         gotten_state = self._get_state()
         return gotten_state, reward, terminated, truncated, info
 
+    # TODO: Update in_boundaries to reflect task boundaries, not just the drone's boundaries
     def _generate_state_dict(self, position: list[float]) -> dict[str, Any]:
         """Generate a state dictionary with common drone information"""
         return {

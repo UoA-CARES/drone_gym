@@ -156,19 +156,14 @@ class SarlTag(DroneEnvironment):
         self.observation_space = 3 + 3 + (self.num_interceptor_agents) * 3 + (0) * 3 + 3
 
         # --- Reward parameters ----------------------------------------------
-        self.success_reward = 100.0  # reached the goal — clearly the best outcome
-        self.intercepted_penalty = (
-            -100.0
-        )  # caught by the interceptor — clearly the worst
-        self.out_of_bounds_penalty = -100.0
-        self.goal_progress_multiplier = (
-            100.0  # main drive: reward closing the gap to the goal
-        )
-        self.step_penalty = 1.0  # small per-step cost — reach the goal FAST
-        self.danger_radius = (
-            0.6  # within this of the interceptor, apply evasion shaping
-        )
-        self.danger_penalty = 5.0  # max shaping penalty at zero separation
+        self.success_reward = 100.0
+        self.capture_reward = 100.0
+
+        self.goal_progress_multiplier = 100.0
+
+        self.boundary_penalty_at_limit = -1.0
+        self.boundary_penalty_margin = 0.2
+        self.z_boundary_penalty_margin = 0.10
 
         # --- Task state ------------------------------------------------------
         self.done = False
@@ -446,20 +441,6 @@ class SarlTag(DroneEnvironment):
         runner_position: list[float],
     ) -> float:
         return min(self._get_interceptor_distances(runner_position).values())
-
-    def _is_out_of_task_bounds(self, position: list[float]) -> bool:
-        """Out of the task's 3D boundary (with a small grace for PID overshoot).
-
-        We check the task limits explicitly rather than trusting the drone's own
-        in_boundaries flag, which is computed against a different internal limit.
-        """
-        tol = self.out_of_bounds_tolerance
-        return (
-            abs(position[0]) > self.xy_limit + tol
-            or abs(position[1]) > self.xy_limit + tol
-            or position[2] < self.z_min - tol
-            or position[2] > self.z_max + tol
-        )
 
     # ------------------------------------------------------------------
     # Interceptor expert control / state tracking
@@ -754,46 +735,113 @@ class SarlTag(DroneEnvironment):
             "done": self.done,
         }
 
-    def _calculate_reward(self, current_state: dict[str, Any]) -> float:
-        """Reward = progress to goal − step cost − evasion shaping, with terminal bonuses."""
+    def _calculate_reward(
+        self,
+        current_state: dict[str, Any],
+    ) -> float:
+        """Reward consists of progress towards the goal, terminal rewards for
+        reaching the goal or being captured, and boundary shaping."""
         position = current_state["position"]
         goal_distance = current_state["distance_to_target"]
-        interceptor_distance = self._distance_to_closest_interceptor(position)
 
         self._step_collision_outcomes = self._get_collision_safety_outcomes()
         capture_collision, non_capture_collision = self._step_collision_outcomes
 
-        if self._is_out_of_task_bounds(position):
-            self.previous_goal_distance = goal_distance
-            return self.out_of_bounds_penalty
+        caught = capture_collision and not non_capture_collision
+        reached_goal = goal_distance < self.goal_threshold and not non_capture_collision
 
-        if non_capture_collision:
-            self.previous_goal_distance = goal_distance
-            return 0.0
+        # Goal-progress shaping.
+        reward = (
+            self.previous_goal_distance - goal_distance
+        ) * self.goal_progress_multiplier
 
-        if capture_collision:
-            self.previous_goal_distance = goal_distance
-            return self.intercepted_penalty
+        # Terminal rewards.
+        # Capture takes priority if capture and goal occur on the same step.
+        if caught:
+            reward -= self.capture_reward
 
-        if goal_distance < self.goal_threshold:
-            self.previous_goal_distance = goal_distance
-            return self.success_reward
-
-        # Main signal: progress toward the goal.
-        progress = self.previous_goal_distance - goal_distance
-        reward = progress * self.goal_progress_multiplier
-
-        # Small per-step cost so the runner is rewarded for reaching the goal FAST.
-        reward -= self.step_penalty
-
-        # Evasion shaping: ramp up a penalty as the interceptor closes inside the
-        # danger radius, so the runner learns to keep clear without ignoring the goal.
-        if interceptor_distance < self.danger_radius:
-            closeness = 1.0 - (interceptor_distance / self.danger_radius)
-            reward -= self.danger_penalty * closeness
+        elif reached_goal:
+            reward += self.success_reward
 
         self.previous_goal_distance = goal_distance
-        return reward
+
+        # Boundary shaping.
+        reward += self._boundary_penalty(position)
+
+        return float(reward)
+
+    def _boundary_penalty(
+        self,
+        position: list[float],
+    ) -> float:
+        """The penalty increases linearly near the task boundary and
+        exponentially after crossing it. Only the most severe axis
+        contributes."""
+
+        def _risk(
+            distance_from_centre: float,
+            penalty_start: float,
+            hard_limit: float,
+        ) -> float:
+            if distance_from_centre <= penalty_start:
+                return 0.0
+
+            penalty_width = hard_limit - penalty_start
+
+            if penalty_width <= 0.0:
+                return 1.0
+
+            # Linear increase approaching the boundary.
+            if distance_from_centre <= hard_limit:
+                return (distance_from_centre - penalty_start) / penalty_width
+
+            # Exponential increase outside the task boundary.
+            overshoot = distance_from_centre - hard_limit
+            normalised_overshoot = overshoot / penalty_width
+
+            return float(np.exp(0.8 * normalised_overshoot))
+
+        # XY boundary risk.
+        xy_penalty_start = self.xy_limit - self.boundary_penalty_margin
+
+        x_risk = _risk(
+            abs(position[0]),
+            xy_penalty_start,
+            self.xy_limit,
+        )
+
+        y_risk = _risk(
+            abs(position[1]),
+            xy_penalty_start,
+            self.xy_limit,
+        )
+
+        # Z boundary risk.
+        z_mid = (self.z_min + self.z_max) / 2.0
+
+        if position[2] >= z_mid:
+            z_distance = position[2] - z_mid
+            hard_z_extent = self.z_max - z_mid
+            z_penalty_start = self.z_max - self.z_boundary_penalty_margin - z_mid
+
+        else:
+            z_distance = z_mid - position[2]
+            hard_z_extent = z_mid - self.z_min
+            z_penalty_start = z_mid - self.z_min - self.z_boundary_penalty_margin
+
+        z_risk = _risk(
+            z_distance,
+            z_penalty_start,
+            hard_z_extent,
+        )
+
+        boundary_risk = max(
+            x_risk,
+            y_risk,
+            z_risk,
+        )
+
+        return self.boundary_penalty_at_limit * boundary_risk
 
     def _check_if_terminated(self, current_state: dict[str, Any]) -> bool:
         """Episode ends on goal reached (success) or interception."""
@@ -882,7 +930,7 @@ class SarlTag(DroneEnvironment):
             # succeeds by catching the runner first.
             "runner_success": int(self.reached_goal),
             "interceptor_success": int(self.caught),
-            "out_of_bounds": self._is_out_of_task_bounds(position),
+            "in_boundaries": current_state["in_boundaries"],
             "description": "3D navigate-to-goal under interception — RL runner vs expert interceptor",
         }
         if self._is_evaluating:
