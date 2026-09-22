@@ -259,8 +259,7 @@ class MarlTag(MarlDroneEnvironment):
             )
 
     def _apply_curriculum_stage(self) -> None:
-        """Apply the current curriculum stage to the interceptor agents, if
-        enabled, limiting their maximum velocity."""
+        """Apply the current curriculum stage to the interceptor agents."""
         if not self.curriculum_enabled:
             self.curriculum_interceptor_vel_factor = 1.0
             return
@@ -283,10 +282,7 @@ class MarlTag(MarlDroneEnvironment):
         """Set curriculum stage directly."""
         max_stage = len(self.CURRICULUM_STAGES) - 1
 
-        self.curriculum_stage = max(
-            0,
-            min(stage, max_stage),
-        )
+        self.curriculum_stage = max(0, min(stage, max_stage))
         self._recent_runner_outcomes.clear()
 
     # ------------------------------------------------------------------

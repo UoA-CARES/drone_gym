@@ -142,25 +142,23 @@ class PredictedInterceptPolicy(BasePolicy):
 
         self.max_velocity = max_velocity
 
-    def compute(self, state: PolicyState, context) -> list[float]:
-        """Return a velocity command towards the predicted intercept point."""
+    def compute(self, state, context) -> list[float]:
         pursuer_position = np.asarray(
-            state.position,
+            state,
             dtype=float,
         )
 
-        target_position = np.asarray(
-            context["target_position"],
-            dtype=float,
-        )
+        target_position = np.asarray(context["target_position"], dtype=float)
 
         target_velocity = np.asarray(
-            context.get(
-                "target_velocity",
-                [0.0, 0.0, 0.0],
-            ),
+            context.get("target_velocity", [0.0, 0.0, 0.0]),
             dtype=float,
         )
+
+        pursuer_speed = float(context.get("pursuer_speed", self.max_velocity))
+
+        if pursuer_speed <= 0.0:
+            return [0.0, 0.0, 0.0]
 
         intercept_point = target_position.copy()
 
@@ -170,16 +168,18 @@ class PredictedInterceptPolicy(BasePolicy):
             if distance < 1e-6:
                 return [0.0, 0.0, 0.0]
 
-            time_to_go = distance / self.max_velocity
+            time_to_go = distance / pursuer_speed
 
             intercept_point = target_position + target_velocity * time_to_go
 
         direction = intercept_point - pursuer_position
+
         distance = float(np.linalg.norm(direction))
 
         if distance < 1e-6:
             return [0.0, 0.0, 0.0]
 
+        # Generate the nominal full-speed command.
         velocity = self.max_velocity * direction / distance
 
         if self.max_velocity_z is not None:

@@ -129,6 +129,7 @@ class SarlTag(DroneEnvironment):
         self.curriculum_stage = 0
         self.curriculum_window = 50
         self.curriculum_success_threshold = 0.6
+        self.curriculum_interceptor_vel_factor = 1.0
 
         self._recent_runner_outcomes = deque(maxlen=self.curriculum_window)
 
@@ -354,6 +355,32 @@ class SarlTag(DroneEnvironment):
             return position
 
         return None
+
+    # ------------------------------------------------------------------
+    # Action processing
+    # ------------------------------------------------------------------
+    def _apply_task_action_processing(
+        self,
+        agent: str,
+        vx: float,
+        vy: float,
+        vz: float,
+        current_position: list[float],
+    ) -> tuple[float, float, float, dict[str, Any]]:
+        """Apply the interceptor curriculum speed cap."""
+        requested = [vx, vy, vz]
+
+        if agent in self.interceptor_agents and self.curriculum_enabled:
+            vx *= self.curriculum_interceptor_vel_factor
+            vy *= self.curriculum_interceptor_vel_factor
+            vz *= self.curriculum_interceptor_vel_factor
+
+        sent = [vx, vy, vz]
+        info = {
+            "requested_velocity": requested,
+            "sent_velocity": sent,
+        }
+        return (vx, vy, vz, info)
 
     # ------------------------------------------------------------------
     # Distances (3D)

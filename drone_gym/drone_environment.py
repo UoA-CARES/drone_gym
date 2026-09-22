@@ -594,7 +594,7 @@ class DroneEnvironment(ABC):
 
     def _wait_for_all_reset_events(
         self,
-        timeout: float = 12.0,
+        timeout: float = 20.0,
     ) -> bool:
         """
         Wait for all owned drones to signal that they reached
@@ -750,7 +750,7 @@ class DroneEnvironment(ABC):
                 for _, drone in drones:
                     drone.start_position_control()
 
-                reset_success = self._wait_for_all_reset_events(timeout=10)
+                reset_success = self._wait_for_all_reset_events(timeout=20)
 
                 if not reset_success:
                     raise RuntimeError(
@@ -1452,22 +1452,45 @@ class DroneEnvironment(ABC):
         if len(action) != 3:
             raise ValueError("Action must be a 3-element array [vx, vy, vz]")
 
-        current_pos = self.drone.get_position()
-        # Store previous state for reward calculation
-        self.prior_state = self._generate_state_dict(current_pos)
+        old_positions = {
+            drone_name: drone.get_position()
+            for drone_name, drone in self._iter_drones()
+        }
+        self.prior_state = self._generate_state_dict(old_positions[self.RL_DRONE_NAME])
 
         velocity_commands = self._get_velocity_commands(action)
         print("Velocity commands: ", velocity_commands)
 
-        # Send velocity command to drone
+        processed_velocity_commands = {}
+        action_processing_infos = {}
+
         with self._motion_command_lock:
-            if self._collision_safety_event.is_set():
-                velocity_commands = {
-                    drone_name: [0.0, 0.0, 0.0] for drone_name in velocity_commands
-                }
+            collision_latched = self._collision_safety_triggered()
+
             for drone_name, drone in self._iter_drones():
-                vel = velocity_commands[drone_name]
-                drone.set_velocity_vector(vel[0], vel[1], vel[2])
+                if collision_latched:
+                    vx = 0.0
+                    vy = 0.0
+                    vz = 0.0
+
+                    action_processing_info = {"collision_safety_latched": True}
+
+                else:
+                    vx, vy, vz = velocity_commands[drone_name]
+                    vx, vy, vz, action_processing_info = (
+                        self._apply_task_action_processing(
+                            agent=drone_name,
+                            vx=vx,
+                            vy=vy,
+                            vz=vz,
+                            current_position=old_positions[drone_name],
+                        )
+                    )
+
+                processed_velocity_commands[drone_name] = [vx, vy, vz]
+                action_processing_infos[drone_name] = action_processing_info
+
+                drone.set_velocity_vector(vx, vy, vz)
 
         # Apply velocity for specified time - can improve this to be non-blocking
         time.sleep(self.step_time)
@@ -1498,7 +1521,7 @@ class DroneEnvironment(ABC):
         # Generate info dict
         info = {
             "current_position": new_pos,
-            "previous_position": current_pos,
+            "previous_position": old_positions[self.RL_DRONE_NAME],
             "distance_to_target": self._distance_to_target(new_pos),
             "applied_velocity": rl_velocity,
             "normalized_action": action,  # Store the original normalized action
@@ -1931,6 +1954,20 @@ class DroneEnvironment(ABC):
         """Return the maximum XY velocity for an agent.
         Can be overridden by task environments to provide agent-specific limits."""
         return self.max_velocity
+
+    def _apply_task_action_processing(
+        self,
+        agent: str,
+        vx: float,
+        vy: float,
+        vz: float,
+        current_position: list[float],
+    ) -> tuple[float, float, float, dict[str, Any]]:
+        """Apply optional task-specific processing to a velocity command.
+
+        The base implementation leaves the command unchanged.
+        """
+        return (vx, vy, vz, {})
 
     @property
     def max_action_value(self):
