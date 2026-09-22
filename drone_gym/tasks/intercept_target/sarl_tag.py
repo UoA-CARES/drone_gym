@@ -13,34 +13,13 @@ from drone_gym.agents.policies import PolicyState, PredictedInterceptPolicy
 
 
 class SarlTag(DroneEnvironment):
-    """3D navigate-to-goal-under-interception task (Variant A: expert interceptor).
+    """
+    Single-agent pursuit-evasion task with one RL runner and one or more expert
+    interceptors. Modelled after MPE Simple Tag.
 
-    The learner is the **runner** (Drone 1): it spawns at the centre and must fly
-    to a randomly designated **goal** some distance away in 3D, *while evading a
-    second drone that is actively trying to intercept it*. The runner therefore
-    has to balance two objectives — reach the goal AND avoid the interceptor.
-
-    The **interceptor** (Drone 2) is a *second real SITL Crazyflie*, brought up
-    through the shared :class:`SimManager` as a ``crazyflie_pursuer`` agent. In
-    this variant its brain is an expert 3D pure-pursuit policy (supplied via the
-    manager's ``callable`` policy seam, because the built-in PurePursuitPolicy is
-    xy-only); in the MARL variant the same seam takes a learned policy instead, so
-    only that one line changes. The interceptor flies faster than the runner so
-    that interception is genuinely feasible.
-
-    An "interception" is a 0.20 m proximity event (3D), never a real drone-on-drone
-    impact: a high-rate background guard stops both drones the instant they are
-    within that distance, so the task is collision-safe in sim and the real arena.
-
-    Episode outcomes:
-      * success  — runner reaches within ``goal_threshold`` of the goal.
-      * failure  — interceptor gets within ``capture_threshold`` of the runner,
-                   or the runner leaves the boundary.
-      * truncated — ``episode_length`` steps elapse with neither.
-
-    Launch with the *multi*-agent SITL so both ports exist, e.g.::
-
-        ./sitl_multiagent_square.sh -m crazyflie -n 2   # 19850 (runner), 19851 (interceptor)
+    The runner attempts to reach a randomly sampled goal while the interceptors
+    attempt to capture it. Runner-interceptor proximity is treated as capture,
+    while collisions between non-opposing agents truncate the episode for safety.
     """
 
     RUNNER = "runner"
@@ -60,9 +39,13 @@ class SarlTag(DroneEnvironment):
         max_velocity: float = 0.25,
         max_velocity_z: float = 0.25,
         step_time: float = 0.5,
+        xy_limit: float = 2.0,
+        z_min: float = 0.4,
+        z_max: float = 2.5,
         exploration_steps: int = 1000,
         episode_length: int = 80,
-        interceptor_max_velocity: float = 0.125,
+        interceptor_max_velocity: float = 0.25,
+        goal_threshold: float = 0.20,
         capture_threshold: float = 0.2,
     ):
 
@@ -74,6 +57,7 @@ class SarlTag(DroneEnvironment):
             boundaries = {"x": 10.0, "y": 10.0, "z_min": 0.1, "z_max": 10.0}
         else:
             boundaries = {"x": 2.5, "y": 2.5, "z_min": 0.1, "z_max": 3.0}
+
         super().__init__(
             use_simulator=use_simulator,
             max_velocity=max_velocity,
@@ -82,35 +66,14 @@ class SarlTag(DroneEnvironment):
             boundaries=boundaries,
             collision_safety_distance=capture_threshold,
             max_velocity_z=max_velocity_z,
+            xy_limit=xy_limit,
+            z_min=z_min,
+            z_max=z_max,
         )
 
         # RL training parameters
         self.episode_length = episode_length
         self.exploration_steps = exploration_steps
-        self.total_steps = 0
-        self.truncate_next = False
-        self.learning = True
-
-        # --- Geometry / task parameters -------------------------------------
-        # 2.0 is the value the stable sibling tasks use — larger boxes mean longer
-        # position-control moves on reset, which is exactly what blows up the EKF.
-        self.xy_limit = 2.0
-        # z-band around the 1.0 m reset height. Vertical stability comes from the
-        # max_velocity_z cap above (slow climbs keep CrazySim's vertical estimator
-        # well-conditioned), so the band can be wide enough for real 3D variety —
-        # it still ends well short of the containment lines (0.25 / 1.8) and the
-        # firmware kill boundary (|z| 2.25).
-        self.z_min = 0.6
-        self.z_max = 1.4
-        self.fixed_z = 1.0  # centre of the z band (default altitude)
-        # Runner spawn altitude — resampled every episode. Kept a notch inside the
-        # z band so the worst-case vertical gap to a goal (~0.5 m) stays closable
-        # at max_velocity_z within an 80-step episode (0.5 / (0.03 * 0.5) ≈ 34 steps).
-        self.out_of_bounds_tolerance = 0.05  # small grace for PID overshoot at the wall
-
-        self.interceptor_max_velocity_z = (
-            0.030  # gentle vertical cap for the pursuer too
-        )
 
         # Reset geometry
         self.goal_min_distance_ratio = 0.60
@@ -122,8 +85,9 @@ class SarlTag(DroneEnvironment):
         self.max_position_sampling_attempts = 300
         self.reset_positions: dict[str, list[float]] = {}
 
-        # --- Interceptor speed curriculum ---------------------------------------
+        # Interceptor speed curriculum
         self.interceptor_speed_max = interceptor_max_velocity
+        self.interceptor_max_velocity_z = 0.25
 
         self.curriculum_enabled = True
         self.curriculum_stage = 0
@@ -133,23 +97,23 @@ class SarlTag(DroneEnvironment):
 
         self._recent_runner_outcomes = deque(maxlen=self.curriculum_window)
 
+        # Win conditions
         self.capture_threshold = capture_threshold
-        self.goal_threshold = 0.20  # metres (3D) — runner has reached the goal
+        self.goal_threshold = goal_threshold
 
+        # Task geometry
         self.max_xy_range = self.xy_limit * 2
         self.max_z_range = self.z_max - self.z_min
         self.max_distance = math.sqrt(
             self.max_xy_range**2 + self.max_xy_range**2 + self.max_z_range**2
         )
-
-        # boundary = (xy, xy, z_low, z_high) — used by the base visual boundary + step clamp
         self.boundary = [self.xy_limit, self.xy_limit, self.z_min, self.z_max]
 
         # Runner observation:
         # [own vel, own pos, other agents rel pos, other good agents vel, goal rel pos]
         self.observation_space = 3 + 3 + (self.num_interceptor_agents) * 3 + (0) * 3 + 3
 
-        # --- Reward parameters ----------------------------------------------
+        # Reward parameters
         self.success_reward = 100.0
         self.capture_reward = 100.0
 
@@ -159,16 +123,13 @@ class SarlTag(DroneEnvironment):
         self.boundary_penalty_margin = 0.2
         self.z_boundary_penalty_margin = 0.10
 
-        # --- Task state ------------------------------------------------------
-        self.done = False
+        # Task state
         self.caught = False  # True when the interceptor caught the runner
         self.reached_goal = False  # True when the runner reached the goal
         self._step_collision_outcomes: tuple[bool, bool] = (False, False)
         self.winner: str | None = None
 
-        self.goal_position: list[float] = [0.0, 0.0, self.fixed_z]
-
-        self.goal_marker_name = "rl_sarl_tag_goal"
+        self.goal_position: list[float] = [0.0, 0.0, self.reset_height]
 
         self.interceptor_policies: dict[str, PredictedInterceptPolicy] = {
             interceptor_name: PredictedInterceptPolicy(
@@ -183,15 +144,101 @@ class SarlTag(DroneEnvironment):
 
         # Evaluation mode tracking — counts episodes the runner reached the goal
         self.successful_episodes_count = 0
-
-        # Episode counter (used by reset-time health checks and logging). EKF
-        # drift no longer needs an every-N-episodes cap: the teleport reset
-        # lands both drones and re-seeds their estimators on the ground EVERY
-        # episode, so drift can never accumulate past a single episode.
         self._episode_count = 0
 
     # ------------------------------------------------------------------
-    # Geometry sampling (3D)
+    # Reset and curriculum learning
+    # ------------------------------------------------------------------
+    def reset(
+        self,
+        training: bool = True,
+    ):
+        """Update curriculum stage and generate a new reset layout before calling
+        the base reset."""
+
+        if not training and not self._is_evaluating:
+            self.successful_episodes_count = 0
+
+        self._episode_count += 1
+
+        self._update_interceptor_curriculum(training)
+        self._apply_curriculum_stage()
+
+        self.reset_positions = self._generate_reset_positions()
+
+        return super().reset(training)
+
+    def _reset_task_state(self):
+        """Reset task-specific state variables (called from base reset)."""
+        self.caught = False
+        self.reached_goal = False
+        self.winner = None
+
+        runner_pos = self.rl_drone.get_position()
+        self.previous_goal_distance = self._distance_to_target(runner_pos)
+
+        if self.use_simulator:
+            self._set_target_marker(
+                position=self.goal_position, marker_name="runner_goal"
+            )
+
+    def _update_interceptor_curriculum(
+        self,
+        training: bool = True,
+    ) -> None:
+        """Update the interceptor curriculum based on runner performance."""
+        if not self.curriculum_enabled or not training:
+            return
+
+        max_stage = len(self.CURRICULUM_STAGES) - 1
+        if self.curriculum_stage >= max_stage:
+            return
+
+        if self._episode_count > 1:
+            self._recent_runner_outcomes.append(1.0 if self.reached_goal else 0.0)
+
+        if len(self._recent_runner_outcomes) < self.curriculum_window:
+            return
+
+        success_rate = sum(self._recent_runner_outcomes) / len(
+            self._recent_runner_outcomes
+        )
+
+        if success_rate >= self.curriculum_success_threshold:
+            self.advance_curriculum()
+            print(
+                f"[SarlTag][curriculum] "
+                f"runner success {success_rate:.0%} -> "
+                f"stage {self.curriculum_stage}"
+            )
+
+    def _apply_curriculum_stage(self) -> None:
+        """Apply the current curriculum stage to all expert policies."""
+        if not self.curriculum_enabled:
+            self.curriculum_interceptor_vel_factor = 1.0
+            return
+
+        stage = self.CURRICULUM_STAGES[self.curriculum_stage]
+
+        self.curriculum_interceptor_vel_factor = stage["interceptor_speed_factor"]
+
+    def advance_curriculum(self) -> None:
+        """Advance to the next curriculum stage."""
+        max_stage = len(self.CURRICULUM_STAGES) - 1
+
+        if self.curriculum_stage < max_stage:
+            self.curriculum_stage += 1
+            self._recent_runner_outcomes.clear()
+
+    def set_curriculum_stage(self, stage: int) -> None:
+        """Set curriculum stage directly."""
+        max_stage = len(self.CURRICULUM_STAGES) - 1
+
+        self.curriculum_stage = max(0, min(stage, max_stage))
+        self._recent_runner_outcomes.clear()
+
+    # ------------------------------------------------------------------
+    # Reset layout and goal generation
     # ------------------------------------------------------------------
     def _generate_reset_positions(self) -> dict[str, list[float]]:
         """Loops until a valid runner, goal, and interceptor layout is found
@@ -382,45 +429,6 @@ class SarlTag(DroneEnvironment):
         }
         return (vx, vy, vz, info)
 
-    # ------------------------------------------------------------------
-    # Distances (3D)
-    # ------------------------------------------------------------------
-
-    def _distance_to_target(self, position: list[float]) -> float:
-        """Base hook: 'target' for this task is the GOAL (used by the info dict)."""
-        return math.sqrt(
-            (position[0] - self.goal_position[0]) ** 2
-            + (position[1] - self.goal_position[1]) ** 2
-            + (position[2] - self.goal_position[2]) ** 2
-        )
-
-    def _get_interceptor_distances(
-        self,
-        runner_position: list[float],
-    ) -> dict[str, float]:
-        distances: dict[str, float] = {}
-
-        for interceptor_name, interceptor_drone in self.expert_drones.items():
-            interceptor_position = interceptor_drone.get_position()
-
-            distances[interceptor_name] = math.sqrt(
-                (runner_position[0] - interceptor_position[0]) ** 2
-                + (runner_position[1] - interceptor_position[1]) ** 2
-                + (runner_position[2] - interceptor_position[2]) ** 2
-            )
-
-        return distances
-
-    def _distance_to_closest_interceptor(
-        self,
-        runner_position: list[float],
-    ) -> float:
-        return min(self._get_interceptor_distances(runner_position).values())
-
-    # ------------------------------------------------------------------
-    # Interceptor expert control / state tracking
-    # ------------------------------------------------------------------
-
     def _get_velocity_commands(
         self,
         action,
@@ -436,9 +444,13 @@ class SarlTag(DroneEnvironment):
             float(runner_velocity.get("y", 0.0)),
             float(runner_velocity.get("z", 0.0)),
         ]
+        interceptor_speed = (
+            self.interceptor_speed_max * self.curriculum_interceptor_vel_factor
+        )
         context = {
             "target_position": runner_pos,
             "target_velocity": runner_vel,
+            "pursuer_speed": interceptor_speed,
         }
 
         for interceptor_name, policy in self.interceptor_policies.items():
@@ -454,150 +466,8 @@ class SarlTag(DroneEnvironment):
         return velocity_commands
 
     # ------------------------------------------------------------------
-    # DroneEnvironment overrides
+    # Observation
     # ------------------------------------------------------------------
-
-    def _update_interceptor_curriculum(
-        self,
-        training: bool = True,
-    ) -> None:
-        """Update the interceptor curriculum based on runner performance."""
-        if not self.curriculum_enabled or not training:
-            return
-
-        max_stage = len(self.CURRICULUM_STAGES) - 1
-
-        if self.curriculum_stage >= max_stage:
-            return
-
-        if self._episode_count > 1:
-            self._recent_runner_outcomes.append(1.0 if self.reached_goal else 0.0)
-
-        if len(self._recent_runner_outcomes) < self.curriculum_window:
-            return
-
-        success_rate = sum(self._recent_runner_outcomes) / len(
-            self._recent_runner_outcomes
-        )
-
-        if success_rate >= self.curriculum_success_threshold:
-            self.advance_curriculum()
-
-            print(
-                f"[SarlTag][curriculum] "
-                f"runner success {success_rate:.0%} -> "
-                f"stage {self.curriculum_stage}"
-            )
-
-    def _apply_curriculum_stage(self) -> None:
-        """Apply the current curriculum stage to all expert policies."""
-        if self.curriculum_enabled:
-            stage = self.CURRICULUM_STAGES[self.curriculum_stage]
-            speed_factor = stage["interceptor_speed_factor"]
-        else:
-            speed_factor = 1.0
-
-        current_max_velocity = self.interceptor_speed_max * speed_factor
-
-        for policy in self.interceptor_policies.values():
-            policy.set_max_velocity(current_max_velocity)
-
-    def advance_curriculum(self) -> None:
-        """Advance to the next curriculum stage."""
-        max_stage = len(self.CURRICULUM_STAGES) - 1
-
-        if self.curriculum_stage < max_stage:
-            self.curriculum_stage += 1
-            self._recent_runner_outcomes.clear()
-
-    def set_curriculum_stage(self, stage: int) -> None:
-        """Set curriculum stage directly."""
-        max_stage = len(self.CURRICULUM_STAGES) - 1
-
-        self.curriculum_stage = max(0, min(stage, max_stage))
-        self._recent_runner_outcomes.clear()
-
-    def reset(
-        self,
-        training: bool = True,
-    ):
-        """
-        Sample the task geometry and use the base environment to
-        reset the runner and interceptor together.
-
-        Mirrors marl_tag's reset: sample geometry, populate reset_positions,
-        then delegate entirely to the base environment reset. The base
-        _reset_all_drones() (shared pattern with MarlDroneEnvironment) already
-        lands, teleports, clears a latched emergency, re-seeds the EKF and
-        takes off EVERY drone (runner and interceptor alike) EVERY episode —
-        that's what makes a dying drone recover. Layering task-level
-        pre/post "is it dead, call restart()" checks on top of that (the
-        previous approach here) fought with the base reset instead of
-        complementing it and was the source of the flaky recovery.
-        """
-
-        if not training and not self._is_evaluating:
-            self.successful_episodes_count = 0
-
-        self._episode_count += 1
-
-        # This must happen before interceptor spawn sampling because
-        # the configured speed affects fair placement.
-        self._update_interceptor_curriculum(training)
-        self._apply_curriculum_stage()
-
-        self.reset_positions = self._generate_reset_positions()
-
-        super().reset(training)
-
-        runner_pos = self.rl_drone.get_position()
-
-        # Draw the goal after the new geometry has been selected.
-        self._set_target_marker(
-            self.goal_position,
-            marker_name=self.goal_marker_name,
-        )
-
-        # _reset_task_state() is already called by super().reset(),
-        # so caught, reached_goal and done have been cleared.
-        self.previous_goal_distance = self._distance_to_target(runner_pos)
-
-        time.sleep(0.5)
-
-        return self._get_state()
-
-    def step(self, action):
-        """One env step: command the expert interceptor, then move the learner (3D)."""
-
-        self.total_steps += 1
-
-        if self.total_steps == self.exploration_steps and not self.learning:
-            print("\nSWITCHING TO LEARNING PHASE...\n")
-            self.truncate_next = True
-            self.learning = True
-
-        assert len(action) == 3, "action should be length 3"
-        if self.learning:
-            processed_action = [action[0], action[1], action[2]]
-        else:
-            processed_action = [action[0] * 2 - 1, action[1] * 2 - 1, action[2] * 2 - 1]
-
-        result = super().step(processed_action)
-
-        return result
-
-    def _reset_task_state(self):
-        """Reset task-specific state variables (called from base reset)."""
-        self.done = False
-        self.caught = False
-        self.reached_goal = False
-        self.winner = None
-        # A post-step interceptor-death check (see step()) can set this for
-        # the *next* call to step() and never get consumed if that call never
-        # comes because the episode ended on this very step. Left uncleared,
-        # it silently truncates the following episode after a single step.
-        self.truncate_next = False
-
     def _get_runner_observations(self) -> np.ndarray:
         """Runner sees its own state, other agents' relative positions,
         and the goal's relative position."""
@@ -642,25 +512,9 @@ class SarlTag(DroneEnvironment):
     def _get_state(self) -> np.ndarray:
         return self._get_runner_observations()
 
-    def get_overlay_info(self) -> dict[str, Any]:
-        position = self.drone.get_position()
-        interceptor_positions = {
-            name: drone.get_position() for name, drone in self.expert_drones.items()
-        }
-
-        interceptor_distances = self._get_interceptor_distances(position)
-        return {
-            "position": position,
-            "goal_position": self.goal_position[:],
-            "interceptor_positions": interceptor_positions,
-            "interceptor_distances": interceptor_distances,
-            "distance_to_goal": self._distance_to_target(position),
-            "distance_to_interceptor": min(interceptor_distances.values()),
-            "caught": self.caught,
-            "reached_goal": self.reached_goal,
-            "done": self.done,
-        }
-
+    # ------------------------------------------------------------------
+    # Rewards
+    # ------------------------------------------------------------------
     def _calculate_reward(
         self,
         current_state: dict[str, Any],
@@ -769,6 +623,9 @@ class SarlTag(DroneEnvironment):
 
         return self.boundary_penalty_at_limit * boundary_risk
 
+    # ------------------------------------------------------------------
+    # Terminations / truncations
+    # ------------------------------------------------------------------
     def _check_if_terminated(self, current_state: dict[str, Any]) -> bool:
         """Episode ends on goal reached (success) or interception."""
         goal_distance = current_state["distance_to_target"]
@@ -823,45 +680,10 @@ class SarlTag(DroneEnvironment):
             )
 
         truncate = (
-            time_limit_reached
-            or bool(z_violation_drones)
-            or non_capture_collision
-            or self.truncate_next
+            time_limit_reached or bool(z_violation_drones) or non_capture_collision
         )
 
-        if self.truncate_next:
-            self.truncate_next = False
-
         return truncate
-
-    def _get_additional_info(self, current_state: dict[str, Any]) -> dict[str, Any]:
-        position = current_state["position"]
-        interceptor_positions = {
-            name: drone.get_position() for name, drone in self.expert_drones.items()
-        }
-
-        interceptor_distances = self._get_interceptor_distances(position)
-        info = {
-            "goal_position": self.goal_position[:],
-            "interceptor_positions": interceptor_positions,
-            "distance_to_goal": self._distance_to_target(position),
-            "closest_interceptor_distance": min(interceptor_distances.values()),
-            "interceptor_distances": interceptor_distances,
-            "caught": self.caught,
-            "reached_goal": self.reached_goal,
-            "success": self.reached_goal,
-            # Per-drone outcome flags (1/0), picked up automatically by the
-            # generic success-rate / time-to-outcome plots (any "*_success"
-            # column). Runner succeeds by reaching the goal; the interceptor
-            # succeeds by catching the runner first.
-            "runner_success": int(self.reached_goal),
-            "interceptor_success": int(self.caught),
-            "in_boundaries": current_state["in_boundaries"],
-            "description": "3D navigate-to-goal under interception — RL runner vs expert interceptor",
-        }
-        if self._is_evaluating:
-            info["success_count"] = self.successful_episodes_count
-        return info
 
     def _get_collision_safety_outcomes(
         self,
@@ -885,23 +707,32 @@ class SarlTag(DroneEnvironment):
         return capture_collision, non_capture_collision
 
     # ------------------------------------------------------------------
-    # Action space — keep SARL's denormalize as a no-op so the parent's
-    # single multiply-by-max_velocity is the only scaling that happens.
-    # Without this, SARL denormalizes [-1,1]→[-0.25,0.25] and the parent
-    # then multiplies by 0.25 again → 0.0625 m/s effective (4× too slow).
+    # Task info and rendering
     # ------------------------------------------------------------------
+    def _get_additional_info(self, current_state: dict[str, Any]) -> dict[str, Any]:
+        position = current_state["position"]
+        interceptor_positions = {
+            name: drone.get_position() for name, drone in self.expert_drones.items()
+        }
 
-    @property
-    def max_action_value(self):
-        return 1.0
-
-    @property
-    def min_action_value(self):
-        return -1.0
-
-    def sample_action(self):
-        """Sample a normalized action in [-1, 1] — the parent will scale to m/s."""
-        return np.random.uniform(-1.0, 1.0, size=(3,))
+        interceptor_distances = self._get_interceptor_distances(position)
+        info = {
+            "goal_position": self.goal_position[:],
+            "interceptor_positions": interceptor_positions,
+            "distance_to_goal": self._distance_to_target(position),
+            "closest_interceptor_distance": min(interceptor_distances.values()),
+            "interceptor_distances": interceptor_distances,
+            "caught": self.caught,
+            "reached_goal": self.reached_goal,
+            "success": self.reached_goal,
+            "runner_success": int(self.reached_goal),
+            "interceptor_success": int(self.caught),
+            "in_boundaries": current_state["in_boundaries"],
+            "description": "3D navigate-to-goal under interception — RL runner vs expert interceptor",
+        }
+        if self._is_evaluating:
+            info["success_count"] = self.successful_episodes_count
+        return info
 
     def _render_task_specific_info(self):
         pos = self.rl_drone.get_position()
@@ -939,6 +770,70 @@ class SarlTag(DroneEnvironment):
             f"Reached goal: {self.reached_goal} | "
             f"Caught: {self.caught} | Winner: {self.winner}"
         )
+
+    def get_overlay_info(self) -> dict[str, Any]:
+        position = self.drone.get_position()
+        interceptor_positions = {
+            name: drone.get_position() for name, drone in self.expert_drones.items()
+        }
+
+        interceptor_distances = self._get_interceptor_distances(position)
+        return {
+            "position": position,
+            "goal_position": self.goal_position[:],
+            "interceptor_positions": interceptor_positions,
+            "interceptor_distances": interceptor_distances,
+            "distance_to_goal": self._distance_to_target(position),
+            "distance_to_interceptor": min(interceptor_distances.values()),
+            "caught": self.caught,
+            "reached_goal": self.reached_goal,
+        }
+
+    # ------------------------------------------------------------------
+    # Geometry and state helpers
+    # ------------------------------------------------------------------
+    def _distance_to_target(self, position: list[float]) -> float:
+        """Base hook: 'target' for this task is the GOAL (used by the info dict)."""
+        return math.sqrt(
+            (position[0] - self.goal_position[0]) ** 2
+            + (position[1] - self.goal_position[1]) ** 2
+            + (position[2] - self.goal_position[2]) ** 2
+        )
+
+    def _get_interceptor_distances(
+        self,
+        runner_position: list[float],
+    ) -> dict[str, float]:
+        distances: dict[str, float] = {}
+
+        for interceptor_name, interceptor_drone in self.expert_drones.items():
+            interceptor_position = interceptor_drone.get_position()
+
+            distances[interceptor_name] = math.sqrt(
+                (runner_position[0] - interceptor_position[0]) ** 2
+                + (runner_position[1] - interceptor_position[1]) ** 2
+                + (runner_position[2] - interceptor_position[2]) ** 2
+            )
+
+        return distances
+
+    def _distance_to_closest_interceptor(
+        self,
+        runner_position: list[float],
+    ) -> float:
+        return min(self._get_interceptor_distances(runner_position).values())
+
+    @property
+    def max_action_value(self):
+        return 1.0
+
+    @property
+    def min_action_value(self):
+        return -1.0
+
+    def sample_action(self):
+        """Sample a normalized action in [-1, 1]"""
+        return np.random.uniform(-1.0, 1.0, size=(3,))
 
     def grab_frame(self, height: int = 540, width: int = 960) -> np.ndarray:
         fig = plt.figure(figsize=(width / 120, height / 120), dpi=120)
