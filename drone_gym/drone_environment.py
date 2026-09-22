@@ -36,6 +36,7 @@ class DroneEnvironment(ABC):
         xy_limit: float = 1.0,
         z_min: float = 0.5,
         z_max: float = 1.5,
+        boundaries: dict[str, float] = None,
         reset_height: float = 1.0,
         reset_safety_distance: float = 0.25,
         position_max_age: float | None = 0.05,
@@ -48,6 +49,7 @@ class DroneEnvironment(ABC):
             max_velocity: Maximum x and y velocity in metres per second.
             step_time: Duration each action is applied, in seconds.
             expert_drone_names: Ordered names of optional expert drones.
+            boundaries: Hard safety boundary for the environment.
             collision_safety_distance: Minimum distance between drones to trigger a collision safety event.
             collision_monitor_hz: Frequency of the collision monitor in Hz.
         """
@@ -110,6 +112,9 @@ class DroneEnvironment(ABC):
         self.max_z_range = self.z_max - self.z_min
         # Task-specific environments may replace this with their boundary.
         self.boundary: list[float] | None = None
+
+        # Hard safety boundary
+        self.boundaries = boundaries
 
         self.reset_height = reset_height
         self.reset_hover_height = reset_height
@@ -244,6 +249,7 @@ class DroneEnvironment(ABC):
             self.rl_drones[self.RL_DRONE_NAME] = DroneSim(
                 uri=self.drone_uris[self.RL_DRONE_NAME],
                 agent_id=self.RL_DRONE_NAME,
+                boundaries=self.boundaries,
             )
             print(
                 f"[SARL ENV] RL drone simulator created with URI: "
@@ -259,6 +265,7 @@ class DroneEnvironment(ABC):
                     label=self.RL_DRONE_NAME,
                 ),
                 uri=self.drone_uris[self.RL_DRONE_NAME],
+                boundaries=self.boundaries,
             )
             print(
                 f"[SARL ENV] RL drone physical instance created "
@@ -270,6 +277,7 @@ class DroneEnvironment(ABC):
                 self.expert_drones[expert_agent] = DroneSim(
                     uri=self.drone_uris[expert_agent],
                     agent_id=expert_agent,
+                    boundaries=self.boundaries,
                 )
                 print(
                     f"[SARL ENV] Expert drone simulator created with "
@@ -284,6 +292,7 @@ class DroneEnvironment(ABC):
                         label=expert_agent,
                     ),
                     uri=self.drone_uris[expert_agent],
+                    boundaries=self.boundaries,
                 )
                 print(
                     f"[SARL ENV] Expert drone physical instance created "

@@ -71,12 +71,16 @@ class SarlTag(DroneEnvironment):
         self.interceptor_agents = [
             f"interceptor_{i}" for i in range(self.num_interceptor_agents)
         ]
-
+        if use_simulator:
+            boundaries = {"x": 10.0, "y": 10.0, "z_min": 0.1, "z_max": 10.0}
+        else:
+            boundaries = {"x": 2.5, "y": 2.5, "z_min": 0.1, "z_max": 3.0}
         super().__init__(
             use_simulator=use_simulator,
             max_velocity=max_velocity,
             step_time=step_time,
             expert_drone_names=self.interceptor_agents,
+            boundaries=boundaries,
             collision_safety_distance=capture_threshold,
         )
 
@@ -213,21 +217,6 @@ class SarlTag(DroneEnvironment):
 
             self.interceptor_policies[interceptor_name] = interceptor_policy
             self.interceptors[interceptor_name] = interceptor
-
-        # The interceptor repositions via a position-control move to a fresh spawn
-        # EVERY episode, which stresses its EKF. The drone's internal safety monitor
-        # hard-kills (emergency land + disarm) any drone whose |z| > 2.25 — a death
-        # the interceptor can't recover from cleanly. Give its internal boundary
-        # VERTICAL headroom only, so a transient EKF z-overshoot during
-        # re-convergence doesn't trip the destructive kill. Keep xy at the drone
-        # default (2.5, i.e. 0.5 m past the arena wall for PID overshoot) so a
-        # lateral drift is still caught before the interceptor roams far outside
-        # the arena. The task's own out-of-bounds + collision-guard logic
-        # (xy_limit=2.0, z_max=1.4, capture_threshold) still governs episodes.
-        # boundaries uses the post-#28 z_min/z_max schema (the boundary monitor now
-        # checks z_min <= z <= z_max, not abs(z) <= z). A bare "z" key here would
-        # KeyError in the interceptor's boundary thread.
-        self._configure_interceptor_drones()
 
         # Distance tracking for reward calculation
         self.previous_goal_distance = self.max_distance
@@ -471,18 +460,6 @@ class SarlTag(DroneEnvironment):
 
         return velocity_commands
 
-    def _configure_interceptor_drones(self) -> None:
-        if not self.use_simulator:
-            return
-
-        for interceptor_drone in self.expert_drones.values():
-            interceptor_drone.boundaries = {
-                "x": 4,
-                "y": 4,
-                "z_min": -0.5,
-                "z_max": 3.0,
-            }
-
     # ------------------------------------------------------------------
     # Collision safety monitor — zeroes both drones within capture_threshold
     # ------------------------------------------------------------------
@@ -607,8 +584,6 @@ class SarlTag(DroneEnvironment):
                     "body to recreated DroneSim."
                 )
                 interceptor.body.drone = current_drone
-
-        self._configure_interceptor_drones()
 
         runner_pos = self.rl_drone.get_position()
 
