@@ -58,6 +58,7 @@ class SarlTag(DroneEnvironment):
         use_simulator: Literal[0, 1],
         num_agents: int = 2,
         max_velocity: float = 0.25,
+        max_velocity_z: float = 0.25,
         step_time: float = 0.5,
         exploration_steps: int = 1000,
         episode_length: int = 80,
@@ -80,15 +81,8 @@ class SarlTag(DroneEnvironment):
             expert_drone_names=self.interceptor_agents,
             boundaries=boundaries,
             collision_safety_distance=capture_threshold,
+            max_velocity_z=max_velocity_z,
         )
-
-        # Gentle vertical speed cap — CrazySim's z-velocity control is twitchy and
-        # moving up/down fast destabilises the estimator, which makes the firmware
-        # command a thrust spike that LAUNCHES the drone to the ceiling (a crash we
-        # can't stop from here, since it bypasses our velocity setpoint). Keeping
-        # vertical motion very slow keeps the vertical estimator well-conditioned so
-        # that spike almost never builds — the task stays 3D but much more stable.
-        self.max_velocity_z = 0.03
 
         # RL training parameters
         self.episode_length = episode_length

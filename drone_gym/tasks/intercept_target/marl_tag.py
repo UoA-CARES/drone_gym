@@ -31,7 +31,7 @@ class MarlTag(MarlDroneEnvironment):
         use_simulator: Literal[0, 1],
         num_agents: int = 2,
         max_velocity: float = 0.25,
-        max_velocity_z: float = 0.03,
+        max_velocity_z: float = 0.25,
         step_time: float = 0.5,
         xy_limit: float = 2.0,
         z_min: float = 0.4,

@@ -31,6 +31,7 @@ class DroneEnvironment(ABC):
         self,
         use_simulator: Literal[0, 1],
         max_velocity: float = 0.5,
+        max_velocity_z: float = 0.5,
         step_time: float = 0.5,
         expert_drone_names: list[str] | None = None,
         xy_limit: float = 1.0,
@@ -95,7 +96,7 @@ class DroneEnvironment(ABC):
         self.possible_agents.extend(self.expert_drone_names)
 
         self.max_velocity = max_velocity
-        self.max_velocity_z = 0.5
+        self.max_velocity_z = max_velocity_z
         self.step_time = step_time
         self.steps = 0
         self.seed = 0
