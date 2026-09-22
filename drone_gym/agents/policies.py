@@ -9,17 +9,23 @@ All policies implement::
 
     compute(state, context) -> [vx, vy, vz]
 
-where ``state`` is the agent's :class:`~drone_gym.agents.sim_agent.AgentState`
+where ``state`` is PolicyState
 and ``context`` is a free-form dict the task passes in each step (e.g.
 ``{"evader_pos": [x, y, z]}``). ``reset(state, context)`` is an optional hook
 called once per episode for stateful policies.
 """
 
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
 import math
-from typing import Any, Callable
+from typing import Any, Callable, Sequence
 
 import numpy as np
+
+
+@dataclass(frozen=True)
+class PolicyState:
+    position: Sequence[float]
 
 
 class BasePolicy(ABC):
@@ -87,7 +93,28 @@ class PurePursuitPolicy(BasePolicy):
 
 
 class PredictedInterceptPolicy(BasePolicy):
-    """Pursue a moving target using a predicted intercept point."""
+    """3D Proportional Navigation via Predicted Intercept Point (PIP).
+
+    Pure pursuit always steers toward the evader's *current* position,
+    causing a tail-chase that converges slowly. Proportional Navigation
+    (PN) instead drives the line-of-sight angular rate to zero, placing
+    the pursuer on a collision course. For a constant-velocity evader
+    this is equivalent to steering toward the *Predicted Intercept Point*
+    (PIP): where pursuer and evader can arrive simultaneously given the
+    evader's current velocity [1, 2].
+
+    The PIP is solved by fixed-point iteration (2-4 steps suffice):
+        t_go^(0) = |r| / V_pursuer
+        pip^(k)  = runner_pos + runner_vel * t_go^(k)
+        t_go^(k+1) = |pip^(k) - pursuer_pos| / V_pursuer
+
+    References:
+        [1] Shneydor, N. A. (1998). Missile Guidance and Pursuit, Ch. 4.
+        [2] Weintraub, I., Pachter, M., & Garcia, E. (2020). An introduction
+            to pursuit-evasion differential games. Proc. American Control
+            Conference, pp. 1049-1066.
+        [3] Nahin, P. J. (2012). Chases and Escapes, Ch. 3. Princeton UP.
+    """
 
     def __init__(
         self,
@@ -115,7 +142,7 @@ class PredictedInterceptPolicy(BasePolicy):
 
         self.max_velocity = max_velocity
 
-    def compute(self, state, context) -> list[float]:
+    def compute(self, state: PolicyState, context) -> list[float]:
         """Return a velocity command towards the predicted intercept point."""
         pursuer_position = np.asarray(
             state.position,

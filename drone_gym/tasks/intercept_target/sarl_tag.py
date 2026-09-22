@@ -9,9 +9,7 @@ import cv2
 from matplotlib.markers import MarkerStyle
 
 from drone_gym.drone_environment import DroneEnvironment
-from drone_gym.agents.bodies import CrazyflieBody
-from drone_gym.agents.policies import PredictedInterceptPolicy
-from drone_gym.agents.sim_agent import SimAgent
+from drone_gym.agents.policies import PolicyState, PredictedInterceptPolicy
 
 
 class SarlTag(DroneEnvironment):
@@ -116,9 +114,6 @@ class SarlTag(DroneEnvironment):
         # at max_velocity_z within an 80-step episode (0.5 / (0.03 * 0.5) ≈ 34 steps).
         self.out_of_bounds_tolerance = 0.05  # small grace for PID overshoot at the wall
 
-        self.interceptor_max_velocity = (
-            interceptor_max_velocity  # > max_velocity so capture is feasible
-        )
         self.interceptor_max_velocity_z = (
             0.030  # gentle vertical cap for the pursuer too
         )
@@ -178,45 +173,15 @@ class SarlTag(DroneEnvironment):
 
         self.goal_position: list[float] = [0.0, 0.0, self.fixed_z]
 
-        # --- Interceptor agent (second real SITL Crazyflie) ------------------
-        # Constructed directly here — agent lifecycle belongs to the environment,
-        # not to SimManager.  SimManager is only responsible for Gazebo visuals.
-        # self.sim_manager = get_default_sim_manager()
         self.goal_marker_name = "rl_sarl_tag_goal"
-        # # Runner is on port 19850; interceptor is drone 2 from sitl_multiagent_square -n 2
-        # interceptor_uri = "udp://0.0.0.0:19851"
-        # interceptor_body = CrazyflieBody(
-        #     use_simulator=use_simulator,
-        #     uri=interceptor_uri,
-        #     fixed_z=self.fixed_z,
-        # )
 
-        self.interceptors: dict[str, SimAgent] = {}
-        self.interceptor_policies: dict[str, PredictedInterceptPolicy] = {}
-
-        for agent_id, interceptor_name in enumerate(
-            self.interceptor_agents,
-            start=1,
-        ):
-            interceptor_body = CrazyflieBody(
-                drone=self.expert_drones[interceptor_name],
-                fixed_z=self.fixed_z,
-            )
-
-            interceptor_policy = PredictedInterceptPolicy(
-                max_velocity=self.interceptor_max_velocity,
+        self.interceptor_policies: dict[str, PredictedInterceptPolicy] = {
+            interceptor_name: PredictedInterceptPolicy(
+                max_velocity=self.interceptor_speed_max,
                 max_velocity_z=self.interceptor_max_velocity_z,
             )
-
-            interceptor = SimAgent(
-                agent_id=agent_id,
-                body=interceptor_body,
-                policy=interceptor_policy,
-                role=self.INTERCEPTOR,
-            )
-
-            self.interceptor_policies[interceptor_name] = interceptor_policy
-            self.interceptors[interceptor_name] = interceptor
+            for interceptor_name in self.interceptor_agents
+        }
 
         # Distance tracking for reward calculation
         self.previous_goal_distance = self.max_distance
@@ -455,22 +420,17 @@ class SarlTag(DroneEnvironment):
             "target_velocity": runner_vel,
         }
 
-        for interceptor_name, interceptor in self.interceptors.items():
-            velocity_commands[interceptor_name] = interceptor.compute_velocity(context)
+        for interceptor_name, policy in self.interceptor_policies.items():
+            interceptor_drone = self.expert_drones[interceptor_name]
+
+            velocity_commands[interceptor_name] = policy.compute(
+                state=PolicyState(
+                    position=interceptor_drone.get_position(),
+                ),
+                context=context,
+            )
 
         return velocity_commands
-
-    # ------------------------------------------------------------------
-    # Collision safety monitor — zeroes both drones within capture_threshold
-    # ------------------------------------------------------------------
-
-    def _freeze_interceptors(self) -> None:
-        for interceptor in self.interceptors.values():
-            try:
-                interceptor.body.apply_velocity(0.0, 0.0, 0.0)
-                interceptor.velocity = [0.0, 0.0, 0.0]
-            except Exception:
-                pass
 
     # ------------------------------------------------------------------
     # DroneEnvironment overrides
@@ -509,17 +469,17 @@ class SarlTag(DroneEnvironment):
             )
 
     def _apply_curriculum_stage(self) -> None:
-        """Apply the current curriculum stage to the expert interceptor."""
-        if not self.curriculum_enabled:
-            self.interceptor_max_velocity = self.interceptor_speed_max
-            return
+        """Apply the current curriculum stage to all expert policies."""
+        if self.curriculum_enabled:
+            stage = self.CURRICULUM_STAGES[self.curriculum_stage]
+            speed_factor = stage["interceptor_speed_factor"]
+        else:
+            speed_factor = 1.0
 
-        stage = self.CURRICULUM_STAGES[self.curriculum_stage]
+        current_max_velocity = self.interceptor_speed_max * speed_factor
 
-        speed_factor = stage["interceptor_speed_factor"]
-        self.interceptor_max_velocity = self.interceptor_speed_max * speed_factor
         for policy in self.interceptor_policies.values():
-            policy.set_max_velocity(self.interceptor_max_velocity)
+            policy.set_max_velocity(current_max_velocity)
 
     def advance_curriculum(self) -> None:
         """Advance to the next curriculum stage."""
@@ -558,10 +518,6 @@ class SarlTag(DroneEnvironment):
         if not training and not self._is_evaluating:
             self.successful_episodes_count = 0
 
-        # Stop the existing expert command while reset preparation
-        # and any recovery operations are performed.
-        self._freeze_interceptors()
-
         self._episode_count += 1
 
         # This must happen before interceptor spawn sampling because
@@ -571,31 +527,9 @@ class SarlTag(DroneEnvironment):
 
         self.reset_positions = self._generate_reset_positions()
 
-        state = super().reset(training)
-        # Fatal simulator recovery may recreate the DroneSim objects.
-        # Keep the task's interceptor body attached to the current
-        # environment-owned expert drone.
-        for interceptor_name, interceptor in self.interceptors.items():
-            current_drone = self.expert_drones[interceptor_name]
-
-            if interceptor.body.drone is not current_drone:
-                print(
-                    f"[SarlTag] Rebinding {interceptor_name} "
-                    "body to recreated DroneSim."
-                )
-                interceptor.body.drone = current_drone
+        super().reset(training)
 
         runner_pos = self.rl_drone.get_position()
-
-        # The environment resets the drone lifecycle. The task still
-        # resets the expert policy.
-        policy_context = {
-            "target_position": runner_pos,
-            "target_velocity": [0.0, 0.0, 0.0],
-        }
-        for interceptor in self.interceptors.values():
-            interceptor.reset_policy(policy_context)
-            interceptor.refresh()
 
         # Draw the goal after the new geometry has been selected.
         self._set_target_marker(
@@ -628,10 +562,6 @@ class SarlTag(DroneEnvironment):
             processed_action = [action[0] * 2 - 1, action[1] * 2 - 1, action[2] * 2 - 1]
 
         result = super().step(processed_action)
-
-        # Refresh interceptor tracking after the step (it has flown for step_time).
-        for interceptor in self.interceptors.values():
-            interceptor.refresh()
 
         return result
 
@@ -951,10 +881,6 @@ class SarlTag(DroneEnvironment):
     def sample_action(self):
         """Sample a normalized action in [-1, 1] — the parent will scale to m/s."""
         return np.random.uniform(-1.0, 1.0, size=(3,))
-
-    def close(self) -> None:
-        # self._stop_safety_monitor()
-        super().close()
 
     def _render_task_specific_info(self):
         pos = self.rl_drone.get_position()
