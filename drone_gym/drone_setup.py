@@ -31,6 +31,8 @@ class DroneSetup:
             default="radio://0/100/2M/E7E7E7E7E7"
         )  # changed radio channel in 22/9
         self.agent_id = agent_id
+        if not hasattr(self, "simulation"):
+            self.simulation = False
         self.default_height = 0.5
         self.deck_attached_event = Event()
         self.battery_lock = threading.Lock()

@@ -73,7 +73,7 @@ class MarlDroneEnvironment(ParallelEnv):
             self.sim_manager = None
 
         print("Debug moving on")
-        if self.use_simulator == 0:
+        if self.sim_manager is not None:
             print("Is sim started:", self.sim_manager.is_sim_process_alive())
 
         # Control limits
@@ -110,7 +110,17 @@ class MarlDroneEnvironment(ParallelEnv):
             agent: i for i, agent in enumerate(self.possible_agents)
         }
 
-        self.drone_uris = self._generate_default_sim_uris()
+        if self.use_simulator:
+            self.drone_uris = self._generate_default_sim_uris()
+        else:
+            self.drone_uris = {
+                self.possible_agents[0]: "radio://0/100/2M/E7E7E7E7E7",
+                self.possible_agents[1]: "radio://0/100/2M/E7E7E7E7E8",
+            }
+            self.vicon_object_names = {
+                self.possible_agents[0]: "Crzayme_0",
+                self.possible_agents[1]: "Crzayme_1",
+            }
 
         # Per-agent drone objects and state containers
         self.drones: dict[str, Drone | DroneSim] = {}
@@ -392,7 +402,12 @@ class MarlDroneEnvironment(ParallelEnv):
                     agent_id=agent,
                 )
             else:
-                self.drones[agent] = Drone(agent_id=agent)
+                self.drones[agent] = Drone(
+                    agent_id=agent,
+                    uri=self.drone_uris[agent],
+                    position_tracking_mode="source_vicon",
+                    vicon_object_name=self.vicon_object_names[agent],
+                )
     
     def _generate_grid_reset_positions(self) -> dict[str, list[float]]:
         """

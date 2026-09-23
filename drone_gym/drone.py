@@ -10,7 +10,6 @@ from drone_gym.utils.vicon_position_source import (
 import cflib.crtp
 from cflib.crazyflie import Crazyflie
 from cflib.crazyflie.syncCrazyflie import SyncCrazyflie
-from cflib.utils import uri_helper
 from cflib.utils.power_switch import PowerSwitch
 
 
@@ -24,15 +23,16 @@ class Drone(DroneSetup):
         uri (str | None): The URI for the Crazyflie drone.
     """
     def __init__(
-            self, 
+            self,
             agent_id: str = "Drone",
             boundaries: dict[str, float] | None = None,
             uri: str | None = None,
             position_source: PositionSource | None = None,
+            position_tracking_mode: str = "legacy_vicon",
+            vicon_object_name: str | None = None,
         ) -> None:
-        # Use either legacy_vicon or source_vicon
-        # source_vicon is the new implementation that abstracts position source 
-        self.position_tracking_mode: str = "legacy_vicon"
+        self.position_tracking_mode: str = position_tracking_mode
+        self.drone_name = vicon_object_name or f"Crzayme_{agent_id}"
 
         if self.position_tracking_mode == "legacy_vicon":
             position_source = None
@@ -41,7 +41,7 @@ class Drone(DroneSetup):
             self.vicon = None
             if position_source is None:
                 position_source = ViconPositionSource(
-                    object_name=f"Crzayme_{agent_id}",
+                    object_name=self.drone_name,
                     label=agent_id,
                 )
         else:
@@ -50,23 +50,13 @@ class Drone(DroneSetup):
                 "Must be either 'legacy_vicon' or 'source_vicon'."
             )
 
-        # Vicon Integration
-        self.drone_name = f"Crzayme_{agent_id}"
-
         super().__init__(
-            boundaries=boundaries, 
-            agent_id=agent_id, 
-            uri=uri, 
+            boundaries=boundaries,
+            agent_id=agent_id,
+            uri=uri,
             position_source=position_source
         )
-        # Drone Properties
-        self.URI = uri_helper.uri_from_env(
-            default="radio://0/100/2M/E7E7E7E7E7"
-        )  # changed radio channel in 22/9
-
-        self.ps = PowerSwitch(
-            "radio://0/100/2M/E7E7E7E7E7"
-        )  # changed radio channel in 22/9
+        self.ps = PowerSwitch(self.URI)
 
         self.agent_id = agent_id
 
@@ -154,7 +144,7 @@ class Drone(DroneSetup):
             cflib.crtp.init_drivers()
             print(f"[{self.agent_id}] Connecting to Crazyflie...")
 
-            self.scf = SyncCrazyflie(self.URI, cf=Crazyflie(rw_cache="./cache"))
+            self.scf = SyncCrazyflie(self.URI, cf=Crazyflie(rw_cache=f"./cache/{self.agent_id}/"))
             self.scf.open_link()
             self.cf = self.scf.cf
 
