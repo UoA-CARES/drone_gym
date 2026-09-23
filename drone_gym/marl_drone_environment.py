@@ -136,6 +136,10 @@ class MarlDroneEnvironment(ParallelEnv):
         }
         self.team_success_count = 0
 
+        # Bookkeeping: number of times a fatal simulator error has forced a
+        # full simulator restart (across the environment's whole lifetime).
+        self.sim_full_restart_count = 0
+
         # Action:
         # [vx, vy, vz]
         self._action_space = spaces.Box(
@@ -1490,6 +1494,7 @@ class MarlDroneEnvironment(ParallelEnv):
                 "Fatal simulated-drone error detected, but no SimManager exists."
             )
 
+        self.sim_full_restart_count += 1
         print("[SIM RECOVERY] Preparing to restart the simulation...")
 
         # The current objects refer to the old SITL processes and cannot be reused.

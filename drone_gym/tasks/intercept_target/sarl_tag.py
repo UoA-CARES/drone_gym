@@ -728,6 +728,7 @@ class SarlTag(DroneEnvironment):
             "runner_success": int(self.reached_goal),
             "interceptor_success": int(self.caught),
             "in_boundaries": current_state["in_boundaries"],
+            "sim_full_restart_count": self.sim_full_restart_count,
             "description": "3D navigate-to-goal under interception — RL runner vs expert interceptor",
         }
         if self._is_evaluating:

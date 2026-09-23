@@ -142,6 +142,10 @@ class DroneEnvironment(ABC):
         # Success tracking for learning phase
         self.success_count = 0
 
+        # Bookkeeping: number of times a fatal simulator error has forced a
+        # full simulator restart (across the environment's whole lifetime).
+        self.sim_full_restart_count = 0
+
         self._create_drones()
 
         self.reset_planner = ResetPlanner(
@@ -863,6 +867,7 @@ class DroneEnvironment(ABC):
                 "Fatal simulated-drone error detected, but no SimManager exists."
             )
 
+        self.sim_full_restart_count += 1
         print("[SIM RECOVERY] Preparing to restart the simulation...")
 
         # Existing DroneSim objects refer to the old SITL

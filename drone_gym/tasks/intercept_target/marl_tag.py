@@ -880,6 +880,7 @@ class MarlTag(MarlDroneEnvironment):
                 "collision_safety_triggered": (self._collision_safety_triggered()),
                 "collision_capture": capture_collision,
                 "collision_safety_truncation": non_capture_collision,
+                "sim_full_restart_count": self.sim_full_restart_count,
             }
             if denormalised_actions is not None:
                 info["denormalised_action"] = denormalised_actions.get(agent)
