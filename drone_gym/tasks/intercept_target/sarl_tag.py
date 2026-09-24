@@ -122,6 +122,7 @@ class SarlTag(DroneEnvironment):
         self.boundary_penalty_at_limit = -1.0
         self.boundary_penalty_margin = 0.2
         self.z_boundary_penalty_margin = 0.10
+        self.boundary_penalty_cap = -10.0
 
         # Task state
         self.caught = False  # True when the interceptor caught the runner
@@ -621,7 +622,10 @@ class SarlTag(DroneEnvironment):
             z_risk,
         )
 
-        return self.boundary_penalty_at_limit * boundary_risk
+        boundary_penalty = max(
+            self.boundary_penalty_cap, self.boundary_penalty_at_limit * boundary_risk
+        )
+        return boundary_penalty
 
     # ------------------------------------------------------------------
     # Terminations / truncations

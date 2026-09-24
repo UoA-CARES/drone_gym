@@ -111,6 +111,7 @@ class MarlTag(MarlDroneEnvironment):
         self.boundary_penalty_margin = 0.2
         # Margin in the z-direction before the boundary limit where linear penalty starts
         self.z_boundary_penalty_margin = 0.10
+        self.boundary_penalty_cap = -10.0
 
         # Task state
         self.goal_position: list[float] = [0.0, 0.0, self.reset_height]
@@ -727,7 +728,10 @@ class MarlTag(MarlDroneEnvironment):
             z_risk,
         )
 
-        return self.boundary_penalty_at_limit * boundary_risk
+        boundary_penalty = max(
+            self.boundary_penalty_cap, self.boundary_penalty_at_limit * boundary_risk
+        )
+        return boundary_penalty
 
     # ------------------------------------------------------------------
     # Terminations / truncations
