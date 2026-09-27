@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import datetime
 import math
 import socket
 import threading
@@ -12,7 +11,6 @@ from drone_gym.utils.position_source import (
     PositionSample,
     PositionSource,
 )
-
 
 ViconSnapshot = tuple[list[float], float]
 
@@ -37,10 +35,7 @@ class ViconInterface:
         self.udp_ip = udp_ip
         self.udp_port = udp_port
 
-        print(
-            f"[ViconInterface] Connecting to "
-            f"{self.udp_ip}:{self.udp_port}"
-        )
+        print(f"[ViconInterface] Connecting to " f"{self.udp_ip}:{self.udp_port}")
 
         self.sock = socket.socket(
             socket.AF_INET,
@@ -92,20 +87,14 @@ class ViconInterface:
                     # Closing the socket during normal shutdown interrupts
                     # recvfrom(). Do not report that as an error.
                     if not self.stop_event.is_set():
-                        print(
-                            "[ViconInterface] Socket error: "
-                            f"{exc}"
-                        )
+                        print("[ViconInterface] Socket error: " f"{exc}")
                     break
 
                 try:
                     self._process_packet(packet)
 
                 except Exception as exc:
-                    print(
-                        "[ViconInterface] Could not parse packet: "
-                        f"{exc}"
-                    )
+                    print("[ViconInterface] Could not parse packet: " f"{exc}")
 
         finally:
             try:
@@ -133,7 +122,7 @@ class ViconInterface:
             byte_offset += 1
 
             item_data_size = int.from_bytes(
-                packet[byte_offset:byte_offset + 2],
+                packet[byte_offset : byte_offset + 2],
                 byteorder="little",
             )
             byte_offset += 2
@@ -204,15 +193,9 @@ class ViconInterface:
                 dt = reception_time - previous_time
 
                 if dt > 0:
-                    x_velocity = (
-                        x - previous_data[0]
-                    ) / dt
-                    y_velocity = (
-                        y - previous_data[1]
-                    ) / dt
-                    z_velocity = (
-                        z - previous_data[2]
-                    ) / dt
+                    x_velocity = (x - previous_data[0]) / dt
+                    y_velocity = (y - previous_data[1]) / dt
+                    z_velocity = (z - previous_data[2]) / dt
 
                     roll_rate = self._angular_rate(
                         current_angle=roll,
@@ -266,12 +249,7 @@ class ViconInterface:
         """Calculate wrapped angular velocity in radians per second."""
 
         angle_change = (
-            (
-                current_angle
-                - previous_angle
-                + math.pi
-            )
-            % (2 * math.pi)
+            (current_angle - previous_angle + math.pi) % (2 * math.pi)
         ) - math.pi
 
         return angle_change / dt
@@ -448,8 +426,7 @@ class ViconProvider:
 
             if receiver_thread.is_alive():
                 print(
-                    "[ViconProvider] WARNING: "
-                    "receiver thread did not stop in time"
+                    "[ViconProvider] WARNING: " "receiver thread did not stop in time"
                 )
 
     def get_position_snapshot(
@@ -509,20 +486,14 @@ class ViconPositionSource(PositionSource):
         label: str | None = None,
     ) -> None:
         if not object_name:
-            raise ValueError(
-                "object_name must not be empty"
-            )
+            raise ValueError("object_name must not be empty")
 
         if poll_period <= 0:
-            raise ValueError(
-                "poll_period must be greater than zero"
-            )
+            raise ValueError("poll_period must be greater than zero")
 
         self._object_name = object_name
         self._provider = (
-            provider
-            if provider is not None
-            else get_default_vicon_provider()
+            provider if provider is not None else get_default_vicon_provider()
         )
 
         self._poll_period = poll_period
@@ -561,10 +532,7 @@ class ViconPositionSource(PositionSource):
 
                 worker_thread = threading.Thread(
                     target=self._run,
-                    name=(
-                        "vicon-position-source-"
-                        f"{self._object_name}"
-                    ),
+                    name=("vicon-position-source-" f"{self._object_name}"),
                     daemon=True,
                 )
 
@@ -572,10 +540,7 @@ class ViconPositionSource(PositionSource):
 
             worker_thread.start()
 
-            print(
-                f"[{self._label}] Vicon source started for "
-                f"{self._object_name!r}"
-            )
+            print(f"[{self._label}] Vicon source started for " f"{self._object_name!r}")
 
         except Exception:
             self.stop()
@@ -622,9 +587,7 @@ class ViconPositionSource(PositionSource):
             self._provider.release()
 
         if was_started:
-            print(
-                f"[{self._label}] Vicon position source stopped"
-            )
+            print(f"[{self._label}] Vicon position source stopped")
 
     def _run(self) -> None:
         """
@@ -634,9 +597,7 @@ class ViconPositionSource(PositionSource):
         last_reception_time: float | None = None
 
         while not self._stop_event.is_set():
-            snapshot = self._provider.get_position_snapshot(
-                self._object_name
-            )
+            snapshot = self._provider.get_position_snapshot(self._object_name)
 
             if snapshot is not None:
                 position, reception_time = snapshot
@@ -655,10 +616,11 @@ class ViconPositionSource(PositionSource):
                     if callback is not None:
                         try:
                             callback(
-                                PositionSample.now(
+                                PositionSample(
                                     x=position[0],
                                     y=position[1],
                                     z=position[2],
+                                    timestamp=reception_time,
                                 )
                             )
 
@@ -670,9 +632,7 @@ class ViconPositionSource(PositionSource):
                                 f"Vicon position: {exc}"
                             )
 
-            self._stop_event.wait(
-                self._poll_period
-            )
+            self._stop_event.wait(self._poll_period)
 
     @property
     def object_name(self) -> str:

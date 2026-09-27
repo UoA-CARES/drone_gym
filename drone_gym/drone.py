@@ -1,5 +1,7 @@
 import threading
 import time
+import math
+from collections import Counter
 
 import cflib.crtp
 from cflib.crazyflie import Crazyflie
@@ -9,7 +11,7 @@ from cflib.utils.power_switch import PowerSwitch
 
 from drone_gym.drone_setup import DroneSetup
 from drone_gym.utils.vicon_connection_class import ViconInterface as vi
-from drone_gym.utils.position_source import PositionSource
+from drone_gym.utils.position_source import PositionSource, PositionSample
 from drone_gym.utils.vicon_position_source import (
     ViconPositionSource,
 )
@@ -54,6 +56,19 @@ class Drone(DroneSetup):
         self.drone_name = (
             "Crzayme_0"  # Hardcoded for now, only for vicon legacy testing
         )
+
+        # Vicon positions for crazyflie EKF
+        self.vicon_counts = Counter()
+        self.vicon_last_issue = None
+        self.vicon_stale = True
+        self.vicon_timeout = 0.25
+        # NOTE: This needs to be configured with the Vicon position update rate, number of drones
+        # and the rate at which the Crazyradio can handle the EKF updates.
+        self.vicon_send_period = 1.0 / 50.0
+
+        # EKF transmission bookkeeping
+        self.vicon_last_sent_time = None
+        self.vicon_last_send_attempt = None
 
         super().__init__(
             boundaries=boundaries,
@@ -224,6 +239,105 @@ class Drone(DroneSetup):
         self.set_velocity_vector(
             velocity_vector[0], velocity_vector[1], velocity_vector[2]
         )
+
+    def _record_vicon_issue(self, reason: str) -> None:
+        """Record a rejected Vicon measurement without raising."""
+        self.vicon_counts[reason] += 1
+        self.vicon_last_issue = reason
+
+    def _handle_position_sample(
+        self,
+        sample: PositionSample,
+    ) -> None:
+        """Validate, store and forward Vicon position to the EKF."""
+
+        self.vicon_counts["received"] += 1
+
+        # Validate the measurement.
+        try:
+            position = (
+                float(sample.x),
+                float(sample.y),
+                float(sample.z),
+            )
+            timestamp = float(sample.timestamp)
+
+        except (TypeError, ValueError, OverflowError, AttributeError):
+            self._record_vicon_issue("malformed")
+            return
+
+        if not all(math.isfinite(v) for v in (*position, timestamp)):
+            self._record_vicon_issue("non_finite")
+            return
+
+        previous_time = self.last_position_update_time
+        if previous_time is not None:
+            dt = timestamp - previous_time
+
+            if dt <= 0:
+                self._record_vicon_issue("non_monotonic")
+                return
+
+        # Update the drone_gym position.
+        if not super()._handle_position_sample(sample):
+            self._record_vicon_issue("rejected")
+            return
+
+        self.vicon_counts["accepted"] += 1
+
+        # Limit EKF transmissions to the configured rate.
+        now = time.monotonic()
+
+        if (
+            self.vicon_last_send_attempt is not None
+            and now - self.vicon_last_send_attempt < self.vicon_send_period
+        ):
+            return
+
+        self.vicon_last_send_attempt = now
+
+        # Forward the accepted measurement to the EKF.
+        try:
+            if self.cf is None or not self.cf.is_connected():
+                self._record_vicon_issue("radio_unavailable")
+                return
+
+            self.cf.extpos.send_extpos(*position)
+
+        except Exception as exc:
+            self.vicon_counts["send_error"] += 1
+            self.vicon_last_issue = f"send_error: {type(exc).__name__}: {exc}"
+            return
+
+        self.vicon_counts["sent"] += 1
+        self.vicon_last_sent_time = time.monotonic()
+
+    def _monitor_position_source(self) -> None:
+        """Record Vicon dropouts and recoveries."""
+
+        with self.position_lock:
+            last_update = self.last_position_update_time
+
+        now = time.monotonic()
+
+        stale = last_update is None or now - last_update > self.vicon_timeout
+
+        # Only act on a state transition.
+        if stale == self.vicon_stale:
+            return
+
+        self.vicon_stale = stale
+
+        if stale:
+            self.vicon_counts["dropouts"] += 1
+            self.vicon_last_issue = "vicon_stale"
+
+            print(f"[{self.agent_id}] WARNING: " "Vicon position is stale")
+
+        else:
+            self.vicon_counts["recoveries"] += 1
+
+            print(f"[{self.agent_id}] " "Vicon position updates resumed")
 
     def stop(self) -> None:
         """

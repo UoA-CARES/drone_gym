@@ -149,6 +149,7 @@ class DroneSetup:
         self.in_boundaries = True
         self.emergency_event = Event()
         self.safety_thread_active = False
+        self.safety_thread_rate = 1 / 50.0  # 50Hz safety check rate
 
         # Objective related
         self.target_position = {"x": 0.0, "y": 0.0, "z": 0.0}
@@ -262,8 +263,9 @@ class DroneSetup:
                     break
                 else:
                     self.in_boundaries = True
+                self._monitor_position_source()
 
-                time.sleep(0.01)
+                time.sleep(self.safety_thread_rate)
             except Exception as e:
                 print(f"[{self.agent_id}] Error in boundary checking: {str(e)}")
                 time.sleep(0.1)
@@ -308,7 +310,7 @@ class DroneSetup:
     def _handle_position_sample(
         self,
         sample: PositionSample,
-    ) -> None:
+    ) -> bool:
         """
         Validate and store a position received from the configured source.
 
@@ -329,7 +331,7 @@ class DroneSetup:
                 f"[{self.agent_id}] Ignoring invalid position sample "
                 f"from {source_name}: {coordinates}"
             )
-            return
+            return False
 
         position = sample.as_dict()
 
@@ -365,6 +367,8 @@ class DroneSetup:
         ):
             self._calculate_velocity()
             self.last_velocity_calculation_time = sample.timestamp
+
+        return True
 
     def _start_position_tracking(self) -> bool:
         """
@@ -450,6 +454,10 @@ class DroneSetup:
 
             finally:
                 self._position_source_started = False
+
+    def _monitor_position_source(self) -> None:
+        """Optional source-specific monitoring."""
+        pass
 
     def _calculate_velocity(self) -> None:
         """Calculate velocity using moving average filter over position history with additional low-pass filtering"""
