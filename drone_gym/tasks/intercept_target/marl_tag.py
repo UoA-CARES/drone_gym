@@ -892,12 +892,9 @@ class MarlTag(MarlDroneEnvironment):
                 info["action_filter_info"] = action_filter_infos.get(agent)
             if self._is_evaluating:
                 info["success_counts"] = dict(self.success_counts)
-            infos[agent] = info
             if not self.use_simulator:
-                for agent in self.agents:
-                    infos[agent]["vicon"] = (
-                        self.drones[agent].get_vicon_diagnostics()
-                    )
+                info["vicon"] = self.drones[agent].get_vicon_diagnostics()
+            infos[agent] = info
         return infos
 
     def _render_task_specific_info(self) -> None:
