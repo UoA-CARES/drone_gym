@@ -66,6 +66,9 @@ class DroneSim(DroneSetup):
             position_source=position_source,
             simulation=simulation,
         )
+        print(f"[{self.agent_id}] Resetting state estimation (EKF)...")
+        self.cf.param.set_value("kalman.resetEstimation", "1")
+        time.sleep(0.1)
 
     def initialise_crazyflie(self) -> bool:
         """Initialise Crazyflie connection for CrazySim"""
