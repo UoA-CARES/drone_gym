@@ -1189,6 +1189,11 @@ class SarlTag(DroneEnvironment):
             "out_of_bounds": self._is_out_of_task_bounds(position),
             "description": "3D navigate-to-goal under interception — RL runner vs expert interceptor",
         }
+        if not self.use_simulator:
+            info["vicon"] = {
+                name: drone.get_vicon_diagnostics()
+                for name, drone in self._iter_drones()
+            }
         if self._is_evaluating:
             info["success_count"] = self.successful_episodes_count
         return info

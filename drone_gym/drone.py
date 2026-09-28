@@ -352,13 +352,29 @@ class Drone(DroneSetup):
 
             print(f"[{self.agent_id}] " "Vicon position updates resumed")
 
+    def get_vicon_diagnostics(self) -> dict:
+        """Return the current Vicon positioning diagnostics."""
+
+        with self.position_lock:
+            last_update = self.last_position_update_time
+
+        now = time.monotonic()
+        age = None if last_update is None else now - last_update
+
+        return {
+            "position_age": age,
+            "position_stale": (age is None or age > self.vicon_timeout),
+            "last_sent_age": (
+                None
+                if self.vicon_last_sent_time is None
+                else now - self.vicon_last_sent_time
+            ),
+            "last_issue": self.vicon_last_issue,
+            "counts": dict(self.vicon_counts),
+        }
+
     def stop(self) -> None:
-        """
-        Fully stop the drone and optionally prepare for a clean restart.
-
-        Args
-
-        """
+        """Fully stop the drone and optionally prepare for a clean restart."""
         print(f"[{self.agent_id}] In the new stop function")
         self._signal_stop_to_all_threads()
         self._close_vicon()
