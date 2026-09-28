@@ -17,6 +17,8 @@ from drone_gym.utils.position_source import (
     PositionSource,
 )
 
+from cflib.utils.reset_estimator import reset_estimator
+
 
 class DroneSetup:
     def __init__(
@@ -165,6 +167,13 @@ class DroneSetup:
         # Start threads in coordinated sequence
         self.thread = threading.Thread(target=self._run)
         self._start_threads_coordinated()
+
+        print(f"[{self.agent_id}] Resetting state estimation (EKF)...")
+        if self.position_source is None:
+            self.cf.param.set_value("kalman.resetEstimation", "1")
+            time.sleep(0.1)
+        else:
+            reset_estimator(self.cf)
 
     def _start_threads_coordinated(self):
         print(f"[{self.agent_id}] Starting threads...")

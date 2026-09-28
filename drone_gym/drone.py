@@ -177,24 +177,24 @@ class Drone(DroneSetup):
             self.scf.open_link()
             self.cf = self.scf.cf
 
-            # Setup deck detection
-            self.cf.param.add_update_callback(
-                group="deck", name="bcFlow2", cb=self._param_deck_flow
-            )
-            time.sleep(1)
+            if self.position_tracking_mode == "legacy_vicon":
+                # Setup deck detection
+                self.cf.param.add_update_callback(
+                    group="deck", name="bcFlow2", cb=self._param_deck_flow
+                )
+                time.sleep(1)
 
-            if not self.deck_attached_event.wait(timeout=5):
-                print(f"[{self.agent_id}] No flow deck is detected! Exiting....")
-                self.stop()
-                return False
+                if not self.deck_attached_event.wait(timeout=5):
+                    print(f"[{self.agent_id}] No flow deck is detected! Exiting....")
+                    self.stop()
+                    return False
+
+            # Set the estimator to EKF2 (value 2) for better state estimation
+            self.cf.param.set_value("stabilizer.estimator", "2")
 
             print(f"[{self.agent_id}] Resetting all log configurations")
             self.cf.log.reset()
             time.sleep(0.5)
-
-            print(f"[{self.agent_id}] Resetting state estimation (EKF)...")
-            self.cf.param.set_value("kalman.resetEstimation", "1")
-            time.sleep(0.1)
 
             # Arm the drone
             print(f"[{self.agent_id}] Arming Crazyflie...")
@@ -250,6 +250,10 @@ class Drone(DroneSetup):
         sample: PositionSample,
     ) -> None:
         """Validate, store and forward Vicon position to the EKF."""
+
+        if self.position_tracking_mode == "legacy_vicon":
+            super()._handle_position_sample(sample)
+            return
 
         self.vicon_counts["received"] += 1
 
