@@ -76,6 +76,7 @@ class Drone(DroneSetup):
             agent_id=agent_id,
             uri=uri,
             position_source=position_source,
+            simulation=False,
         )
 
         print(f"[{self.agent_id}] Resetting state estimation (EKF)...")
