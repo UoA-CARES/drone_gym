@@ -35,7 +35,7 @@ class BasePolicy(ABC):
         """Optional per-episode reset hook. Override for stateful policies."""
 
     @abstractmethod
-    def compute(self, state: "Any", context: dict[str, Any]) -> list[float]:
+    def compute(self, state: PolicyState, context: dict[str, Any]) -> list[float]:
         """Return the desired velocity command ``[vx, vy, vz]`` for this step."""
         raise NotImplementedError
 
@@ -62,7 +62,7 @@ class PurePursuitPolicy(BasePolicy):
         self.boundary_limit = boundary_limit
         self.soft_margin = soft_margin
 
-    def compute(self, state: "Any", context: dict[str, Any]) -> list[float]:
+    def compute(self, state: PolicyState, context: dict[str, Any]) -> list[float]:
         if self.target_key not in context:
             raise KeyError(
                 f"PurePursuitPolicy needs context['{self.target_key}'] "
@@ -142,11 +142,8 @@ class PredictedInterceptPolicy(BasePolicy):
 
         self.max_velocity = max_velocity
 
-    def compute(self, state, context) -> list[float]:
-        pursuer_position = np.asarray(
-            state,
-            dtype=float,
-        )
+    def compute(self, state: PolicyState, context: dict[str, Any]) -> list[float]:
+        pursuer_position = np.asarray(state.position, dtype=float)
 
         target_position = np.asarray(context["target_position"], dtype=float)
 
@@ -215,7 +212,7 @@ class FleePolicy(BasePolicy):
         self.boundary_limit = boundary_limit
         self.soft_margin = soft_margin
 
-    def compute(self, state: "Any", context: dict[str, Any]) -> list[float]:
+    def compute(self, state: PolicyState, context: dict[str, Any]) -> list[float]:
         if self.threat_key not in context:
             raise KeyError(
                 f"FleePolicy needs context['{self.threat_key}'] "
@@ -270,7 +267,7 @@ class LineMotionPolicy(BasePolicy):
             0.0,
         ]
 
-    def compute(self, state: "Any", context: dict[str, Any]) -> list[float]:
+    def compute(self, state: PolicyState, context: dict[str, Any]) -> list[float]:
         if self.reflect:
             x, y = state.position[0], state.position[1]
             if (x <= -self.bounds and self.velocity[0] < 0) or (
@@ -287,7 +284,7 @@ class LineMotionPolicy(BasePolicy):
 class StationaryPolicy(BasePolicy):
     """Hold position (e.g. for a static obstacle)."""
 
-    def compute(self, state: "Any", context: dict[str, Any]) -> list[float]:
+    def compute(self, state: PolicyState, context: dict[str, Any]) -> list[float]:
         return [0.0, 0.0, 0.0]
 
 
@@ -311,6 +308,6 @@ class CallablePolicy(BasePolicy):
         if self._reset_fn is not None:
             self._reset_fn(state, context)
 
-    def compute(self, state: "Any", context: dict[str, Any]) -> list[float]:
+    def compute(self, state: PolicyState, context: dict[str, Any]) -> list[float]:
         v = self._fn(state, context)
         return [v[0], v[1], v[2] if len(v) > 2 else 0.0]
