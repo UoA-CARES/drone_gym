@@ -241,6 +241,12 @@ class SarlTag(DroneEnvironment):
     # ------------------------------------------------------------------
     # Reset layout and goal generation
     # ------------------------------------------------------------------
+    def _generate_sim_reset_retry_positions(
+        self,
+    ) -> dict[str, list[float]]:
+        """Generate a new SarlTag layout after a simulated reset movement timeout."""
+        return self._generate_reset_positions()
+
     def _generate_reset_positions(self) -> dict[str, list[float]]:
         """Loops until a valid runner, goal, and interceptor layout is found
         or the maximum number of attempts is reached."""
