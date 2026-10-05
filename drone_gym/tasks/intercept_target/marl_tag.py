@@ -289,6 +289,12 @@ class MarlTag(MarlDroneEnvironment):
     # ------------------------------------------------------------------
     # Reset layout and goal generation
     # ------------------------------------------------------------------
+    def _generate_sim_reset_retry_positions(
+        self,
+    ) -> dict[str, list[float]]:
+        """Generate a new MarlTag layout after a simulated reset movement timeout."""
+        return self._generate_reset_positions()
+
     def _generate_reset_positions(self) -> dict[str, list[float]]:
         """Generate a valid reset layout for the MarlTag task. Loops until a
         valid layout is found or the maximum number of attempts is reached."""

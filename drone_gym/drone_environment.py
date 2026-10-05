@@ -755,12 +755,30 @@ class DroneEnvironment(ABC):
                     drone.start_position_control()
 
                 reset_success = self._wait_for_all_reset_events(timeout=20)
-
                 if not reset_success:
+                    if attempt < self.max_sim_reset_attempts:
+                        # The default implementation returns None; task-specific
+                        # environments may override it with a retry layout.
+                        retry_positions = (  # pylint: disable=assignment-from-none
+                            self._generate_sim_reset_retry_positions()
+                        )
+                        if retry_positions is not None:
+                            self.reset_positions = retry_positions
+
+                            print(
+                                "[SIM RESET] Drones timed out reaching their reset positions "
+                                "after successful take-off."
+                            )
+                            print(
+                                "[SIM RESET] Generated new reset positions for the next attempt: "
+                                f"{self.reset_positions}"
+                            )
+
+                            continue
+
                     raise RuntimeError(
                         "Not all drones reached their reset positions before timeout."
                     )
-
                 time.sleep(1.0)
 
                 self._switch_to_velocity_control()
@@ -807,6 +825,17 @@ class DroneEnvironment(ABC):
 
                 print("[SIM RESET] Retrying...")
                 time.sleep(5.0)
+
+    def _generate_sim_reset_retry_positions(
+        self,
+    ) -> dict[str, list[float]] | None:
+        """
+        Optionally generate a new reset layout after simulated drones
+        time out while moving to their reset positions. Tasks can
+        override this method to generate new positions. Returning
+        None keeps the existing reset positions.
+        """
+        return None
 
     def _unsafe_drones(
         self,
