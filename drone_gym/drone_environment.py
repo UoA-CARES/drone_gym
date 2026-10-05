@@ -757,8 +757,11 @@ class DroneEnvironment(ABC):
                 reset_success = self._wait_for_all_reset_events(timeout=20)
                 if not reset_success:
                     if attempt < self.max_sim_reset_attempts:
-                        retry_positions = self._generate_sim_reset_retry_positions()
-
+                        # The default implementation returns None; task-specific
+                        # environments may override it with a retry layout.
+                        retry_positions = (  # pylint: disable=assignment-from-none
+                            self._generate_sim_reset_retry_positions()
+                        )
                         if retry_positions is not None:
                             self.reset_positions = retry_positions
 
@@ -828,9 +831,9 @@ class DroneEnvironment(ABC):
     ) -> dict[str, list[float]] | None:
         """
         Optionally generate a new reset layout after simulated drones
-        time out while moving to their reset positions. Tasks can 
-        override this method to generate new positions.
-        Returning None keeps the existing reset positions.
+        time out while moving to their reset positions. Tasks can
+        override this method to generate new positions. Returning
+        None keeps the existing reset positions.
         """
         return None
 
