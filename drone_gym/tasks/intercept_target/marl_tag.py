@@ -31,7 +31,7 @@ class MarlTag(MarlDroneEnvironment):
         use_simulator: Literal[0, 1],
         num_agents: int = 2,
         max_velocity: float = 0.25,
-        max_velocity_z: float = 0.03,
+        max_velocity_z: float = 0.25,
         step_time: float = 0.5,
         xy_limit: float = 2.0,
         z_min: float = 0.4,
@@ -111,6 +111,7 @@ class MarlTag(MarlDroneEnvironment):
         self.boundary_penalty_margin = 0.2
         # Margin in the z-direction before the boundary limit where linear penalty starts
         self.z_boundary_penalty_margin = 0.10
+        self.boundary_penalty_cap = -10.0
 
         # Task state
         self.goal_position: list[float] = [0.0, 0.0, self.reset_height]
@@ -259,8 +260,7 @@ class MarlTag(MarlDroneEnvironment):
             )
 
     def _apply_curriculum_stage(self) -> None:
-        """Apply the current curriculum stage to the interceptor agents, if
-        enabled, limiting their maximum velocity."""
+        """Apply the current curriculum stage to the interceptor agents."""
         if not self.curriculum_enabled:
             self.curriculum_interceptor_vel_factor = 1.0
             return
@@ -283,10 +283,7 @@ class MarlTag(MarlDroneEnvironment):
         """Set curriculum stage directly."""
         max_stage = len(self.CURRICULUM_STAGES) - 1
 
-        self.curriculum_stage = max(
-            0,
-            min(stage, max_stage),
-        )
+        self.curriculum_stage = max(0, min(stage, max_stage))
         self._recent_runner_outcomes.clear()
 
     # ------------------------------------------------------------------
@@ -731,7 +728,10 @@ class MarlTag(MarlDroneEnvironment):
             z_risk,
         )
 
-        return self.boundary_penalty_at_limit * boundary_risk
+        boundary_penalty = max(
+            self.boundary_penalty_cap, self.boundary_penalty_at_limit * boundary_risk
+        )
+        return boundary_penalty
 
     # ------------------------------------------------------------------
     # Terminations / truncations
@@ -784,6 +784,8 @@ class MarlTag(MarlDroneEnvironment):
         if non_capture_collision:
             print("[MarlTag] non-capture collision — truncating episode")
 
+        # TODO: Do we keep this or remove this so that episodes don't end early due to
+        # low battery? It may be useful for training, but not for evaluation.
         any_low_battery = any(
             state_dicts[agent]["battery"] < self.battery_threshold
             for agent in self.agents
@@ -882,6 +884,7 @@ class MarlTag(MarlDroneEnvironment):
                 "collision_safety_triggered": (self._collision_safety_triggered()),
                 "collision_capture": capture_collision,
                 "collision_safety_truncation": non_capture_collision,
+                "sim_full_restart_count": self.sim_full_restart_count,
             }
             if denormalised_actions is not None:
                 info["denormalised_action"] = denormalised_actions.get(agent)

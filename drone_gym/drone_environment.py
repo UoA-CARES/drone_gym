@@ -1,7 +1,9 @@
 from abc import ABC, abstractmethod
 from collections.abc import Iterator
 import time
-from typing import Dict, List, Any, Literal
+from typing import Any, Literal
+from itertools import combinations
+import threading
 import numpy as np
 
 from drone_gym.utils.vicon_position_source import ViconPositionSource, ViconProvider
@@ -29,14 +31,18 @@ class DroneEnvironment(ABC):
         self,
         use_simulator: Literal[0, 1],
         max_velocity: float = 0.5,
+        max_velocity_z: float = 0.5,
         step_time: float = 0.5,
         expert_drone_names: list[str] | None = None,
         xy_limit: float = 1.0,
         z_min: float = 0.5,
         z_max: float = 1.5,
+        boundaries: dict[str, float] = None,
         reset_height: float = 1.0,
         reset_safety_distance: float = 0.25,
         position_max_age: float | None = 0.05,
+        collision_safety_distance: float | None = None,
+        collision_monitor_hz: float = 20.0,
     ) -> None:
         """
         Args:
@@ -44,8 +50,12 @@ class DroneEnvironment(ABC):
             max_velocity: Maximum x and y velocity in metres per second.
             step_time: Duration each action is applied, in seconds.
             expert_drone_names: Ordered names of optional expert drones.
+            boundaries: Hard safety boundary for the environment.
+            collision_safety_distance: Minimum distance between drones to trigger a collision safety event.
+            collision_monitor_hz: Frequency of the collision monitor in Hz.
         """
-        self._closed = False  # Track if the environment has been closed
+        # Track if the environment has been closed
+        self._closed = False
         # Set the appropriate drone instance based on use_simulator flag
         print("use_simulator", use_simulator)
         self.use_simulator = use_simulator
@@ -66,6 +76,18 @@ class DroneEnvironment(ABC):
         else:
             self.sim_manager = None
 
+        # Collision safety monitor
+        self.collision_safety_distance = collision_safety_distance
+        self.collision_monitor_hz = collision_monitor_hz
+
+        self._collision_safety_event = threading.Event()
+        self._collision_monitor_stop_event = threading.Event()
+        self._collision_monitor_thread: threading.Thread | None = None
+        self._collision_safety_pairs: tuple[tuple[str, str, float], ...] = ()
+
+        # Prevent a normal motion command racing with the collision monitor.
+        self._motion_command_lock = threading.Lock()
+
         # Initialize the drone instances
         self.rl_drones: dict[str, Drone | DroneSim] = {}
         self.expert_drones: dict[str, Drone | DroneSim] = {}
@@ -74,7 +96,7 @@ class DroneEnvironment(ABC):
         self.possible_agents.extend(self.expert_drone_names)
 
         self.max_velocity = max_velocity
-        self.max_velocity_z = 0.5
+        self.max_velocity_z = max_velocity_z
         self.step_time = step_time
         self.steps = 0
         self.seed = 0
@@ -87,8 +109,13 @@ class DroneEnvironment(ABC):
         self.z_min = z_min
         self.z_max = z_max
         self.z_limit = z_min
+        self.max_xy_range = xy_limit * 2
+        self.max_z_range = self.z_max - self.z_min
         # Task-specific environments may replace this with their boundary.
         self.boundary: list[float] | None = None
+
+        # Hard safety boundary
+        self.boundaries = boundaries
 
         self.reset_height = reset_height
         self.reset_hover_height = reset_height
@@ -114,6 +141,10 @@ class DroneEnvironment(ABC):
 
         # Success tracking for learning phase
         self.success_count = 0
+
+        # Bookkeeping: number of times a fatal simulator error has forced a
+        # full simulator restart (across the environment's whole lifetime).
+        self.sim_full_restart_count = 0
 
         self._create_drones()
 
@@ -158,7 +189,7 @@ class DroneEnvironment(ABC):
     @reset_position.setter
     def reset_position(
         self,
-        position: List[float],
+        position: list[float],
     ) -> None:
         """
         Set the RL drone's reset position.
@@ -223,6 +254,7 @@ class DroneEnvironment(ABC):
             self.rl_drones[self.RL_DRONE_NAME] = DroneSim(
                 uri=self.drone_uris[self.RL_DRONE_NAME],
                 agent_id=self.RL_DRONE_NAME,
+                boundaries=self.boundaries,
             )
             print(
                 f"[SARL ENV] RL drone simulator created with URI: "
@@ -238,6 +270,7 @@ class DroneEnvironment(ABC):
                     label=self.RL_DRONE_NAME,
                 ),
                 uri=self.drone_uris[self.RL_DRONE_NAME],
+                boundaries=self.boundaries,
             )
             print(
                 f"[SARL ENV] RL drone physical instance created "
@@ -249,6 +282,7 @@ class DroneEnvironment(ABC):
                 self.expert_drones[expert_agent] = DroneSim(
                     uri=self.drone_uris[expert_agent],
                     agent_id=expert_agent,
+                    boundaries=self.boundaries,
                 )
                 print(
                     f"[SARL ENV] Expert drone simulator created with "
@@ -263,6 +297,7 @@ class DroneEnvironment(ABC):
                         label=expert_agent,
                     ),
                     uri=self.drone_uris[expert_agent],
+                    boundaries=self.boundaries,
                 )
                 print(
                     f"[SARL ENV] Expert drone physical instance created "
@@ -293,7 +328,7 @@ class DroneEnvironment(ABC):
 
     def _set_target_marker(
         self,
-        position: List[float] | np.ndarray,
+        position: list[float] | np.ndarray,
         marker_name: str = "target",
     ) -> None:
         """
@@ -332,7 +367,8 @@ class DroneEnvironment(ABC):
         training: bool = True,
     ):
         """Reset all owned drones and task state."""
-
+        self._stop_collision_monitor()
+        self._clear_collision_safety_state()
         if not training and not self._is_evaluating:
             print("--- STARTING NEW EVALUATION BLOCK ---")
             self._is_evaluating = True
@@ -358,6 +394,8 @@ class DroneEnvironment(ABC):
 
         initial_position = self.rl_drone.get_position()
         self.episode_positions.append(initial_position)
+
+        self._start_collision_monitor()
 
         return self._get_state()
 
@@ -440,9 +478,127 @@ class DroneEnvironment(ABC):
                 reason=reason,
             )
 
+    def _clear_collision_safety_state(self) -> None:
+        """Clear the latched collision-safety state."""
+        self._collision_safety_event.clear()
+        self._collision_safety_pairs = ()
+
+    def _start_collision_monitor(self) -> None:
+        """Start the inter-drone proximity monitor if configured."""
+        if self.collision_safety_distance is None:
+            return
+
+        if (
+            self._collision_monitor_thread is not None
+            and self._collision_monitor_thread.is_alive()
+        ):
+            return
+
+        self._collision_monitor_stop_event.clear()
+
+        self._collision_monitor_thread = threading.Thread(
+            target=self._collision_monitor_loop,
+            name="SARLCollisionMonitor",
+        )
+        self._collision_monitor_thread.start()
+
+    def _stop_collision_monitor(self) -> None:
+        """Stop the inter-drone proximity monitor."""
+        self._collision_monitor_stop_event.set()
+
+        thread = self._collision_monitor_thread
+
+        if (
+            thread is not None
+            and thread.is_alive()
+            and thread is not threading.current_thread()
+        ):
+            thread.join(timeout=1.0)
+
+        self._collision_monitor_thread = None
+
+    def _collision_monitor_loop(self) -> None:
+        """Monitor all owned drone pairs for unsafe proximity.
+
+        When one or more pairs are within ``collision_safety_distance``,
+        immediately command all drones to stop and latch the triggering
+        pair information.
+
+        The monitor does not decide whether the collision represents task
+        termination or truncation. That remains the responsibility of the
+        concrete task.
+        """
+        if self.collision_safety_distance is None:
+            return
+
+        period = 1.0 / self.collision_monitor_hz
+
+        while not self._collision_monitor_stop_event.is_set():
+
+            if self._collision_safety_event.is_set():
+                return
+
+            drones = self._get_drone_mapping()
+
+            positions = {
+                drone_name: drone.get_position() for drone_name, drone in drones.items()
+            }
+
+            unsafe_pairs: list[tuple[str, str, float]] = []
+
+            for drone_a, drone_b in combinations(positions, 2):
+                pos_a = np.asarray(
+                    positions[drone_a],
+                    dtype=np.float64,
+                )
+                pos_b = np.asarray(
+                    positions[drone_b],
+                    dtype=np.float64,
+                )
+
+                distance = float(np.linalg.norm(pos_a - pos_b))
+
+                if distance <= self.collision_safety_distance:
+                    unsafe_pairs.append((drone_a, drone_b, distance))
+
+            if unsafe_pairs:
+                self._collision_safety_pairs = tuple(unsafe_pairs)
+
+                # Latch first so no normal action can overwrite the stop.
+                self._collision_safety_event.set()
+
+                with self._motion_command_lock:
+                    self._stop_all_drone_motion(
+                        reason="collision safety monitor",
+                    )
+
+                pairs_text = ", ".join(
+                    f"{drone_a}<->{drone_b}: {distance:.3f} m"
+                    for drone_a, drone_b, distance in unsafe_pairs
+                )
+
+                print(
+                    "[SARL COLLISION SAFETY] "
+                    f"Minimum separation violated: {pairs_text}"
+                )
+
+                return
+
+            self._collision_monitor_stop_event.wait(period)
+
+    def _collision_safety_triggered(self) -> bool:
+        """Whether the inter-drone collision monitor has triggered."""
+        return self._collision_safety_event.is_set()
+
+    def _get_collision_safety_pairs(
+        self,
+    ) -> tuple[tuple[str, str, float], ...]:
+        """Return the pairs that triggered collision safety."""
+        return self._collision_safety_pairs
+
     def _wait_for_all_reset_events(
         self,
-        timeout: float = 12.0,
+        timeout: float = 20.0,
     ) -> bool:
         """
         Wait for all owned drones to signal that they reached
@@ -598,7 +754,7 @@ class DroneEnvironment(ABC):
                 for _, drone in drones:
                     drone.start_position_control()
 
-                reset_success = self._wait_for_all_reset_events(timeout=10)
+                reset_success = self._wait_for_all_reset_events(timeout=20)
 
                 if not reset_success:
                     raise RuntimeError(
@@ -711,6 +867,7 @@ class DroneEnvironment(ABC):
                 "Fatal simulated-drone error detected, but no SimManager exists."
             )
 
+        self.sim_full_restart_count += 1
         print("[SIM RECOVERY] Preparing to restart the simulation...")
 
         # Existing DroneSim objects refer to the old SITL
@@ -1270,6 +1427,28 @@ class DroneEnvironment(ABC):
 
         return True
 
+    def _get_velocity_commands(
+        self,
+        action,
+    ) -> dict[str, list[float]]:
+        """
+        Generate the physical velocity command for each owned drone.
+
+        The base implementation converts the RL agent's normalised action
+        into a physical velocity. Tasks with expert drones can override this
+        method to add their expert velocity commands.
+        """
+        if len(action) != 3:
+            raise ValueError("Action must be a 3-element array [vx, vy, vz]")
+
+        return {
+            self.RL_DRONE_NAME: [
+                action[0] * self.max_velocity,
+                action[1] * self.max_velocity,
+                action[2] * self.max_velocity_z,
+            ]
+        }
+
     def step(self, action):
         """Execute one step in the environment"""
 
@@ -1278,22 +1457,46 @@ class DroneEnvironment(ABC):
         if len(action) != 3:
             raise ValueError("Action must be a 3-element array [vx, vy, vz]")
 
-        # Denormalize action from [-1, 1] to [-max_velocity, max_velocity]
-        vx = action[0] * self.max_velocity
-        vy = action[1] * self.max_velocity
-        vz = (
-            action[2] * self.max_velocity_z
-        )  # topples when moving up --> limit z velocity
-        # vz = 0
+        old_positions = {
+            drone_name: drone.get_position()
+            for drone_name, drone in self._iter_drones()
+        }
+        self.prior_state = self._generate_state_dict(old_positions[self.RL_DRONE_NAME])
 
-        print("Normalised action aka velocity is:", [vx, vy, vz])
+        velocity_commands = self._get_velocity_commands(action)
+        print("Velocity commands: ", velocity_commands)
 
-        current_pos = self.drone.get_position()
-        # Store previous state for reward calculation
-        self.prior_state = self._generate_state_dict(current_pos)
+        processed_velocity_commands = {}
+        action_processing_infos = {}
 
-        # Send velocity command to drone
-        self.drone.set_velocity_vector(vx, vy, vz)
+        with self._motion_command_lock:
+            collision_latched = self._collision_safety_triggered()
+
+            for drone_name, drone in self._iter_drones():
+                if collision_latched:
+                    vx = 0.0
+                    vy = 0.0
+                    vz = 0.0
+
+                    action_processing_info = {"collision_safety_latched": True}
+
+                else:
+                    vx, vy, vz = velocity_commands[drone_name]
+                    vx, vy, vz, action_processing_info = (
+                        self._apply_task_action_processing(
+                            agent=drone_name,
+                            vx=vx,
+                            vy=vy,
+                            vz=vz,
+                            current_position=old_positions[drone_name],
+                        )
+                    )
+
+                processed_velocity_commands[drone_name] = [vx, vy, vz]
+                action_processing_infos[drone_name] = action_processing_info
+
+                drone.set_velocity_vector(vx, vy, vz)
+
         # Apply velocity for specified time - can improve this to be non-blocking
         time.sleep(self.step_time)
 
@@ -1314,17 +1517,18 @@ class DroneEnvironment(ABC):
         print(f"Episode steps: {self.steps}")
 
         # Check if episode is done using task-specific logic
-        done = self._check_if_done(current_state)
+        terminated = self._check_if_terminated(current_state)
         truncated = self._check_if_truncated(current_state)
-        if done or truncated:
+        if terminated or truncated:
             self._stop_all_drone_motion()
 
+        rl_velocity = velocity_commands[self.RL_DRONE_NAME]
         # Generate info dict
         info = {
             "current_position": new_pos,
-            "previous_position": current_pos,
+            "previous_position": old_positions[self.RL_DRONE_NAME],
             "distance_to_target": self._distance_to_target(new_pos),
-            "applied_velocity": [vx, vy, vz],  # Store the denorm
+            "applied_velocity": rl_velocity,
             "normalized_action": action,  # Store the original normalized action
             "in_boundaries": self.drone.in_boundaries,
             "steps": self.steps,
@@ -1332,9 +1536,10 @@ class DroneEnvironment(ABC):
             **self._get_additional_info(current_state),
         }
         gotten_state = self._get_state()
-        return gotten_state, reward, done, truncated, info
+        return gotten_state, reward, terminated, truncated, info
 
-    def _generate_state_dict(self, position: List[float]) -> Dict[str, Any]:
+    # TODO: Update in_boundaries to reflect task boundaries, not just the drone's boundaries
+    def _generate_state_dict(self, position: list[float]) -> dict[str, Any]:
         """Generate a state dictionary with common drone information"""
         return {
             "position": position,
@@ -1343,7 +1548,7 @@ class DroneEnvironment(ABC):
             "distance_to_target": self._distance_to_target(position),
         }
 
-    # def _generate_action_dict(self, action: List[float]) -> np.ndarray:
+    # def _generate_action_dict(self, action: list[float]) -> np.ndarray:
     #     """Generate a compact action representation as numpy array"""
     #     action = [
     #         action[0],  # x velocity
@@ -1352,15 +1557,15 @@ class DroneEnvironment(ABC):
     #     ]
     #     return np.array(action, dtype=np.float32)
 
-    def _distance_to_target(self, position: List[float]) -> float:
+    def _distance_to_target(self, position: list[float]) -> float:
         """Calculate distance to target - to be overridden by task"""
         return 0.0
 
-    def get_action_bounds(self) -> Dict:
+    def get_action_bounds(self) -> dict:
         """Get the bounds for action space"""
         return {"low": [-1.0, -1.0, -1.0], "high": [1.0, 1.0, 1.0], "shape": (3,)}
 
-    def get_action_space_info(self) -> Dict:
+    def get_action_space_info(self) -> dict:
         """Get detailed action space information"""
         return {
             "type": "continuous",
@@ -1376,7 +1581,7 @@ class DroneEnvironment(ABC):
             "step_duration_s": self.step_time,
         }
 
-    def set_reset_position(self, position: List[float]):
+    def set_reset_position(self, position: list[float]):
         """Set a new reset position and invalidate the cached target"""
         if len(position) != 3:
             raise ValueError("Reset position must be a 3-element list [x, y, z]")
@@ -1395,7 +1600,7 @@ class DroneEnvironment(ABC):
         self._closed = True
 
         drones = list(self._iter_drones())
-
+        self._stop_collision_monitor()
         try:
             for drone_name, drone in drones:
                 try:
@@ -1693,6 +1898,82 @@ class DroneEnvironment(ABC):
             return False  # Exit because the drone is in an uncertain state
         return True
 
+    def _relative_position(
+        self, position: list[float], reference: list[float]
+    ) -> list[float]:
+        """Calculate the relative position of a point with respect to a reference."""
+        return [
+            position[0] - reference[0],
+            position[1] - reference[1],
+            position[2] - reference[2],
+        ]
+
+    def _normalise_vel(
+        self, velocity_xyz: list[float], agent: str | None = None
+    ) -> np.ndarray:
+        """Normalise a velocity vector based on maximum velocity limits."""
+        vx, vy, vz = velocity_xyz
+
+        max_velocity = (
+            self._get_agent_max_velocity(agent)
+            if agent is not None
+            else self.max_velocity
+        )
+
+        return np.array(
+            [
+                vx / max_velocity,
+                vy / max_velocity,
+                vz / self.max_velocity_z,
+            ],
+            dtype=np.float32,
+        )
+
+    def _normalise_relative_pos(self, rel_xyz: list[float]) -> np.ndarray:
+        """Normalise a relative position vector based on maximum possible distances."""
+        rx, ry, rz = rel_xyz
+
+        return np.array(
+            [
+                rx / self.max_xy_range,
+                ry / self.max_xy_range,
+                rz / self.max_z_range,
+            ],
+            dtype=np.float32,
+        )
+
+    def _normalise_pos(self, position: list[float]) -> np.ndarray:
+        """Normalise a 3D position based on environment boundaries."""
+        x, y, z = position
+
+        x_norm = x / self.xy_limit
+        y_norm = y / self.xy_limit
+
+        z_mid = 0.5 * (self.z_min + self.z_max)
+        z_half = 0.5 * (self.z_max - self.z_min)
+        z_norm = (z - z_mid) / z_half
+
+        return np.array([x_norm, y_norm, z_norm], dtype=np.float32)
+
+    def _get_agent_max_velocity(self, agent: str) -> float:
+        """Return the maximum XY velocity for an agent.
+        Can be overridden by task environments to provide agent-specific limits."""
+        return self.max_velocity
+
+    def _apply_task_action_processing(
+        self,
+        agent: str,
+        vx: float,
+        vy: float,
+        vz: float,
+        current_position: list[float],
+    ) -> tuple[float, float, float, dict[str, Any]]:
+        """Apply optional task-specific processing to a velocity command.
+
+        The base implementation leaves the command unchanged.
+        """
+        return (vx, vy, vz, {})
+
     @property
     def max_action_value(self):
         return self.max_velocity
@@ -1722,19 +2003,19 @@ class DroneEnvironment(ABC):
         """Get the current state representation"""
 
     @abstractmethod
-    def _calculate_reward(self, current_state: Dict[str, Any]) -> float:
+    def _calculate_reward(self, current_state: dict[str, Any]) -> float:
         """Calculate reward based on current state"""
 
     @abstractmethod
-    def _check_if_done(self, current_state: Dict[str, Any]) -> bool:
+    def _check_if_terminated(self, current_state: dict[str, Any]) -> bool:
         """Check if episode is done"""
 
     @abstractmethod
-    def _check_if_truncated(self, current_state: Dict[str, Any]) -> bool:
+    def _check_if_truncated(self, current_state: dict[str, Any]) -> bool:
         """Check if episode should be truncated"""
 
     @abstractmethod
-    def _get_additional_info(self, current_state: Dict[str, Any]) -> Dict[str, Any]:
+    def _get_additional_info(self, current_state: dict[str, Any]) -> dict[str, Any]:
         """Get additional task-specific info for the info dict"""
 
     @abstractmethod

@@ -1,14 +1,17 @@
-from matplotlib.markers import MarkerStyle
-import numpy as np
 import math
 import time
 import threading
 from typing import Dict, List, Any, Literal
-from drone_gym.drone_environment import DroneEnvironment
-from drone_gym.agents.ticker import AgentTicker
-import matplotlib.pyplot as plt
 import io
 import cv2
+import numpy as np
+from matplotlib.markers import MarkerStyle
+import matplotlib.pyplot as plt
+from drone_gym.drone_environment import DroneEnvironment
+from drone_gym.agents.bodies import SimulatedBody
+from drone_gym.agents.policies import FleePolicy
+from drone_gym.agents.sim_agent import SimAgent
+from drone_gym.agents.ticker import AgentTicker
 
 
 class InterceptEvader2DParticle(DroneEnvironment):
@@ -31,9 +34,15 @@ class InterceptEvader2DParticle(DroneEnvironment):
 
     PARTICLE_UPDATE_HZ = 5.0  # background ticker rate for smooth target motion
 
-    def __init__(self, use_simulator: Literal[0, 1], max_velocity: float = 0.25, step_time: float = 0.5,
-                 exploration_steps: int = 1000, episode_length: int = 60,
-                 target_max_velocity: float = 0.13):
+    def __init__(
+        self,
+        use_simulator: Literal[0, 1],
+        max_velocity: float = 0.25,
+        step_time: float = 0.5,
+        exploration_steps: int = 1000,
+        episode_length: int = 60,
+        target_max_velocity: float = 0.13,
+    ):
 
         super().__init__(use_simulator, max_velocity, step_time)
 
@@ -46,16 +55,22 @@ class InterceptEvader2DParticle(DroneEnvironment):
         self.learning = True
 
         # Task-specific parameters
-        self.target_max_velocity = target_max_velocity  # kept well below the learner's so it is catchable
-        self.capture_threshold = 0.30   # metres — learner catches the target
-        self.spawn_min_distance = 1.0   # minimum start distance between learner and target
+        self.target_max_velocity = (
+            target_max_velocity  # kept well below the learner's so it is catchable
+        )
+        self.capture_threshold = 0.30  # metres — learner catches the target
+        self.spawn_min_distance = (
+            1.0  # minimum start distance between learner and target
+        )
         self.spawn_margin = 0.1
-        self.target_spawn_margin = 0.5  # keep the particle clear of the boundary at spawn
+        self.target_spawn_margin = (
+            0.5  # keep the particle clear of the boundary at spawn
+        )
         self.fixed_z = 1.0
 
         self.xy_limit = 2.0  # Boundary limit for x and y
         self.max_xy_range = self.xy_limit * 2
-        self.max_distance = np.sqrt(self.max_xy_range ** 2 + self.max_xy_range ** 2)
+        self.max_distance = np.sqrt(self.max_xy_range**2 + self.max_xy_range**2)
         self.time_tolerance = 0.15
 
         # hard coded z limit
@@ -65,9 +80,11 @@ class InterceptEvader2DParticle(DroneEnvironment):
         self.observation_space = 4 + 7
 
         # Reward parameters
-        self.success_reward = 100.0                    # big terminal bonus — catching is clearly best
-        self.distance_improvement_multiplier = 100.0   # main signal: reward closing the gap
-        self.step_penalty = 1.0                        # small per-step cost — catch FAST
+        self.success_reward = 100.0  # big terminal bonus — catching is clearly best
+        self.distance_improvement_multiplier = (
+            100.0  # main signal: reward closing the gap
+        )
+        self.step_penalty = 1.0  # small per-step cost — catch FAST
         self.out_of_bounds_penalty = -100.0
 
         # Task state
@@ -75,16 +92,27 @@ class InterceptEvader2DParticle(DroneEnvironment):
         self.caught = False  # True when the learner has caught the target
         self.boundary_penalise = False
         self.exited_testing_boundary = False
+        self._recent_positions: List[tuple[float, float, float]] = []
+        self._consecutive_restart_failures = 0
 
-        # The fleeing target is a particle agent pulled from the manager. We use
-        # the shared default SimManager — the same one DroneSim uses for its own
-        # markers/boundary — so a single manager owns everything in the sim.
-        # The FleePolicy (the expert) runs the target away from the learner each step.
-        self.agent_manager = get_default_sim_manager()
-        self.target_agent = self.agent_manager.create_agent(
-            "particle_evader", role="evader",
-            max_velocity=self.target_max_velocity, fixed_z=self.fixed_z,
-            bounds=self.xy_limit, render=True,
+        # The base environment owns the simulator manager. The particle uses
+        # the repository's software-integrated body and flee policy.
+        self.agent_manager = self.sim_manager
+        self.target_agent = SimAgent(
+            agent_id=0,
+            body=SimulatedBody(
+                sim_manager=self.agent_manager,
+                fixed_z=self.fixed_z,
+                bounds=self.xy_limit,
+                render=self.agent_manager is not None,
+                marker_name="particle_evader",
+            ),
+            policy=FleePolicy(
+                max_velocity=self.target_max_velocity,
+                threat_key="threat_pos",
+                boundary_limit=self.xy_limit,
+            ),
+            role="evader",
         )
 
         # Local tracking, synced from the target agent (used by observation/reward/render)
@@ -102,7 +130,6 @@ class InterceptEvader2DParticle(DroneEnvironment):
         # Evaluation mode tracking — counts episodes the learner caught the target
         self.successful_episodes_count = 0
 
-    
     # Target tracking
 
     def _sync_target(self):
@@ -116,18 +143,24 @@ class InterceptEvader2DParticle(DroneEnvironment):
         for _ in range(200):
             x = float(np.random.uniform(-limit, limit))
             y = float(np.random.uniform(-limit, limit))
-            if math.sqrt((x - learner_pos[0]) ** 2 + (y - learner_pos[1]) ** 2) >= self.spawn_min_distance:
+            if (
+                math.sqrt((x - learner_pos[0]) ** 2 + (y - learner_pos[1]) ** 2)
+                >= self.spawn_min_distance
+            ):
                 return [x, y, self.fixed_z]
         # Fallback: opposite corner from the learner
-        return [-np.sign(learner_pos[0]) * limit, -np.sign(learner_pos[1]) * limit, self.fixed_z]
-
+        return [
+            -np.sign(learner_pos[0]) * limit,
+            -np.sign(learner_pos[1]) * limit,
+            self.fixed_z,
+        ]
 
     # Dead / stuck learner recovery (unattended-training safety)
 
-    STUCK_POSITION_TOLERANCE = 1e-4   # positions within this count as identical
-    STUCK_THRESHOLD_STEPS = 6         # identical positions in a row before "stuck"
+    STUCK_POSITION_TOLERANCE = 1e-4  # positions within this count as identical
+    STUCK_THRESHOLD_STEPS = 6  # identical positions in a row before "stuck"
     MAX_CONSECUTIVE_RESTART_ATTEMPTS = 5
-    RESTART_TIMEOUT_SECONDS = 30      # hard ceiling so a hung open_link can't block us
+    RESTART_TIMEOUT_SECONDS = 30  # hard ceiling so a hung open_link can't block us
 
     def _reset_stuck_tracker(self):
         self._recent_positions = []
@@ -145,18 +178,20 @@ class InterceptEvader2DParticle(DroneEnvironment):
 
     def _drone_is_stuck(self, position: List[float]) -> bool:
         """Detect a frozen drone reporting the same position every step."""
-        if not hasattr(self, "_recent_positions"):
-            self._recent_positions = []
         self._recent_positions.append(tuple(position))
         if len(self._recent_positions) > self.STUCK_THRESHOLD_STEPS:
-            self._recent_positions = self._recent_positions[-self.STUCK_THRESHOLD_STEPS:]
+            self._recent_positions = self._recent_positions[
+                -self.STUCK_THRESHOLD_STEPS :
+            ]
         if len(self._recent_positions) < self.STUCK_THRESHOLD_STEPS:
             return False
         first = self._recent_positions[0]
         for p in self._recent_positions[1:]:
-            if (abs(p[0] - first[0]) > self.STUCK_POSITION_TOLERANCE or
-                    abs(p[1] - first[1]) > self.STUCK_POSITION_TOLERANCE or
-                    abs(p[2] - first[2]) > self.STUCK_POSITION_TOLERANCE):
+            if (
+                abs(p[0] - first[0]) > self.STUCK_POSITION_TOLERANCE
+                or abs(p[1] - first[1]) > self.STUCK_POSITION_TOLERANCE
+                or abs(p[2] - first[2]) > self.STUCK_POSITION_TOLERANCE
+            ):
                 return False
         return True
 
@@ -167,15 +202,16 @@ class InterceptEvader2DParticle(DroneEnvironment):
         sequence runs in a daemon thread we abandon after RESTART_TIMEOUT_SECONDS.
         After MAX_CONSECUTIVE_RESTART_ATTEMPTS failures we stop trying.
         """
-        if not hasattr(self, "_consecutive_restart_failures"):
-            self._consecutive_restart_failures = 0
-
         if self._consecutive_restart_failures >= self.MAX_CONSECUTIVE_RESTART_ATTEMPTS:
-            print("[InterceptEvader2DParticle] Skipping restart — too many consecutive "
-                  "failures; the simulator may need a manual restart")
+            print(
+                "[InterceptEvader2DParticle] Skipping restart — too many consecutive "
+                "failures; the simulator may need a manual restart"
+            )
             return False
 
-        print("[InterceptEvader2DParticle] Auto-restarting drone (no user input required)")
+        print(
+            "[InterceptEvader2DParticle] Auto-restarting drone (no user input required)"
+        )
 
         done_event = threading.Event()
         success_holder = [False]
@@ -197,8 +233,10 @@ class InterceptEvader2DParticle(DroneEnvironment):
         thread.start()
 
         if not done_event.wait(timeout=self.RESTART_TIMEOUT_SECONDS):
-            print(f"[InterceptEvader2DParticle] Restart timed out after "
-                  f"{self.RESTART_TIMEOUT_SECONDS}s — abandoning attempt")
+            print(
+                f"[InterceptEvader2DParticle] Restart timed out after "
+                f"{self.RESTART_TIMEOUT_SECONDS}s — abandoning attempt"
+            )
             self._consecutive_restart_failures += 1
             return False
 
@@ -206,10 +244,12 @@ class InterceptEvader2DParticle(DroneEnvironment):
             self._consecutive_restart_failures = 0
             return True
 
-        print("[InterceptEvader2DParticle] WARNING: drone did not confirm takeoff after restart")
+        print(
+            "[InterceptEvader2DParticle] WARNING: drone did not confirm takeoff after restart"
+        )
         self._consecutive_restart_failures += 1
         return False
-    
+
     # DroneEnvironment overrides
 
     def reset(self, training: bool = True):
@@ -262,7 +302,7 @@ class InterceptEvader2DParticle(DroneEnvironment):
         # Modify action normalization based on phase
         if self.learning:
             # Learning phase: action is already in [-1, 1]
-            assert len(action) == 3, 'action should be length 3'
+            assert len(action) == 3, "action should be length 3"
             processed_action = [action[0], action[1], 0]
         else:
             # Exploration phase: convert from [0, 1] to [-1, 1]
@@ -274,8 +314,10 @@ class InterceptEvader2DParticle(DroneEnvironment):
         learner_pos = self.drone.get_position()
         if self._drone_is_dead(learner_pos) or self._drone_is_stuck(learner_pos):
             reason = "dead" if self._drone_is_dead(learner_pos) else "stuck"
-            print(f"[InterceptEvader2DParticle] Learner appears {reason} "
-                  f"(pos={learner_pos}) — restarting")
+            print(
+                f"[InterceptEvader2DParticle] Learner appears {reason} "
+                f"(pos={learner_pos}) — restarting"
+            )
             self.restart()
             self._reset_stuck_tracker()
             self.truncate_next = True
@@ -302,9 +344,14 @@ class InterceptEvader2DParticle(DroneEnvironment):
 
         new_position = [sx + position[0], sy + position[1], sz + position[2]]
         # Check if new position would exceed boundaries — zero velocity for this step
-        if (new_position[0] < -self.boundary[0] or new_position[0] > self.boundary[0] or
-                new_position[1] < -self.boundary[1] or new_position[1] > self.boundary[1] or
-                new_position[2] <= self.boundary[2] or new_position[2] > self.boundary[3]):
+        if (
+            new_position[0] < -self.boundary[0]
+            or new_position[0] > self.boundary[0]
+            or new_position[1] < -self.boundary[1]
+            or new_position[1] > self.boundary[1]
+            or new_position[2] <= self.boundary[2]
+            or new_position[2] > self.boundary[3]
+        ):
             result = super().step([0, 0, 0])
             # Target kept fleeing during the step (background ticker) — resync
             self.target_agent.refresh()
@@ -334,7 +381,6 @@ class InterceptEvader2DParticle(DroneEnvironment):
             # Learner normalised position (2)
             position[0] / self.xy_limit,
             position[1] / self.xy_limit,
-
             # Learner normalised velocity (2)
             vel_x / self.max_velocity,
             vel_y / self.max_velocity,
@@ -346,7 +392,7 @@ class InterceptEvader2DParticle(DroneEnvironment):
 
         rel_x = tx - position[0]
         rel_y = ty - position[1]
-        distance = math.sqrt(rel_x ** 2 + rel_y ** 2)
+        distance = math.sqrt(rel_x**2 + rel_y**2)
 
         dir_x = rel_x / (distance + 1e-6)
         dir_y = rel_y / (distance + 1e-6)
@@ -370,24 +416,24 @@ class InterceptEvader2DParticle(DroneEnvironment):
         """Get task-specific state information"""
         position = self.drone.get_position()
         return {
-            'position': position,
-            'target_position': self.target_position[:],
-            'distance_to_target': self._distance_to_target(position),
-            'caught': self.caught,
-            'done': self.done,
+            "position": position,
+            "target_position": self.target_position[:],
+            "distance_to_target": self._distance_to_target(position),
+            "caught": self.caught,
+            "done": self.done,
         }
 
     def _distance_to_target(self, position: List[float]) -> float:
         """2D Euclidean distance from the learner to the target (x, y only)"""
         return math.sqrt(
-            (position[0] - self.target_position[0]) ** 2 +
-            (position[1] - self.target_position[1]) ** 2
+            (position[0] - self.target_position[0]) ** 2
+            + (position[1] - self.target_position[1]) ** 2
         )
 
     def _calculate_reward(self, current_state: Dict[str, Any]) -> float:
         """Reward = progress toward the target + small time cost, big bonus on capture"""
 
-        distance = current_state['distance_to_target']
+        distance = current_state["distance_to_target"]
 
         # Capture is terminal — large success reward, unambiguously the best outcome
         if distance < self.capture_threshold:
@@ -406,10 +452,10 @@ class InterceptEvader2DParticle(DroneEnvironment):
 
         return reward
 
-    def _check_if_done(self, current_state: Dict[str, Any]) -> bool:
+    def _check_if_terminated(self, current_state: Dict[str, Any]) -> bool:
         """Episode ends as success when the learner catches the target"""
 
-        distance = current_state['distance_to_target']
+        distance = current_state["distance_to_target"]
 
         if distance < self.capture_threshold:
             self.caught = True
@@ -429,9 +475,7 @@ class InterceptEvader2DParticle(DroneEnvironment):
         """Check if episode should be truncated"""
 
         if self.steps >= self.episode_length:
-            if self.need_to_change_battery():
-                self.change_battery()
-            elif current_state["position"][2] <= 0.25:
+            if current_state["position"][2] <= 0.25:
                 self.restart()
             return True
 
@@ -444,17 +488,17 @@ class InterceptEvader2DParticle(DroneEnvironment):
     def _get_additional_info(self, current_state: Dict[str, Any]) -> Dict[str, Any]:
         """Get additional task-specific info"""
         info = {
-            'target_position': self.target_position[:],
-            'distance_to_target': current_state['distance_to_target'],
-            'caught': self.caught,
-            'success': self.caught,
-            'out_of_bounds': not current_state['in_boundaries'],
-            'description': "2D pursuit task — drone catches a fleeing particle target",
+            "target_position": self.target_position[:],
+            "distance_to_target": current_state["distance_to_target"],
+            "caught": self.caught,
+            "success": self.caught,
+            "out_of_bounds": not current_state["in_boundaries"],
+            "description": "2D pursuit task — drone catches a fleeing particle target",
         }
 
         # Add success count during evaluation
         if self._is_evaluating:
-            info['success_count'] = self.successful_episodes_count
+            info["success_count"] = self.successful_episodes_count
 
         return info
 
@@ -467,7 +511,7 @@ class InterceptEvader2DParticle(DroneEnvironment):
     def close(self):
         """Stop the background ticker, despawn the target marker and land the learner."""
         self._ticker.stop()
-        self.agent_manager.close_all()
+        self.target_agent.close()
         super().close()
 
     def _render_task_specific_info(self):
@@ -476,7 +520,9 @@ class InterceptEvader2DParticle(DroneEnvironment):
         d = self._distance_to_target(pos)
 
         print(f"Predator Position: [{pos[0]:.2f}, {pos[1]:.2f}]")
-        print(f"Target Position: [{self.target_position[0]:.2f}, {self.target_position[1]:.2f}]")
+        print(
+            f"Target Position: [{self.target_position[0]:.2f}, {self.target_position[1]:.2f}]"
+        )
         print(f"Distance to Target: {d:.2f}")
         print(f"Capture Threshold: {self.capture_threshold:.2f}")
         print(f"Caught: {self.caught}")
@@ -496,46 +542,79 @@ class InterceptEvader2DParticle(DroneEnvironment):
 
         # Use GridSpec with equal widths and minimal spacing
         from matplotlib.gridspec import GridSpec
+
         gs = GridSpec(1, 2, figure=fig, wspace=0.25, width_ratios=[1, 1])
 
-        tx, ty, tz = self.target_position[0], self.target_position[1], self.target_position[2]
+        tx, ty, tz = (
+            self.target_position[0],
+            self.target_position[1],
+            self.target_position[2],
+        )
 
         # LEFT SUBPLOT: 3D trajectory view
-        ax1 = fig.add_subplot(gs[0, 0], projection='3d')
+        ax1 = fig.add_subplot(gs[0, 0], projection="3d")
 
         # Plot the predator's trajectory
-        ax1.plot(x, y, z, label='Predator Path', color='yellow', linewidth=2.5)
+        ax1.plot(x, y, z, label="Predator Path", color="yellow", linewidth=2.5)
 
         # Mark important points with better visibility
-        ax1.scatter(x[0], y[0], z[0], color='green', s=80, label='Start',
-                    depthshade=False, edgecolors='black', linewidth=0.5)
-        ax1.scatter(x[-1], y[-1], z[-1], color='blue', s=80, label='Current',
-                    depthshade=False, edgecolors='black', linewidth=0.5)
-        ax1.scatter(tx, ty, tz, color='red', marker='*', s=140, label='Target',
-                    depthshade=False, edgecolors='black', linewidth=1)
+        ax1.scatter(
+            x[0],
+            y[0],
+            z[0],
+            color="green",
+            s=80,
+            label="Start",
+            depthshade=False,
+            edgecolors="black",
+            linewidth=0.5,
+        )
+        ax1.scatter(
+            x[-1],
+            y[-1],
+            z[-1],
+            color="blue",
+            s=80,
+            label="Current",
+            depthshade=False,
+            edgecolors="black",
+            linewidth=0.5,
+        )
+        ax1.scatter(
+            tx,
+            ty,
+            tz,
+            color="red",
+            marker="*",
+            s=140,
+            label="Target",
+            depthshade=False,
+            edgecolors="black",
+            linewidth=1,
+        )
 
         ax1.set_xlim(-self.xy_limit - 0.2, self.xy_limit + 0.2)
         ax1.set_ylim(-self.xy_limit - 0.2, self.xy_limit + 0.2)
         ax1.set_zlim(0.25, 1.5)
 
         # Labels and title
-        ax1.set_xlabel('X (m)', fontsize=10, labelpad=8)
-        ax1.set_ylabel('Y (m)', fontsize=10, labelpad=8)
-        ax1.set_zlabel('Z (m)', fontsize=9, labelpad=10)
+        ax1.set_xlabel("X (m)", fontsize=10, labelpad=8)
+        ax1.set_ylabel("Y (m)", fontsize=10, labelpad=8)
+        ax1.set_zlabel("Z (m)", fontsize=9, labelpad=10)
 
         # Adjust tick parameters
-        ax1.tick_params(axis='x', labelsize=8)
-        ax1.tick_params(axis='y', labelsize=8)
-        ax1.tick_params(axis='z', labelsize=8)
+        ax1.tick_params(axis="x", labelsize=8)
+        ax1.tick_params(axis="y", labelsize=8)
+        ax1.tick_params(axis="z", labelsize=8)
 
         # Viewing angle
         ax1.view_init(elev=10, azim=25)
 
         # Title
-        ax1.set_title('3D Trajectory', fontsize=12, pad=15)
+        ax1.set_title("3D Trajectory", fontsize=12, pad=15)
 
         # Legend
-        ax1.legend(loc='upper left', fontsize=6, framealpha=0.9, markerscale=0.60)
+        ax1.legend(loc="upper left", fontsize=6, framealpha=0.9, markerscale=0.60)
 
         # Grid
         ax1.grid(True, alpha=0.3)
@@ -547,55 +626,112 @@ class InterceptEvader2DParticle(DroneEnvironment):
         ax2 = fig.add_subplot(gs[0, 1])
 
         # Boundary box
-        boundary_x = [-self.xy_limit, self.xy_limit, self.xy_limit, -self.xy_limit, -self.xy_limit]
-        boundary_y = [-self.xy_limit, -self.xy_limit, self.xy_limit, self.xy_limit, -self.xy_limit]
-        ax2.plot(boundary_x, boundary_y, 'k--', linewidth=1, alpha=0.5, label='Boundary', zorder=1)
+        boundary_x = [
+            -self.xy_limit,
+            self.xy_limit,
+            self.xy_limit,
+            -self.xy_limit,
+            -self.xy_limit,
+        ]
+        boundary_y = [
+            -self.xy_limit,
+            -self.xy_limit,
+            self.xy_limit,
+            self.xy_limit,
+            -self.xy_limit,
+        ]
+        ax2.plot(
+            boundary_x,
+            boundary_y,
+            "k--",
+            linewidth=1,
+            alpha=0.5,
+            label="Boundary",
+            zorder=1,
+        )
 
         # Plot the predator's trajectory in X-Y plane
-        ax2.plot(x, y, color='yellow', linewidth=2.5, label='Predator Path', zorder=2)
+        ax2.plot(x, y, color="yellow", linewidth=2.5, label="Predator Path", zorder=2)
 
         # Mark important points
-        ax2.scatter(x[0], y[0], color='green', s=80, label='Start',
-                    edgecolors='black', linewidth=0.5, zorder=4)
-        ax2.scatter(x[-1], y[-1], color='blue', s=80, label='Current',
-                    edgecolors='black', linewidth=0.5, zorder=4)
-        ax2.scatter(tx, ty, color='red', marker=MarkerStyle('*'), s=140, label='Target',
-                    edgecolors='black', linewidth=1, zorder=5)
+        ax2.scatter(
+            x[0],
+            y[0],
+            color="green",
+            s=80,
+            label="Start",
+            edgecolors="black",
+            linewidth=0.5,
+            zorder=4,
+        )
+        ax2.scatter(
+            x[-1],
+            y[-1],
+            color="blue",
+            s=80,
+            label="Current",
+            edgecolors="black",
+            linewidth=0.5,
+            zorder=4,
+        )
+        ax2.scatter(
+            tx,
+            ty,
+            color="red",
+            marker=MarkerStyle("*"),
+            s=140,
+            label="Target",
+            edgecolors="black",
+            linewidth=1,
+            zorder=5,
+        )
 
         # Draw capture radius around the target
-        circle = plt.Circle((tx, ty), self.capture_threshold, color='red', alpha=0.15, zorder=1)
+        circle = plt.Circle(
+            (tx, ty), self.capture_threshold, color="red", alpha=0.15, zorder=1
+        )
         ax2.add_patch(circle)
 
         ax2.set_xlim(-self.xy_limit - 0.2, self.xy_limit + 0.2)
         ax2.set_ylim(-self.xy_limit - 0.2, self.xy_limit + 0.2)
 
         # Labels and title
-        ax2.set_xlabel('X (m)', fontsize=10)
-        ax2.set_ylabel('Y (m)', fontsize=10)
-        ax2.set_title('Top-Down View (X-Y)', fontsize=12, pad=15)
+        ax2.set_xlabel("X (m)", fontsize=10)
+        ax2.set_ylabel("Y (m)", fontsize=10)
+        ax2.set_title("Top-Down View (X-Y)", fontsize=12, pad=15)
 
         # Equal aspect ratio for accurate representation
-        ax2.set_aspect('equal', adjustable='box')
+        ax2.set_aspect("equal", adjustable="box")
 
         # Legend
-        ax2.legend(loc='upper left', fontsize=6, framealpha=0.9, markerscale=0.60)
+        ax2.legend(loc="upper left", fontsize=6, framealpha=0.9, markerscale=0.60)
 
         # Grid
         ax2.grid(True, alpha=0.3)
 
         # Tick parameters
-        ax2.tick_params(axis='both', labelsize=8)
+        ax2.tick_params(axis="both", labelsize=8)
 
         # Add main title at the top
-        fig.suptitle(f'Pursuit Episode (Step {self.steps}) | Caught: {self.caught}', fontsize=13, y=0.98)
+        fig.suptitle(
+            f"Pursuit Episode (Step {self.steps}) | Caught: {self.caught}",
+            fontsize=13,
+            y=0.98,
+        )
 
         # Adjust layout
         plt.tight_layout(rect=[0, 0, 1, 0.96])
 
         # Convert matplotlib figure to image array with higher quality
         buf = io.BytesIO()
-        fig.savefig(buf, format='png', dpi=120,
-                    facecolor='white', edgecolor='none', bbox_inches='tight')
+        fig.savefig(
+            buf,
+            format="png",
+            dpi=120,
+            facecolor="white",
+            edgecolor="none",
+            bbox_inches="tight",
+        )
         buf.seek(0)
 
         # Decode the PNG buffer to numpy array
@@ -609,7 +745,9 @@ class InterceptEvader2DParticle(DroneEnvironment):
             # Only resize if necessary
             current_h, current_w = frame.shape[:2]
             if current_h != height or current_w != width:
-                frame = cv2.resize(frame, (width, height), interpolation=cv2.INTER_LANCZOS4)
+                frame = cv2.resize(
+                    frame, (width, height), interpolation=cv2.INTER_LANCZOS4
+                )
             # Convert BGR to RGB for consistency
             frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         else:

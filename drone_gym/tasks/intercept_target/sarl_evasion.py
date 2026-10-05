@@ -938,7 +938,7 @@ class SarlEvasion(DroneEnvironment):
 
         return reward
 
-    def _check_if_done(self, current_state: Dict[str, Any]) -> bool:
+    def _check_if_terminated(self, current_state: Dict[str, Any]) -> bool:
         """Episode ends (as `done`, not truncation) on interception or out of bounds.
 
         Surviving to `episode_length` is handled in `_check_if_truncated` — it's
