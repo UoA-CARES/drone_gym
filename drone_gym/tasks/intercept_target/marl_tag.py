@@ -903,7 +903,33 @@ class MarlTag(MarlDroneEnvironment):
                 info["success_counts"] = dict(self.success_counts)
             infos[agent] = info
 
+        # Flat, per-agent columns (in addition to the nested per-agent dicts
+        # above) so training/eval logs expose these directly instead of
+        # burying them inside a stringified dict.
+        for agent in self.agents:
+            is_runner = agent in self.runner_agents
+            infos[f"{agent}_success"] = int(
+                self.winner == (self.RUNNER if is_runner else self.INTERCEPTOR)
+            )
+            infos[f"{agent}_avg_speed"] = self._average_episode_speed(agent)
+
         return infos
+
+    def _average_episode_speed(self, agent: str) -> float:
+        """Average speed (distance / time) of `agent` over the episode so far,
+        computed from its recorded trajectory in `self.episode_positions`."""
+        positions = self.episode_positions[agent]
+
+        if len(positions) < 2:
+            return 0.0
+
+        total_distance = sum(
+            self._distance_3d(positions[i], positions[i + 1])
+            for i in range(len(positions) - 1)
+        )
+        total_time = (len(positions) - 1) * self.step_time
+
+        return total_distance / total_time if total_time > 0 else 0.0
 
     def _render_task_specific_info(self) -> None:
 

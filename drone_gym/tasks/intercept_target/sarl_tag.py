@@ -252,6 +252,7 @@ class SarlTag(DroneEnvironment):
         or the maximum number of attempts is reached."""
         usable_xy_size = 2.0 * self.reset_planner.usable_xy_limit
 
+
         goal_min_distance = self.goal_min_distance_ratio * usable_xy_size
 
         interceptor_runner_min_distance = max(
