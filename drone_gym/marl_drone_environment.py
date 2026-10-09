@@ -377,6 +377,16 @@ class MarlDroneEnvironment(ParallelEnv):
         self._render_task_specific_info()
         print("-" * 60)
 
+    def grab_frame(self, height: int = 240, width: int = 300) -> np.ndarray:
+        """Generate a frame for video recording - to be overridden by tasks"""
+        # Default implementation returns white frame
+        return np.full((height, width, 3), 255, dtype=np.uint8)
+
+    def get_overlay_info(self) -> dict[str, Any]:
+        """Return per-step info to overlay on recorded video frames - to be
+        overridden by tasks."""
+        return {}
+
     def close(self) -> None:
         """Clean up all drone interfaces and the simulator."""
         self._stop_collision_monitor()

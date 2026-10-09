@@ -1,9 +1,14 @@
+import io
 import math
 from collections import deque
 from typing import Any, Literal
 
+import cv2
+import matplotlib.pyplot as plt
 import numpy as np
 from gymnasium import spaces
+from matplotlib.gridspec import GridSpec
+from matplotlib.markers import MarkerStyle
 
 from drone_gym.marl_drone_environment import MarlDroneEnvironment
 
@@ -956,6 +961,333 @@ class MarlTag(MarlDroneEnvironment):
         print(
             f"Reached goal: {self.reached_goal} | Caught: {self.caught} | Winner: {self.winner}"
         )
+
+    def get_overlay_info(self) -> dict[str, Any]:
+        runner_agent = self.runner_agents[0]
+        runner_position = self.drones[runner_agent].get_position()
+
+        interceptor_positions = {
+            interceptor: self.drones[interceptor].get_position()
+            for interceptor in self.interceptor_agents
+        }
+
+        interceptor_distances = {
+            interceptor: self._distance_3d(runner_position, interceptor_position)
+            for interceptor, interceptor_position in interceptor_positions.items()
+        }
+
+        return {
+            "position": runner_position,
+            "goal_position": self.goal_position[:],
+            "interceptor_positions": interceptor_positions,
+            "interceptor_distances": interceptor_distances,
+            "distance_to_goal": self._distance_3d(runner_position, self.goal_position),
+            "distance_to_interceptor": min(interceptor_distances.values()),
+            "caught": self.caught,
+            "reached_goal": self.reached_goal,
+        }
+
+    def grab_frame(self, height: int = 540, width: int = 960) -> np.ndarray:
+        runner_agent = self.runner_agents[0]
+        runner_positions = self.episode_positions.get(runner_agent, [])
+
+        fig = plt.figure(figsize=(width / 120, height / 120), dpi=120)
+
+        if not runner_positions:
+            plt.close(fig)
+            return np.full((height, width, 3), 255, dtype=np.uint8)
+
+        pos_array = np.array(runner_positions)
+        x, y, z = pos_array[:, 0], pos_array[:, 1], pos_array[:, 2]
+
+        gs = GridSpec(1, 2, figure=fig, wspace=0.25, width_ratios=[1, 1])
+
+        gx, gy, gz = self.goal_position
+
+        interceptor_positions = {
+            interceptor: self.drones[interceptor].get_position()
+            for interceptor in self.interceptor_agents
+        }
+
+        # ------------------------------------------------------------------
+        # LEFT: 3D trajectory
+        # ------------------------------------------------------------------
+        ax1 = fig.add_subplot(gs[0, 0], projection="3d")
+
+        ax1.plot(
+            x,
+            y,
+            z,
+            label="Runner Path",
+            color="yellow",
+            linewidth=2.5,
+        )
+
+        ax1.scatter(
+            x[0],
+            y[0],
+            z[0],
+            color="green",
+            s=80,
+            label="Start",
+            depthshade=False,
+            edgecolors="black",
+            linewidth=0.5,
+        )
+
+        ax1.scatter(
+            x[-1],
+            y[-1],
+            z[-1],
+            color="blue",
+            s=80,
+            label="Current",
+            depthshade=False,
+            edgecolors="black",
+            linewidth=0.5,
+        )
+
+        ax1.scatter(
+            gx,
+            gy,
+            gz,
+            color="lime",
+            marker="*",
+            s=160,
+            label="Goal",
+            depthshade=False,
+            edgecolors="black",
+            linewidth=1,
+        )
+
+        for i, interceptor_position in enumerate(interceptor_positions.values()):
+            ix, iy, iz = interceptor_position
+
+            ax1.scatter(
+                ix,
+                iy,
+                iz,
+                color="red",
+                marker="^",
+                s=120,
+                label="Interceptor" if i == 0 else None,
+                depthshade=False,
+                edgecolors="black",
+                linewidth=1,
+            )
+
+        ax1.set_xlim(-self.xy_limit - 0.2, self.xy_limit + 0.2)
+        ax1.set_ylim(-self.xy_limit - 0.2, self.xy_limit + 0.2)
+        ax1.set_zlim(self.z_min - 0.1, self.z_max + 0.1)
+
+        ax1.set_xlabel("X (m)", fontsize=10, labelpad=8)
+        ax1.set_ylabel("Y (m)", fontsize=10, labelpad=8)
+        ax1.set_zlabel("Z (m)", fontsize=9, labelpad=10)
+
+        ax1.tick_params(axis="x", labelsize=8)
+        ax1.tick_params(axis="y", labelsize=8)
+        ax1.tick_params(axis="z", labelsize=8)
+
+        ax1.view_init(elev=10, azim=25)
+        ax1.set_title("3D Trajectory", fontsize=12, pad=15)
+
+        ax1.legend(
+            loc="upper left",
+            fontsize=6,
+            framealpha=0.9,
+            markerscale=0.60,
+        )
+
+        ax1.grid(True, alpha=0.3)
+        ax1.set_box_aspect([1, 1, 0.67])
+
+        # ------------------------------------------------------------------
+        # RIGHT: top-down X-Y
+        # ------------------------------------------------------------------
+        ax2 = fig.add_subplot(gs[0, 1])
+
+        boundary_x = [
+            -self.xy_limit,
+            self.xy_limit,
+            self.xy_limit,
+            -self.xy_limit,
+            -self.xy_limit,
+        ]
+
+        boundary_y = [
+            -self.xy_limit,
+            -self.xy_limit,
+            self.xy_limit,
+            self.xy_limit,
+            -self.xy_limit,
+        ]
+
+        ax2.plot(
+            boundary_x,
+            boundary_y,
+            "k--",
+            linewidth=1,
+            alpha=0.5,
+            label="Boundary",
+            zorder=1,
+        )
+
+        ax2.plot(
+            x,
+            y,
+            color="yellow",
+            linewidth=2.5,
+            label="Runner Path",
+            zorder=2,
+        )
+
+        ax2.scatter(
+            x[0],
+            y[0],
+            color="green",
+            s=80,
+            label="Start",
+            edgecolors="black",
+            linewidth=0.5,
+            zorder=4,
+        )
+
+        ax2.scatter(
+            x[-1],
+            y[-1],
+            color="blue",
+            s=80,
+            label="Current",
+            edgecolors="black",
+            linewidth=0.5,
+            zorder=4,
+        )
+
+        ax2.scatter(
+            gx,
+            gy,
+            color="lime",
+            marker=MarkerStyle("*"),
+            s=160,
+            label="Goal",
+            edgecolors="black",
+            linewidth=1,
+            zorder=5,
+        )
+
+        for i, interceptor_position in enumerate(interceptor_positions.values()):
+            ix, iy, _ = interceptor_position
+
+            ax2.scatter(
+                ix,
+                iy,
+                color="red",
+                marker=MarkerStyle("^"),
+                s=120,
+                label="Interceptor" if i == 0 else None,
+                edgecolors="black",
+                linewidth=1,
+                zorder=5,
+            )
+
+            ax2.add_patch(
+                plt.Circle(
+                    (ix, iy),
+                    self.capture_threshold,
+                    color="red",
+                    alpha=0.15,
+                    zorder=1,
+                )
+            )
+
+        ax2.add_patch(
+            plt.Circle(
+                (gx, gy),
+                self.goal_threshold,
+                color="lime",
+                alpha=0.18,
+                zorder=1,
+            )
+        )
+
+        ax2.set_xlim(-self.xy_limit - 0.2, self.xy_limit + 0.2)
+        ax2.set_ylim(-self.xy_limit - 0.2, self.xy_limit + 0.2)
+
+        ax2.set_xlabel("X (m)", fontsize=10)
+        ax2.set_ylabel("Y (m)", fontsize=10)
+        ax2.set_title("Top-Down View (X-Y)", fontsize=12, pad=15)
+
+        ax2.set_aspect("equal", adjustable="box")
+
+        ax2.legend(
+            loc="upper left",
+            fontsize=6,
+            framealpha=0.9,
+            markerscale=0.60,
+        )
+
+        ax2.grid(True, alpha=0.3)
+        ax2.tick_params(axis="both", labelsize=8)
+
+        # ------------------------------------------------------------------
+        # Episode outcome
+        # ------------------------------------------------------------------
+        outcome = (
+            "Reached Goal"
+            if self.reached_goal
+            else ("Caught" if self.caught else "In Progress")
+        )
+
+        fig.suptitle(
+            f"MARL Tag (Step {self.steps}) | {outcome}",
+            fontsize=13,
+            y=0.98,
+        )
+
+        plt.tight_layout(rect=[0, 0, 1, 0.96])
+
+        # ------------------------------------------------------------------
+        # Convert matplotlib figure to RGB numpy frame
+        # ------------------------------------------------------------------
+        buf = io.BytesIO()
+
+        fig.savefig(
+            buf,
+            format="png",
+            dpi=120,
+            facecolor="white",
+            edgecolor="none",
+            bbox_inches="tight",
+        )
+
+        buf.seek(0)
+        img_arr = np.frombuffer(buf.getvalue(), dtype=np.uint8)
+
+        buf.close()
+        plt.close(fig)
+
+        frame = cv2.imdecode(img_arr, cv2.IMREAD_COLOR)
+
+        if frame is not None:
+            current_h, current_w = frame.shape[:2]
+
+            if current_h != height or current_w != width:
+                frame = cv2.resize(
+                    frame,
+                    (width, height),
+                    interpolation=cv2.INTER_LANCZOS4,
+                )
+
+            frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+
+        else:
+            frame = np.full(
+                (height, width, 3),
+                255,
+                dtype=np.uint8,
+            )
+
+        return frame
 
     # ------------------------------------------------------------------
     # Geometry and state helpers
