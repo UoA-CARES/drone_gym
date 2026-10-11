@@ -104,7 +104,9 @@ def wait_for_target(drone: Drone, target: tuple[float, float, float], timeout: f
 
 
 def fly(drones: dict[str, Drone], seconds: float) -> bool:
-    targets = dict(zip(drones, hover_targets(len(drones))))
+    # Lowest current x gets the lowest target x, so paths never cross.
+    order = sorted(drones, key=lambda name: drones[name].get_position()[0])
+    targets = dict(zip(order, hover_targets(len(drones))))
 
     for drone in drones.values():
         drone.take_off()

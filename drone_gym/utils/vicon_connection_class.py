@@ -48,7 +48,7 @@ class ViconInterface():
             while self.run_interface:
                 # Block until there is a packet
                 # print("Waiting for Vicon Packet...")
-                b, addr = self.sock.recvfrom(256)
+                b, addr = self.sock.recvfrom(4096)
 
                 # First 5 bytes are the frame # and # of items in frame
                 FrameNumber = int.from_bytes(b[0:4], byteorder='little')
@@ -74,7 +74,7 @@ class ViconInterface():
                     if(ItemID == 0):
                         # Process it
                         name = str(ItemData[0:24], 'utf-8').strip('\x00')
-                        data = unpack( 'd d d d d d', b[32:80] )
+                        data = unpack( 'd d d d d d', ItemData[24:72] )
 
                         #data_string = str(data)
 
