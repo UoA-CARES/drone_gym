@@ -39,8 +39,8 @@ class MarlTag(MarlDroneEnvironment):
         max_velocity_z: float = 0.25,
         step_time: float = 0.5,
         xy_limit: float = 2.0,
-        z_min: float = 0.4,
-        z_max: float = 2.5,
+        z_min: float | None = None,
+        z_max: float | None = None,
         reset_height: float = 1.0,
         reset_spacing: float = 0.5,
         episode_length: int = 80,
@@ -56,7 +56,15 @@ class MarlTag(MarlDroneEnvironment):
             # No risk in sim, allow for larger unbounded flight area.
             boundaries = {"x": 10.0, "y": 10.0, "z_min": 0.1, "z_max": 10.0}
         else:
-            boundaries = {"x": 2.5, "y": 2.5, "z_min": 0.1, "z_max": 3.0}
+            boundaries = {"x": 2.5, "y": 2.5, "z_min": 0.1, "z_max": 1.5}
+
+        if z_min is None:
+            # Real-drone task floor stays well above the ground for safety margin.
+            z_min = 0.4 if use_simulator else 0.6
+
+        if z_max is None:
+            # Real-drone task ceiling stays under the 1.5m hard safety boundary above.
+            z_max = 2.5 if use_simulator else 1.1
 
         super().__init__(
             use_simulator=use_simulator,
