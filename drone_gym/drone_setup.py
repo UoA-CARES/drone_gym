@@ -16,6 +16,7 @@ from drone_gym.utils.position_source import (
     PositionSample,
     PositionSource,
 )
+from drone_gym.utils.flight_debug import diag, FlightDebugMonitor
 
 
 class DroneSetup:
@@ -160,6 +161,13 @@ class DroneSetup:
         # Debugging parameters
         self.control_target_velocities = [0, 0, 0]
         self.control_target_lock = threading.Lock()
+            
+        self.flight_debug = None
+        self._diag_last_run_tick = None
+        self._diag_last_pid_tick = None
+        self._diag_last_queue_lag_s = 0.0
+        self._diag_last_mc_update = None
+        self._diag_battery_at = None
 
         # Start threads in coordinated sequence
         self.thread = threading.Thread(target=self._run)
@@ -506,10 +514,15 @@ class DroneSetup:
             print(f"[{self.agent_id}] Hardware Initialisation failed...")
             self.hardware_ready_event.set()  # Even though the hardware did not initialise set to prevent deadlock
             return
-
+        # The main branch's Drone may have simulation=True despite a radio URI;
+        # choose the actual transport instead of the simulation flag.
+        if self.URI.startswith("radio://") and self.cf is not None:
+            self.flight_debug = FlightDebugMonitor(self)
+            self.flight_debug.start()
         try:
             # Main command processing loop
             while self.is_running():
+                self._diag_last_run_tick = time.monotonic()
                 try:
                     if self.emergency_event.is_set() and not self.simulation:
                         print(
@@ -520,6 +533,17 @@ class DroneSetup:
                         break
                     # Get command with timeout
                     command = self.command_queue.get(timeout=0.1)
+                    if isinstance(command, dict):
+                        enqueued = command.pop("_diag_queued_at", None)
+                        if enqueued is not None:
+                            self._diag_last_queue_lag_s = time.monotonic() - enqueued
+                            if (self._diag_last_queue_lag_s > 0.2 and
+                                    time.monotonic() - getattr(self, "_diag_last_lag_warn", 0) > 1.0):
+                                self._diag_last_lag_warn = time.monotonic()
+                                diag("COMMAND_DELAY", agent=self.agent_id,
+                                    lag_ms=round(1000 * self._diag_last_queue_lag_s, 1),
+                                    queue_size=self.command_queue.qsize(),
+                                    command_type=next(iter(command), "empty"))
                     if command == "exit":
                         self.set_running(False)
                         print(f"[{self.agent_id}] Shutting down.")
@@ -536,7 +560,17 @@ class DroneSetup:
                         print(f"[{self.agent_id}] EMERGENCY STOP initiated.")
                         break
                     else:
+                        started_handling = time.monotonic()
                         self._handle_command(command)
+                        handling_ms = (time.monotonic() - started_handling) * 1000
+                        if handling_ms > 150 and not (
+                            isinstance(command, dict) and
+                            ("take_off" in command or "land" in command)
+                        ):
+                            diag("SLOW_COMMAND", agent=self.agent_id,
+                                duration_ms=round(handling_ms, 1),
+                                command_type=next(iter(command), "unknown")
+                                if isinstance(command, dict) else str(command))
 
                     self.command_queue.task_done()
 
@@ -677,6 +711,8 @@ class DroneSetup:
                         # print(f"start linear motion: vx={vx:.2f}, vy={vy:.2f}, vz={vz:.2f}")
                         # Send direct velocity command
                         self.mc.start_linear_motion(vx, vy, vz)
+                        self._diag_last_mc_update = time.monotonic()
+
                         # print(f"[{self.agent_id}] Direct velocity vector set: vx={vx:.2f}, vy={vy:.2f}, vz={vz:.2f}")
             else:
                 print(f"[{self.agent_id}] Unknown command: {command}")
@@ -784,11 +820,20 @@ class DroneSetup:
         control_rate = 0.05  # Control rate in seconds (20hz)
 
         print(f"[{self.agent_id}] Position control loop started")
+        last_pid_tick = time.monotonic()
+        last_pid_report = last_pid_tick
         while (
             self.is_running()
             and self.position_controller_active
             and not self.emergency_event.is_set()
         ):
+            now = time.monotonic()
+            loop_gap = now - last_pid_tick
+            last_pid_tick = now
+            self._diag_last_pid_tick = now
+            if loop_gap > 0.15:
+                diag("PID_LOOP_GAP", agent=self.agent_id,
+                    elapsed_ms=round(loop_gap * 1000, 1))
             try:
                 # Get current and target positions
                 current_pos = self.get_position_dict()
@@ -823,6 +868,14 @@ class DroneSetup:
                     self.at_reset_position.set()
                 # Calculate velocity command using PID control
                 velocity = self._calculate_pid_velocity(error, control_rate)
+                if now - last_pid_report >= 1.0:
+                    diag("PID", agent=self.agent_id,
+                        position=tuple(round(current_pos[a], 3) for a in ("x", "y", "z")),
+                        target=tuple(round(target_pos[a], 3) for a in ("x", "y", "z")),
+                        error_m=round(error_magnitude, 3),
+                        requested_velocity=tuple(round(velocity[a], 3) for a in ("x", "y", "z")),
+                        loop_gap_ms=round(loop_gap * 1000, 1))
+                    last_pid_report = now
 
                 # Apply velocity command if flying
                 if self.is_flying_event.is_set() and self.mc:
@@ -886,6 +939,8 @@ class DroneSetup:
                         ramped_velocity["y"],
                         ramped_velocity["z"],
                     )
+                    self._diag_last_mc_update = time.monotonic()
+
 
                 # Sleep to maintain control rate
                 time.sleep(self.velocity_control_rate)
@@ -1080,7 +1135,10 @@ class DroneSetup:
             return (self.internal_vx, self.internal_vy, self.internal_vz)
 
     def send_command(self, command: Any) -> None:
-        """Send command to the command queue"""
+        """Send command to command queue, with temporary diagnostic timestamp."""
+        if isinstance(command, dict):
+            command = command.copy()
+            command["_diag_queued_at"] = time.monotonic()
         self.command_queue.put(command)
 
     def clear_command_queue(self) -> None:
@@ -1133,6 +1191,7 @@ class DroneSetup:
         with self.battery_lock:
             self.battery_level = voltage
         self.battery_ready_event.set()
+        self._diag_battery_at = time.monotonic()
 
     def _setup_velocity_logging(self) -> None:
         if self.cf is None:
