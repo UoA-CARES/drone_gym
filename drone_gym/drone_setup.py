@@ -1111,11 +1111,14 @@ class DroneSetup:
             )
             return
 
+        requested_at = time.monotonic()
         with self.position_lock:
+            waited_ms = (time.monotonic() - requested_at) * 1000
             self.target_position = {"x": x, "y": y, "z": z}
-
-            # Any previous 'position reached' state refers to the previous target
             self.at_reset_position.clear()
+        if waited_ms > 20:
+            diag("POSITION_LOCK_WAIT", agent=self.agent_id,
+                caller="set_target_position", waited_ms=round(waited_ms, 1))
 
         print(f"[{self.agent_id}] Target position set: x={x}, y={y}, z={z}")
 
@@ -1125,9 +1128,14 @@ class DroneSetup:
             return [self.position["x"], self.position["y"], self.position["z"]]
 
     def get_position_dict(self) -> dict[str, float]:
-        """Get current position as dictionary"""
+        requested_at = time.monotonic()
         with self.position_lock:
-            return self.position.copy()
+            waited_ms = (time.monotonic() - requested_at) * 1000
+            current = self.position.copy()
+        if waited_ms > 20:
+            diag("POSITION_LOCK_WAIT", agent=self.agent_id,
+                caller="get_position_dict", waited_ms=round(waited_ms, 1))
+        return current
 
     def get_internal_velocity(self) -> tuple[float, float, float]:
         """Get current velocity from Crazyflie internal state estimate"""
