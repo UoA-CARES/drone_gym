@@ -5,6 +5,9 @@ from collections.abc import Callable, Iterable, Mapping, Sequence
 
 import numpy as np
 
+from drone_gym.utils.flight_debug import diag
+
+
 class ResetPlanner:
     """Moves a fleet of physical drones to their reset positions safely.
 
@@ -606,7 +609,11 @@ class ResetPlanner:
         )
 
         drone.set_target_position(*target)
-
+        move_started = time.monotonic()
+        last_reset_report = move_started
+        diag("RESET_BEGIN", agent=agent, target=tuple(target), purpose=purpose,
+            position=tuple(start), timeout_s=timeout)
+        
         deadline = time.monotonic() + timeout
         reached = False
         while time.monotonic() < deadline:
@@ -615,12 +622,30 @@ class ResetPlanner:
                 break
             self._raise_if_emergency()
 
+            now = time.monotonic()
+            if now - last_reset_report >= 1.0:
+                current = self.position(agent)
+                diag("RESET_PROGRESS", agent=agent,
+                    elapsed_s=round(now - move_started, 2),
+                    position=tuple(round(v, 3) for v in current),
+                    target=tuple(round(v, 3) for v in target),
+                    error_m=round(self.distance(current, target), 3),
+                    queue_size=drone.command_queue.qsize(),
+                    position_event=drone.at_reset_position.is_set())
+                last_reset_report = now
+
         if not reached:
             current = self.position(agent)
             self._hold_position(agent)
+            diag("RESET_TIMEOUT", agent=agent,
+                position=tuple(current), target=tuple(target),
+                elapsed_s=round(time.monotonic() - move_started, 3))
             raise self.MoveFailure(agent, target, current, timeout)
 
         settled = self.position(agent)
+        diag("RESET_ARRIVED", agent=agent, position=tuple(settled),
+            target=tuple(target),
+            elapsed_s=round(time.monotonic() - move_started, 3))
         error = self.distance(settled, target)
 
         if error > self.hold_error * self.hold_tolerance_scale:
