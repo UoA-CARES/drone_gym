@@ -1,25 +1,30 @@
-from matplotlib.markers import MarkerStyle
-import numpy as np
 import math
 import time
 from typing import Dict, List, Any, Literal
-from drone_gym.drone_environment import DroneEnvironment
-import matplotlib.pyplot as plt
 import io
 import cv2
+import numpy as np
+from matplotlib.markers import MarkerStyle
+import matplotlib.pyplot as plt
+from drone_gym.drone_environment import DroneEnvironment
 
 
 class MoveTo3DPosition(DroneEnvironment):
     """Reinforcement learning task for drone navigation to a target position"""
 
-    def __init__(self, use_simulator: Literal[0,1], max_velocity: float = 0.20, step_time: float = 0.5,
-                 exploration_steps: int = 1000, episode_length: int = 40,
-                 x_range: List[float] = [-1.0, 1.0],
-                 y_range: List[float] = [-1.0, 1.0],
-                 z_range: List[float] = [0.5, 1.5]):
+    def __init__(
+        self,
+        use_simulator: Literal[0, 1],
+        max_velocity: float = 0.20,
+        step_time: float = 0.5,
+        exploration_steps: int = 1000,
+        episode_length: int = 40,
+        x_range: List[float] = [-1.0, 1.0],
+        y_range: List[float] = [-1.0, 1.0],
+        z_range: List[float] = [0.5, 1.5],
+    ):
 
         super().__init__(use_simulator, max_velocity, step_time)
-        
 
         # Store ranges
         self.x_range = x_range
@@ -37,9 +42,13 @@ class MoveTo3DPosition(DroneEnvironment):
         # Task-specific parameters
         self.goal_position = [0.2, 0.9, 0.7]  # Goal position
         self.distance_threshold = 0.05  # Distance threshold to consider target reached
-        self.max_xy_range = 2.0  # Maximum range in x or y direction (for normalizing components)
-        self.max_distance = 5.74  # Maximum distance for normalization (diagonal of 2m x 2m x 2m space)
-        self.time_tolerance = 0.15 # tolerance time for calculating travel distance
+        self.max_xy_range = (
+            2.0  # Maximum range in x or y direction (for normalizing components)
+        )
+        self.max_distance = (
+            5.74  # Maximum distance for normalization (diagonal of 2m x 2m x 2m space)
+        )
+        self.time_tolerance = 0.15  # tolerance time for calculating travel distance
 
         # hard coded z limit
         self.boundary = [self.xy_limit, self.xy_limit, self.z_limit, self.z_limit + 1]
@@ -59,7 +68,6 @@ class MoveTo3DPosition(DroneEnvironment):
         self.previous_distance = self.max_distance
 
         self.step_success_count = 0
-
 
     def reset(self, training: bool = True):
         """Reset the drone and randomize the target position"""
@@ -81,7 +89,6 @@ class MoveTo3DPosition(DroneEnvironment):
         self.previous_distance = self._distance_to_target(self.drone.get_position())
 
         return state
-    
 
     def step(self, action):
         """Execute one step with RL-specific logic for exploration vs learning phases"""
@@ -100,7 +107,7 @@ class MoveTo3DPosition(DroneEnvironment):
             # Learning phase: action is already in [-1, 1]
             processed_action = action
             print(f" action  from fixed 3d position task is: {action}")
-            assert len(action)==3,'action should be length 3'
+            assert len(action) == 3, "action should be length 3"
 
         else:
             # Exploration phase: convert from [0, 1] to [-1, 1]
@@ -131,38 +138,49 @@ class MoveTo3DPosition(DroneEnvironment):
 
         if new_position[2] <= self.boundary[2] or new_position[2] > self.boundary[3]:
             return super().step([0, 0, 0])
-    
+
         # LOG EVERYTHING
         if self.steps % 5 == 0:  # Every 5 steps
             pos = self.drone.get_position()
             goal = self.goal_position
             distance = self._distance_to_target(pos)
-            
+
             # Calculate direction agent SHOULD go
             should_go = [goal[0] - pos[0], goal[1] - pos[1], goal[2] - pos[2]]
             should_go_norm = np.linalg.norm(should_go)
-            
+
             # Calculate direction agent IS going
-            vel = [self.drone.calculated_velocity["x"], 
+            vel = [
+                self.drone.calculated_velocity["x"],
                 self.drone.calculated_velocity["y"],
-                self.drone.calculated_velocity["z"]]
+                self.drone.calculated_velocity["z"],
+            ]
             vel_norm = np.linalg.norm(vel)
-            
+
             # Dot product: how aligned is velocity with goal direction?
             if should_go_norm > 0 and vel_norm > 0:
                 alignment = np.dot(vel, should_go) / (vel_norm * should_go_norm)
-                print(f"move3dpos Step {self.steps}: Distance={distance:.3f}m, "
+                print(
+                    f"move3dpos Step {self.steps}: Distance={distance:.3f}m, "
                     f"Alignment={alignment:.3f} "
-                    f"(1.0=perfect, -1.0=opposite, 0=perpendicular)")
+                    f"(1.0=perfect, -1.0=opposite, 0=perpendicular)"
+                )
                 print("move3dpos goal we are heading to:", goal)
-                print(f"move3dpos   Position: [{pos[0]:.2f}, {pos[1]:.2f}, {pos[2]:.2f}]")
-                print(f"move3dpos   Goal:     [{goal[0]:.2f}, {goal[1]:.2f}, {goal[2]:.2f}]")
-                print(f"move3dpos   Velocity: [{vel[0]:.2f}, {vel[1]:.2f}, {vel[2]:.2f}]")
-                print(f"move3dpos   Should move toward: [{should_go[0]:.2f}, {should_go[1]:.2f}, {should_go[2]:.2f}]\n")
+                print(
+                    f"move3dpos   Position: [{pos[0]:.2f}, {pos[1]:.2f}, {pos[2]:.2f}]"
+                )
+                print(
+                    f"move3dpos   Goal:     [{goal[0]:.2f}, {goal[1]:.2f}, {goal[2]:.2f}]"
+                )
+                print(
+                    f"move3dpos   Velocity: [{vel[0]:.2f}, {vel[1]:.2f}, {vel[2]:.2f}]"
+                )
+                print(
+                    f"move3dpos   Should move toward: [{should_go[0]:.2f}, {should_go[1]:.2f}, {should_go[2]:.2f}]\n"
+                )
 
             # Call parent step method with processed action
         return super().step(processed_action)
-
 
     def _reset_task_state(self):
         """Reset task-specific state variables"""
@@ -191,7 +209,12 @@ class MoveTo3DPosition(DroneEnvironment):
         velocity_magnitude = np.sqrt(vel_x**2 + vel_y**2 + vel_z**2)
 
         # How well velocity aligns with goal direction (1 = perfect, -1 = opposite)
-        velocity_alignment = (vel_x * direction_x + vel_y * direction_y + vel_z * direction_z) / (velocity_magnitude + 1e-6) if velocity_magnitude > 0 else 0
+        velocity_alignment = (
+            (vel_x * direction_x + vel_y * direction_y + vel_z * direction_z)
+            / (velocity_magnitude + 1e-6)
+            if velocity_magnitude > 0
+            else 0
+        )
 
         max_z_range = self.z_range[1] - self.z_range[0]
 
@@ -200,25 +223,20 @@ class MoveTo3DPosition(DroneEnvironment):
             relative_x / self.max_xy_range,
             relative_y / self.max_xy_range,
             relative_z / max_z_range,
-
             # Distance to goal (1)
             distance / self.max_distance,
-
             # Direction to goal - unit vector (3) - helps with directional awareness
             direction_x,
             direction_y,
             direction_z,
-
             # Current velocity (3)
             vel_x / self.max_velocity,
             vel_y / self.max_velocity,
             vel_z / self.max_velocity,
-
             # Velocity magnitude (1) - overall speed
             velocity_magnitude / self.max_velocity,
-
             # Velocity alignment with goal (1) - are we heading the right way?
-            velocity_alignment
+            velocity_alignment,
         ]
 
         return np.array(state, dtype=np.float32)
@@ -227,55 +245,54 @@ class MoveTo3DPosition(DroneEnvironment):
         """Get task-specific state information"""
         position = self.drone.get_position()
         return {
-            'position': position,
-            'goal_position': self.goal_position,
-            'distance_to_target': self._distance_to_target(position),
-            'done': self.done
+            "position": position,
+            "goal_position": self.goal_position,
+            "distance_to_target": self._distance_to_target(position),
+            "done": self.done,
         }
 
     def _distance_to_target(self, position: List[float]) -> float:
         """Calculate 3D Euclidean distance to target position (x, y, z)"""
         # print(f"move3dpos calculating distance from position: {position} to goal_position: {self.goal_position}")
         return math.sqrt(
-            (position[0] - self.goal_position[0])**2 +
-            (position[1] - self.goal_position[1])**2 +
-            (position[2] - self.goal_position[2])**2
+            (position[0] - self.goal_position[0]) ** 2
+            + (position[1] - self.goal_position[1]) ** 2
+            + (position[2] - self.goal_position[2]) ** 2
         )
 
-    
     def _calculate_reward(self, current_state: Dict[str, Any]) -> float:
-        position = current_state['position']
+        position = current_state["position"]
         distance = self._distance_to_target(position)
-        
+
         # Progress-based reward
         distance_improvement = self.previous_distance - distance
         reward = distance_improvement * 100  # Strong signal for getting closer
-        
+
         # Penalize being far away
         reward -= distance * 5
-        
+
         # Reaching target leads to high reward
         if distance < self.distance_threshold:
             reward += 50
-            
+
         # Update tracking
         self.previous_distance = distance
-        
+
         return reward
 
-    def _check_if_done(self, current_state: Dict[str, Any]) -> bool:
+    def _check_if_terminated(self, current_state: Dict[str, Any]) -> bool:
         """Check if navigation task is complete"""
-        distance = current_state['distance_to_target']
+        distance = current_state["distance_to_target"]
 
         # Success condition
         if distance < self.distance_threshold:
             # self.done = True
             # Increment success counter only during evaluation
-            if self.need_to_change_battery():
-                self.change_battery()
-
-            self.step_success_count += 1
-            print(f"move3dpos --- Step {self.steps}: Target reached! Total successes: {self.step_success_count} ---")
+            if self._is_evaluating:
+                self.step_success_count += 1
+            print(
+                f"move3dpos --- Step {self.steps}: Target reached! Total successes: {self.step_success_count} ---"
+            )
             # return True
         return False
 
@@ -287,9 +304,7 @@ class MoveTo3DPosition(DroneEnvironment):
         """Check if episode should be truncated"""
 
         if self.steps >= self.episode_length:
-            if self.need_to_change_battery():
-                self.change_battery()
-            elif current_state["position"][2] <= 0.25:
+            if current_state["position"][2] <= 0.25:
                 self.restart()
             return True
 
@@ -305,13 +320,13 @@ class MoveTo3DPosition(DroneEnvironment):
     def _get_additional_info(self, current_state: Dict[str, Any]) -> Dict[str, Any]:
         """Get additional task-specific info"""
         info = {
-            'goal_position': self.goal_position,
-            'success': current_state['distance_to_target'] < self.distance_threshold,
-            'out_of_bounds': not current_state['in_boundaries'],
-            'description': "Gym environment for reinforcement learning control of drones"
+            "goal_position": self.goal_position,
+            "success": current_state["distance_to_target"] < self.distance_threshold,
+            "out_of_bounds": not current_state["in_boundaries"],
+            "description": "Gym environment for reinforcement learning control of drones",
         }
 
-        info['success_count'] = self.step_success_count
+        info["success_count"] = self.step_success_count
 
         return info
 
@@ -325,7 +340,9 @@ class MoveTo3DPosition(DroneEnvironment):
         target = self.goal_position
         distance = self._distance_to_target(pos)
 
-        print(f"move3dpos Target Position: [{target[0]:.2f}, {target[1]:.2f}, {target[2]:.2f}]")
+        print(
+            f"move3dpos Target Position: [{target[0]:.2f}, {target[1]:.2f}, {target[2]:.2f}]"
+        )
         print(f"move3dpos Distance to Target: {distance:.2f}")
         print(f"move3dpos Success Threshold: {self.distance_threshold:.2f}")
         print(f"move3dpos Done: {self.done}")
@@ -345,45 +362,73 @@ class MoveTo3DPosition(DroneEnvironment):
 
         # Use GridSpec with equal widths and minimal spacing
         from matplotlib.gridspec import GridSpec
+
         gs = GridSpec(1, 2, figure=fig, wspace=0.25, width_ratios=[1, 1])
 
         # LEFT SUBPLOT: 3D trajectory view
-        ax1 = fig.add_subplot(gs[0, 0], projection='3d')
+        ax1 = fig.add_subplot(gs[0, 0], projection="3d")
 
         # Plot the drone's trajectory
-        ax1.plot(x, y, z, label='Drone Path', color='yellow', linewidth=2.5)
+        ax1.plot(x, y, z, label="Drone Path", color="yellow", linewidth=2.5)
 
         # Mark important points with better visibility
-        ax1.scatter(x[0], y[0], z[0], color='green', s=80, label='Start',
-                    depthshade=False, edgecolors='black', linewidth=0.5)
-        ax1.scatter(x[-1], y[-1], z[-1], color='blue', s=80, label='Current',
-                    depthshade=False, edgecolors='black', linewidth=0.5)
-        ax1.scatter(self.goal_position[0], self.goal_position[1], self.goal_position[2],
-                    color='red', marker='*', s=120, label='Goal',
-                    depthshade=False, edgecolors='black', linewidth=1)
+        ax1.scatter(
+            x[0],
+            y[0],
+            z[0],
+            color="green",
+            s=80,
+            label="Start",
+            depthshade=False,
+            edgecolors="black",
+            linewidth=0.5,
+        )
+        ax1.scatter(
+            x[-1],
+            y[-1],
+            z[-1],
+            color="blue",
+            s=80,
+            label="Current",
+            depthshade=False,
+            edgecolors="black",
+            linewidth=0.5,
+        )
+        ax1.scatter(
+            self.goal_position[0],
+            self.goal_position[1],
+            self.goal_position[2],
+            color="red",
+            marker="*",
+            s=120,
+            label="Goal",
+            depthshade=False,
+            edgecolors="black",
+            linewidth=1,
+        )
 
         ax1.set_xlim(-1.5, 1.5)
         ax1.set_ylim(-1.5, 1.5)
         ax1.set_zlim(0.25, 1.25)
 
         # Labels and title
-        ax1.set_xlabel('X (m)', fontsize=10, labelpad=8)
-        ax1.set_ylabel('Y (m)', fontsize=10, labelpad=8)
-        ax1.set_zlabel('Z (m)', fontsize=9, labelpad=10)
+        ax1.set_xlabel("X (m)", fontsize=10, labelpad=8)
+        ax1.set_ylabel("Y (m)", fontsize=10, labelpad=8)
+        ax1.set_zlabel("Z (m)", fontsize=9, labelpad=10)
 
         # Adjust tick parameters
-        ax1.tick_params(axis='x', labelsize=8)
-        ax1.tick_params(axis='y', labelsize=8)
-        ax1.tick_params(axis='z', labelsize=8)
+        ax1.tick_params(axis="x", labelsize=8)
+        ax1.tick_params(axis="y", labelsize=8)
+        ax1.tick_params(axis="z", labelsize=8)
 
         # Viewing angle
         ax1.view_init(elev=10, azim=25)
 
         # Title
-        ax1.set_title('3D Trajectory', fontsize=12, pad=15)
+        ax1.set_title("3D Trajectory", fontsize=12, pad=15)
 
         # Legend
-        ax1.legend(loc='upper left', fontsize=6, framealpha=0.9, markerscale=0.60)
+        ax1.legend(loc="upper left", fontsize=6, framealpha=0.9, markerscale=0.60)
 
         # Grid
         ax1.grid(True, alpha=0.3)
@@ -395,47 +440,77 @@ class MoveTo3DPosition(DroneEnvironment):
         ax2 = fig.add_subplot(gs[0, 1])
 
         # Plot the drone's trajectory in X-Y plane
-        ax2.plot(x, y, color='yellow', linewidth=2.5, label='Drone Path', zorder=1)
+        ax2.plot(x, y, color="yellow", linewidth=2.5, label="Drone Path", zorder=1)
 
         # Mark important points
-        ax2.scatter(x[0], y[0], color='green', s=80, label='Start',
-                    edgecolors='black', linewidth=0.5, zorder=3)
-        ax2.scatter(x[-1], y[-1], color='blue', s=80, label='Current',
-                    edgecolors='black', linewidth=0.5, zorder=3)
-        ax2.scatter(self.goal_position[0], self.goal_position[1],
-                    color='red', marker=MarkerStyle('*'), s=120, label='Goal',
-                    edgecolors='black', linewidth=1, zorder=3)
+        ax2.scatter(
+            x[0],
+            y[0],
+            color="green",
+            s=80,
+            label="Start",
+            edgecolors="black",
+            linewidth=0.5,
+            zorder=3,
+        )
+        ax2.scatter(
+            x[-1],
+            y[-1],
+            color="blue",
+            s=80,
+            label="Current",
+            edgecolors="black",
+            linewidth=0.5,
+            zorder=3,
+        )
+        ax2.scatter(
+            self.goal_position[0],
+            self.goal_position[1],
+            color="red",
+            marker=MarkerStyle("*"),
+            s=120,
+            label="Goal",
+            edgecolors="black",
+            linewidth=1,
+            zorder=3,
+        )
 
         ax2.set_xlim(-1.5, 1.5)
         ax2.set_ylim(-1.5, 1.5)
 
         # Labels and title
-        ax2.set_xlabel('X (m)', fontsize=10)
-        ax2.set_ylabel('Y (m)', fontsize=10)
-        ax2.set_title('Top-Down View (X-Y)', fontsize=12, pad=15)
+        ax2.set_xlabel("X (m)", fontsize=10)
+        ax2.set_ylabel("Y (m)", fontsize=10)
+        ax2.set_title("Top-Down View (X-Y)", fontsize=12, pad=15)
 
         # Equal aspect ratio for accurate representation
-        ax2.set_aspect('equal', adjustable='box')
+        ax2.set_aspect("equal", adjustable="box")
 
         # Legend
-        ax2.legend(loc='upper left', fontsize=6, framealpha=0.9, markerscale=0.60)
+        ax2.legend(loc="upper left", fontsize=6, framealpha=0.9, markerscale=0.60)
 
         # Grid
         ax2.grid(True, alpha=0.3)
 
         # Tick parameters
-        ax2.tick_params(axis='both', labelsize=8)
+        ax2.tick_params(axis="both", labelsize=8)
 
         # Add main title at the top
-        fig.suptitle(f'Episode Trajectory (Step {self.steps})', fontsize=13, y=0.98)
+        fig.suptitle(f"Episode Trajectory (Step {self.steps})", fontsize=13, y=0.98)
 
         # Adjust layout
         plt.tight_layout(rect=[0, 0, 1, 0.96])
 
         # Convert matplotlib figure to image array with higher quality
         buf = io.BytesIO()
-        fig.savefig(buf, format='png', dpi=120,
-                    facecolor='white', edgecolor='none', bbox_inches='tight')
+        fig.savefig(
+            buf,
+            format="png",
+            dpi=120,
+            facecolor="white",
+            edgecolor="none",
+            bbox_inches="tight",
+        )
         buf.seek(0)
 
         # Decode the PNG buffer to numpy array
@@ -449,7 +524,9 @@ class MoveTo3DPosition(DroneEnvironment):
             # Only resize if necessary
             current_h, current_w = frame.shape[:2]
             if current_h != height or current_w != width:
-                frame = cv2.resize(frame, (width, height), interpolation=cv2.INTER_LANCZOS4)
+                frame = cv2.resize(
+                    frame, (width, height), interpolation=cv2.INTER_LANCZOS4
+                )
             # Convert BGR to RGB for consistency
             frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         else:

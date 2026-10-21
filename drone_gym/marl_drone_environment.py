@@ -1,6 +1,6 @@
 from abc import abstractmethod
-import os
-import subprocess
+from itertools import combinations
+import threading
 import time
 from typing import Any, Literal
 
@@ -8,13 +8,11 @@ import numpy as np
 from gymnasium import spaces
 from pettingzoo.utils.env import ParallelEnv
 
+from drone_gym.reset_planner import ResetPlanner
+from drone_gym.utils.vicon_position_source import ViconPositionSource, ViconProvider
 from drone_gym.drone_sim import DroneSim
 from drone_gym.drone import Drone
 from drone_gym.sim_manager import SimManager, SimLaunchConfig
-
-########### NOTES ################
-# [ ] Need to update Drone class to work with multiple drones and probably 
-# have a shared vicon class or smth like above
 
 
 class MarlDroneEnvironment(ParallelEnv):
@@ -30,8 +28,13 @@ class MarlDroneEnvironment(ParallelEnv):
         xy_limit: float = 1.0,
         z_min: float = 0.5,
         z_max: float = 1.5,
+        boundaries: dict[str, float] = None,
         reset_height: float = 1.0,
-        reset_spacing: float = 0.3,
+        reset_spacing: float = 0.5,
+        reset_safety_distance: float = 0.25,
+        position_max_age: float | None = 0.05,
+        collision_safety_distance: float | None = None,
+        collision_monitor_hz: float = 20.0,
     ):
         super().__init__()
 
@@ -41,58 +44,54 @@ class MarlDroneEnvironment(ParallelEnv):
 
         if self.use_simulator:
             self.sim_manager = SimManager(
-                sim_launch_config=SimLaunchConfig(
-                    num_agents=self.num_agents_config
-                )
+                sim_launch_config=SimLaunchConfig(num_agents=self.num_agents_config)
             )
 
             time.sleep(1)  # Allow time for the sim manager to initialize
             print("Starting simulator...")
             sim_started = self.sim_manager.start_sim()
-            print("start_sim returned:", sim_started)
-
-            print("cwd:", os.getcwd())
-            print("DISPLAY:", os.environ.get("DISPLAY"))
-            print("XDG_RUNTIME_DIR:", os.environ.get("XDG_RUNTIME_DIR"))
-
-            subprocess.run(
-                'ps -eo pid,ppid,pgid,sid,stat,etime,cmd | '
-                'grep -i "sitl_multiagent_square\\|gz sim\\|cf2" | grep -v grep',
-                shell=True,
-            )
-
-            print("launch process alive:", self.sim_manager.is_sim_process_alive())
-            print("sitl ready:", self.sim_manager._sitl_processes_ready())
-            print("drones spawned:", self.sim_manager.are_drones_spawned(timeout=2.0))
 
             if not sim_started:
                 raise RuntimeError("Failed to start CrazySim/Gazebo simulator.")
-            # if not self.sim_manager.start_sim():
-            #     raise RuntimeError("Failed to start CrazySim/Gazebo simulator.")
         else:
             self.sim_manager = None
-
-        print("Debug moving on")
-        if self.sim_manager is not None:
-            print("Is sim started:", self.sim_manager.is_sim_process_alive())
 
         # Control limits
         self.max_velocity = max_velocity
         self.max_velocity_z = max_velocity_z
         self.step_time = step_time
 
-        # Movement boundary
+        # Task Movement boundary
         self.xy_limit = xy_limit
         self.z_min = z_min
         self.z_max = z_max
-        self.max_xy_range = xy_limit*2
-        self.max_z_range = (self.z_max - self.z_min)
+        self.max_xy_range = xy_limit * 2
+        self.max_z_range = self.z_max - self.z_min
         self.max_distance_2d = np.sqrt(self.max_xy_range**2 + self.max_xy_range**2)
-        self.max_distance_3d = np.sqrt(self.max_xy_range**2 + self.max_xy_range**2 + self.max_z_range**2)
+        self.max_distance_3d = np.sqrt(
+            self.max_xy_range**2 + self.max_xy_range**2 + self.max_z_range**2
+        )
+        # Hard safety boundary
+        self.boundaries = boundaries
 
-        # Reset layout
+        # Collision safety monitor
+        self.collision_safety_distance = collision_safety_distance
+        self.collision_monitor_hz = collision_monitor_hz
+        self._collision_safety_event = threading.Event()
+        self._collision_monitor_stop_event = threading.Event()
+        self._collision_monitor_thread: threading.Thread | None = None
+        self._collision_safety_pairs: tuple[tuple[str, str, float], ...] = ()
+
+        self._motion_command_lock = threading.Lock()
+
+        # Reset
         self.reset_height = reset_height
+        self.reset_hover_height = reset_height
         self.reset_spacing = reset_spacing
+        self.reset_safety_distance = reset_safety_distance
+        self.position_max_age = position_max_age
+        self.max_manual_interventions = 2
+        self.max_sim_reset_attempts = 3
 
         # Episode state
         self.seed_value = 0
@@ -100,40 +99,35 @@ class MarlDroneEnvironment(ParallelEnv):
 
         # Battery threshold
         self.battery_threshold = 3.25
+        self.battery_reset_margin = 0.2
+        self.battery_episode_margin = 0.2
 
         # PettingZoo agent lists
-        self.possible_agents = [f"drone_{i}" for i in range(self.num_agents_config)]
+        self.possible_agents = self._generate_possible_agents()
         self.agents = []
-
-        # Optional helper mapping
-        self.agent_name_mapping = {
-            agent: i for i, agent in enumerate(self.possible_agents)
-        }
 
         if self.use_simulator:
             self.drone_uris = self._generate_default_sim_uris()
         else:
-            self.drone_uris = {
-                self.possible_agents[0]: "radio://0/100/2M/E7E7E7E7E7",
-                self.possible_agents[1]: "radio://0/100/2M/E7E7E7E7E8",
-            }
+            self.drone_uris = self._generate_default_crazyflie_uris()
             self.vicon_object_names = {
-                self.possible_agents[0]: "Crzayme_0",
-                self.possible_agents[1]: "Crzayme_1",
+                agent: f"Crzayme_{i}" for i, agent in enumerate(self.possible_agents)
             }
+            self.vicon_provider = ViconProvider()
 
         # Per-agent drone objects and state containers
         self.drones: dict[str, Drone | DroneSim] = {}
 
         # Reset positions must be separated so drones do not start in collision
-        self.reset_positions: dict[str, list[float]] = self._generate_grid_reset_positions()
+        self.reset_positions: dict[str, list[float]] = (
+            self._generate_grid_reset_positions()
+        )
 
         self.episode_positions: dict[str, list[list[float]]] = {
             agent: [] for agent in self.possible_agents
         }
 
         self.prior_states: dict[str, dict[str, Any]] = {}
-        self.current_batteries: dict[str, float] = {}
 
         # Evaluation episode tracking
         self._is_evaluating = False
@@ -142,8 +136,12 @@ class MarlDroneEnvironment(ParallelEnv):
         }
         self.team_success_count = 0
 
+        # Bookkeeping: number of times a fatal simulator error has forced a
+        # full simulator restart (across the environment's whole lifetime).
+        self.sim_full_restart_count = 0
+
         # Action:
-        # [vx, vy, vz] 
+        # [vx, vy, vz]
         self._action_space = spaces.Box(
             low=np.array([-1.0, -1.0, -1.0], dtype=np.float32),
             high=np.array([1.0, 1.0, 1.0], dtype=np.float32),
@@ -161,6 +159,18 @@ class MarlDroneEnvironment(ParallelEnv):
 
         self._create_drones()
 
+        self.reset_planner = ResetPlanner(
+            lambda: self.drones,
+            hover_height=lambda: self.reset_hover_height,
+            xy_limit=lambda: self.xy_limit,
+            z_min=lambda: self.z_min,
+            z_max=lambda: self.z_max,
+            safety_distance=self.reset_safety_distance,
+            position_max_age=self.position_max_age,
+        )
+
+        self.reset_planner.validate_reset_positions(self.reset_positions)
+
     # PettingZoo-required API
 
     def observation_space(self, agent: str) -> spaces.Space:
@@ -175,7 +185,9 @@ class MarlDroneEnvironment(ParallelEnv):
         """
         return self._action_space
 
-    def reset(self, seed: int | None = None, options: dict[str, Any] | None = None) -> tuple[dict[str, np.ndarray], dict[str, dict[str, Any]]]:
+    def reset(
+        self, seed: int | None = None, options: dict[str, Any] | None = None
+    ) -> tuple[dict[str, np.ndarray], dict[str, dict[str, Any]]]:
         """
         Reset the environment and return initial observations.
 
@@ -195,13 +207,13 @@ class MarlDroneEnvironment(ParallelEnv):
             - observations: Initial observations for each active agent.
             - infos: Initial info dictionaries for each active agent.
         """
-        # PettingZoo talks about setting seed in reset but this might be handled by the cares rl wrapper??
-        # if seed is not None:
-        #     self.set_seed(seed)
+
+        self._stop_collision_monitor()
+        self._clear_collision_safety_state()
 
         options = options or {}
         training = options.get("training", True)
-        
+
         # Handle evaluation mode detection
         if not training and not self._is_evaluating:
             print("--- STARTING NEW EVALUATION BLOCK ---")
@@ -215,34 +227,13 @@ class MarlDroneEnvironment(ParallelEnv):
         # Clear episode data
         self.episode_positions = {agent: [] for agent in self.possible_agents}
         self.prior_states = {}
-        self.current_batteries = {}
 
-        # Reset each drone to its own separated reset position
-        while True:
-            if self.sim_manager is not None:
-                fatal_agents = self._get_fatal_sim_drone_agents()
+        self._reset_all_drones()
 
-                if fatal_agents:
-                    print(
-                        f"[SIM RECOVERY] Fatal drone error detected for: "
-                        f"{fatal_agents}"
-                    )
-
-                    if not self._recover_from_fatal_sim_error(
-                        max_attempts=3,
-                        retry_delay=10.0,
-                    ):
-                        raise RuntimeError(
-                            "Failed to recover the simulator after all retry attempts."
-                        )
-            self._reset_all_drones()
-            if self._all_drones_safe():
-                for agent in self.possible_agents:
-                    drone = self.drones[agent]
-                    if not drone.safety_thread_active:
-                        drone.start_boundary_monitoring()
-                break
-            time.sleep(20)
+        for agent in self.possible_agents:
+            drone = self.drones[agent]
+            if not drone.safety_thread_active:
+                drone.start_boundary_monitoring()
 
         # Reset task-specific state
         self._reset_task_state()
@@ -253,23 +244,26 @@ class MarlDroneEnvironment(ParallelEnv):
         observations = self._get_observations()
         infos = self._get_infos()
 
+        self._start_collision_monitor()
+
         return observations, infos
 
-    def step(self, actions: dict[str, np.ndarray]
-        ) -> tuple[dict[str, np.ndarray], 
-                   dict[str, float], 
-                   dict[str, bool], 
-                   dict[str, bool], 
-                   dict[str, dict[str, Any]]]:
+    def step(self, actions: dict[str, np.ndarray]) -> tuple[
+        dict[str, np.ndarray],
+        dict[str, float],
+        dict[str, bool],
+        dict[str, bool],
+        dict[str, dict[str, Any]],
+    ]:
         """
         Take a step in the environment using the provided actions.
 
-        Actions are expected to be normalized in the range [-1, 1]. They are
-        denormalized to velocity commands based on `max_velocity` and
+        Actions are expected to be normalised in the range [-1, 1]. They are
+        denormalised to velocity commands based on `max_velocity` and
         `max_velocity_z`.
 
         Args:
-            actions: Normalized action commands for each active agent.
+            actions: normalised action commands for each active agent.
 
         Returns:
             A tuple containing:
@@ -283,18 +277,17 @@ class MarlDroneEnvironment(ParallelEnv):
 
         # Read old positions before applying actions
         old_positions = {
-            agent: self.drones[agent].get_position()
-            for agent in self.agents
+            agent: self.drones[agent].get_position() for agent in self.agents
         }
 
         self.prior_states = self._generate_state_dicts(old_positions)
 
         # Apply all actions
-        denormalized_actions = {}
+        denormalised_actions = {}
         action_filter_infos = {}
 
         for agent in self.agents:
-            vx, vy, vz = self._denormalize_action(actions[agent])
+            vx, vy, vz = self._denormalise_action(agent, actions[agent])
 
             vx, vy, vz, action_filter_info = self._apply_task_action_processing(
                 agent=agent,
@@ -304,23 +297,36 @@ class MarlDroneEnvironment(ParallelEnv):
                 current_position=old_positions[agent],
             )
 
-            denormalized_actions[agent] = [vx, vy, vz]
+            denormalised_actions[agent] = [vx, vy, vz]
             action_filter_infos[agent] = action_filter_info
 
-            self.drones[agent].set_velocity_vector(vx, vy, vz)
+        with self._motion_command_lock:
+            collision_latched = self._collision_safety_event.is_set()
+
+            for agent in self.agents:
+                if collision_latched:
+                    vx = 0.0
+                    vy = 0.0
+                    vz = 0.0
+
+                    denormalised_actions[agent] = [0.0, 0.0, 0.0]
+                    action_filter_infos[agent]["collision_safety_latched"] = True
+
+                else:
+                    vx, vy, vz = denormalised_actions[agent]
+
+                self.drones[agent].set_velocity_vector(vx, vy, vz)
 
         # Advance simulation / wait control interval
         time.sleep(self.step_time)
 
         # Read new positions
         new_positions = {
-            agent: self.drones[agent].get_position()
-            for agent in self.agents
+            agent: self.drones[agent].get_position() for agent in self.agents
         }
 
         for agent in self.agents:
             self.episode_positions[agent].append(new_positions[agent])
-            self.current_batteries[agent] = self.drones[agent].get_battery()
 
         state_dicts = self._generate_state_dicts(new_positions)
 
@@ -335,15 +341,15 @@ class MarlDroneEnvironment(ParallelEnv):
         ]
 
         if finished_agents:
-            self._stop_drones(
+            self._stop_drones_motion(
                 agents=finished_agents,
                 reason="episode terminated/truncated",
             )
 
         infos = self._get_infos(
             state_dicts=state_dicts,
-            denormalized_actions=denormalized_actions,
-            normalized_actions=actions,
+            denormalised_actions=denormalised_actions,
+            normalised_actions=actions,
             old_positions=old_positions,
             new_positions=new_positions,
             action_filter_infos=action_filter_infos,
@@ -371,19 +377,66 @@ class MarlDroneEnvironment(ParallelEnv):
         self._render_task_specific_info()
         print("-" * 60)
 
+    def grab_frame(self, height: int = 240, width: int = 300) -> np.ndarray:
+        """Generate a frame for video recording - to be overridden by tasks"""
+        # Default implementation returns white frame
+        return np.full((height, width, 3), 255, dtype=np.uint8)
+
+    def get_overlay_info(self) -> dict[str, Any]:
+        """Return per-step info to overlay on recorded video frames - to be
+        overridden by tasks."""
+        return {}
+
     def close(self) -> None:
-        """Clean up the drone environment"""
-        
-        for agent, drone in self.drones.items():
-            try:
-                drone.land()
-                drone.is_landed_event.wait(timeout=30)
-                drone.stop()
-            except Exception as exc:
-                print(f"Error closing {agent}: {exc}")
-        
-        if self.use_simulator and self.sim_manager is not None:
-            self.sim_manager.stop_sim()
+        """Clean up all drone interfaces and the simulator."""
+        self._stop_collision_monitor()
+        drones = list(self.drones.items())
+
+        try:
+            # First tell all drones to stop moving and land.
+            for agent, drone in drones:
+                try:
+                    if drone.velocity_controller_active:
+                        drone.stop_velocity_control()
+
+                    drone.set_velocity_vector(0.0, 0.0, 0.0)
+                    drone.land()
+
+                except Exception as exc:
+                    print(f"[MARL ENV] Error while landing " f"{agent!r}: {exc}")
+
+            # Then wait for all drones to finish landing.
+            for agent, drone in drones:
+                try:
+                    if not drone.is_landed_event.wait(timeout=30):
+                        print(
+                            f"[MARL ENV] {agent!r} failed "
+                            "to confirm landing. Forcing shutdown."
+                        )
+
+                except Exception as exc:
+                    print(
+                        f"[MARL ENV] Error while waiting for "
+                        f"{agent!r} to land: {exc}"
+                    )
+
+        finally:
+            # Stop every drone interface regardless of landing success.
+            for agent, drone in drones:
+                try:
+                    drone.stop()
+
+                except Exception as exc:
+                    print(f"[MARL ENV] Error while stopping " f"{agent!r}: {exc}")
+
+            self.drones.clear()
+
+            if self.sim_manager is not None:
+                try:
+                    self.sim_manager.stop_sim()
+
+                except Exception as exc:
+                    print(f"[MARL ENV] Error while stopping simulator: {exc}")
 
     def state(self) -> np.ndarray:
         """
@@ -400,15 +453,20 @@ class MarlDroneEnvironment(ParallelEnv):
                 self.drones[agent] = DroneSim(
                     uri=self.drone_uris[agent],
                     agent_id=agent,
+                    boundaries=self.boundaries,
                 )
             else:
                 self.drones[agent] = Drone(
                     agent_id=agent,
+                    position_source=ViconPositionSource(
+                        object_name=self.vicon_object_names[agent],
+                        provider=self.vicon_provider,
+                        label=agent,
+                    ),
                     uri=self.drone_uris[agent],
-                    position_tracking_mode="source_vicon",
-                    vicon_object_name=self.vicon_object_names[agent],
+                    boundaries=self.boundaries,
                 )
-    
+
     def _generate_grid_reset_positions(self) -> dict[str, list[float]]:
         """
         Generate reset positions in a centred 2D grid that respects xy_limit.
@@ -448,7 +506,8 @@ class MarlDroneEnvironment(ParallelEnv):
 
         if max_positions_per_axis <= 0:
             raise ValueError(
-                f"reset_spacing={self.reset_spacing} is too large for xy_limit={self.xy_limit}."
+                f"reset_spacing={self.reset_spacing} "
+                f"is too large for xy_limit={self.xy_limit}."
             )
 
         max_grid_positions = max_positions_per_axis * max_positions_per_axis
@@ -497,7 +556,11 @@ class MarlDroneEnvironment(ParallelEnv):
             reset_positions[agent] = [float(x), float(y), float(z)]
 
         return reset_positions
-    
+
+    def _generate_possible_agents(self) -> list[str]:
+        """Generate a list of possible agent names."""
+        return [f"drone_{i}" for i in range(self.num_agents_config)]
+
     def _generate_default_sim_uris(self) -> dict[str, str]:
         """Generate default simulator URIs for all possible agents."""
         return {
@@ -505,117 +568,832 @@ class MarlDroneEnvironment(ParallelEnv):
             for i, agent in enumerate(self.possible_agents)
         }
 
+    def _generate_default_crazyflie_uris(self) -> dict[str, str]:
+        """Generate default URIs for all physical drones."""
+        return {
+            agent: f"radio://0/100/2M/E7E7E7E7{index:02X}"
+            for index, agent in enumerate(self.possible_agents)
+        }
+
+    def _get_battery_levels(self) -> dict[str, float]:
+        """Return battery levels for all physical drones."""
+
+        if self.use_simulator:
+            return {}
+
+        battery_levels = {}
+
+        for agent in self.possible_agents:
+            drone = self.drones[agent]
+            if drone.battery_ready_event.wait(timeout=5.0):
+                battery_levels[agent] = drone.get_battery()
+            else:
+                print(f"[{agent}] No battery telemetry available.")
+
+        return battery_levels
+
+    def _get_low_battery_agents(self) -> list[str]:
+        """Return physical agents whose batteries are below the threshold."""
+
+        battery_levels = self._get_battery_levels()
+
+        return [
+            agent
+            for agent, battery_level in battery_levels.items()
+            if battery_level <= self.battery_threshold
+        ]
+
+    def _land_all_drones_and_disable_safety(
+        self,
+        label: str,
+    ) -> bool:
+        """
+        Land all drones, disable boundary monitoring, and disarm
+        them before a physical service operation.
+        """
+
+        if not self._land_all_drones(label=label):
+            return False
+
+        for agent in self.possible_agents:
+            drone = self.drones[agent]
+
+            if not drone.safety_thread_active:
+                continue
+            try:
+                drone.stop_boundary_monitoring()
+            except Exception as exc:
+                print(
+                    f"[{label}] Failed to stop boundary monitoring for {agent}: {exc}"
+                )
+                return False
+
+        for agent in self.possible_agents:
+            drone = self.drones[agent]
+
+            if not drone.armed or drone.cf is None:
+                continue
+            try:
+                print(f"[{label}] Disarming {agent}...")
+                drone.cf.supervisor.send_arming_request(False)
+                drone.armed = False
+            except Exception as exc:
+                print(f"[{label}] Failed to disarm {agent}: {exc}")
+
+                return False
+
+        return True
+
+    def _recover_service_drones(
+        self,
+        drones_to_service: list[str],
+        label: str,
+        prompt_text: str,
+    ) -> bool:
+        """
+        Wait for physical servicing of selected drones, reconnect them,
+        confirm fresh position data, and re-arm drones that remained
+        connected.
+        """
+
+        print(f"\n[{label}] {prompt_text}")
+
+        while True:
+            response = input(f"{prompt_text} (y/n): ").strip().lower()
+
+            if response == "y":
+                break
+
+            if response == "n":
+                raise RuntimeError(f"[{label}] Service aborted by user.")
+
+            print(f"[{label}] Invalid input. " "Please enter 'y' or 'n'.")
+
+        # Serviced drones may have physically moved.
+        for agent in drones_to_service:
+            drone = self.drones[agent]
+
+            with drone.position_lock:
+                drone.last_position_update_time = None
+
+        # Reconnect serviced drones.
+        for agent in drones_to_service:
+            drone = self.drones[agent]
+
+            print(f"[{label}] Reinitialising {agent}...")
+
+            if not drone.initialise_crazyflie():
+                print(f"[{label}] Failed to reinitialise " f"{agent}.")
+
+                return False
+
+        # Require fresh position information.
+        for agent in drones_to_service:
+            drone = self.drones[agent]
+
+            deadline = time.monotonic() + 5.0
+
+            while (
+                drone.last_position_update_time is None and time.monotonic() < deadline
+            ):
+                time.sleep(0.05)
+
+            if drone.last_position_update_time is None:
+                print(f"[{label}] No fresh position " f"received for {agent}.")
+
+                return False
+
+            print(f"[{label}] {agent} fresh position: " f"{drone.get_position()}")
+
+        # Re-arm drones which remained connected.
+        for agent in self.possible_agents:
+            if agent in drones_to_service:
+                continue
+
+            drone = self.drones[agent]
+
+            try:
+                print(f"[{label}] Re-arming {agent}...")
+
+                drone.cf.supervisor.send_arming_request(True)
+
+                time.sleep(1.0)
+
+                drone.armed = True
+
+            except Exception as exc:
+                print(f"[{label}] Failed to re-arm " f"{agent}: {exc}")
+
+                return False
+
+        return True
+
+    def change_battery(
+        self,
+        low_battery_agents: list[str],
+        minimum_voltage: float | None = None,
+    ) -> bool:
+        """
+        Handle battery replacement for physical drones.
+
+        All drones are landed and disarmed before battery replacement.
+        Only drones requiring new batteries are powered down and
+        reinitialised.
+
+        Args:
+            low_battery_agents:
+                Agents whose batteries need replacing.
+            minimum_voltage:
+                Minimum acceptable voltage for replacement batteries.
+                Defaults to battery_threshold.
+
+        Returns:
+            True when battery replacement completes successfully.
+            False otherwise.
+        """
+        if self.use_simulator:
+            return True
+
+        if not low_battery_agents:
+            return True
+
+        if minimum_voltage is None:
+            minimum_voltage = self.battery_threshold
+
+        print("\n[BATTERY] Beginning battery change operation.")
+
+        print("[BATTERY] Batteries requiring replacement: " f"{low_battery_agents}")
+
+        print("[BATTERY] Required replacement voltage: " f"{minimum_voltage:.2f} V")
+
+        if not self._land_all_drones_and_disable_safety(label="BATTERY"):
+            return False
+
+        # Only affected drones are powered down.
+        for agent in low_battery_agents:
+            try:
+                self.drones[agent].pre_battery_change_cleanup()
+
+                print(f"[BATTERY] {agent} ready " "for battery replacement.")
+
+            except Exception as exc:
+                print(
+                    f"[BATTERY] Failed to prepare " f"{agent} for battery change: {exc}"
+                )
+
+                return False
+
+        print(
+            "[BATTERY] Low-battery drones are powered down "
+            "and ready for battery replacement."
+        )
+
+        if not self._recover_service_drones(
+            drones_to_service=low_battery_agents,
+            label="BATTERY",
+            prompt_text=(
+                "Please replace the batteries for the above "
+                "drones and confirm when done."
+            ),
+        ):
+            self._land_all_drones_and_disable_safety(label="BATTERY")
+            return False
+
+        # Validate replacement batteries.
+        for agent in low_battery_agents:
+            drone = self.drones[agent]
+
+            if not drone.battery_ready_event.wait(timeout=5.0):
+                print(
+                    f"[BATTERY] No battery telemetry received "
+                    f"from {agent} after reconnect."
+                )
+
+                return False
+
+            battery_level = drone.get_battery()
+
+            print(f"[BATTERY] {agent} battery: " f"{battery_level:.2f} V")
+
+            if battery_level <= minimum_voltage:
+                print(
+                    f"[BATTERY] Replacement battery for "
+                    f"{agent} is below the required voltage "
+                    f"({minimum_voltage:.2f} V)."
+                )
+
+                self._land_all_drones_and_disable_safety(label="BATTERY")
+
+                return False
+
+        # Servicing is complete. Restore safety monitoring
+        # before flight is allowed again.
+        for agent in self.possible_agents:
+            drone = self.drones[agent]
+
+            if not drone.safety_thread_active:
+                drone.start_boundary_monitoring()
+
+        print("[BATTERY] Battery change operation complete.")
+
+        return True
+
     def _reset_all_drones(self) -> None:
-        """
-        Resets all drones at once to their respective reset positions.
-        Ends by enabling velocity control for all drones so they are ready for the first step.
-        
-        This method can be improved to avoid collision during reset
-        """
+        """Reset all drones to their respective reset positions."""
         print("Resetting all drones to initial positions...")
         print(f"Reset positions: {self.reset_positions}")
 
+        if self.use_simulator:
+            self._reset_all_sim_drones()
+        else:
+            self._reset_all_physical_drones()
+
+    def _reset_all_sim_drones(
+        self,
+    ) -> None:
+        """
+        Reset all simulated drones using the fast Gazebo reset process.
+
+        Retries up to max_sim_reset_attempts when the simulator,
+        take-off, reset movement, or final safety state is invalid.
+        """
+
+        for attempt in range(
+            1,
+            self.max_sim_reset_attempts + 1,
+        ):
+            try:
+                self._recover_sim_if_fatal()
+
+                # Stop all existing control before landing.
+                for agent in self.possible_agents:
+                    drone = self.drones[agent]
+
+                    if drone.velocity_controller_active:
+                        drone.stop_velocity_control()
+
+                    if drone.position_controller_active:
+                        drone.stop_position_control()
+
+                    self._reset_control_properties(agent)
+
+                    drone.set_velocity_vector(
+                        0.0,
+                        0.0,
+                        0.0,
+                    )
+
+                    drone.land()
+
+                # Confirm landing before teleporting.
+                failed_landings = [
+                    agent
+                    for agent in self.possible_agents
+                    if not self.drones[agent].is_landed_event.wait(timeout=10)
+                ]
+
+                if failed_landings:
+                    raise RuntimeError(
+                        "Drones failed to confirm landing "
+                        f"during sim reset: {failed_landings}"
+                    )
+
+                # Clear emergencies and teleport.
+                for agent in self.possible_agents:
+                    drone = self.drones[agent]
+
+                    if drone.emergency_event.is_set():
+                        drone.clear_emergency_event()
+
+                        if drone.safety_thread_active:
+                            drone.stop_boundary_monitoring()
+                            time.sleep(0.2)
+                            drone.start_boundary_monitoring()
+
+                    self.sim_manager.set_drone_pose(
+                        drone_id=self.possible_agents.index(agent),
+                        x=self.reset_positions[agent][0],
+                        y=self.reset_positions[agent][1],
+                        z=0.02,
+                        orientation=(
+                            0.0,
+                            0.0,
+                            0.0,
+                        ),
+                    )
+
+                # Allow Gazebo physics to settle.
+                time.sleep(0.3)
+
+                # Reset estimators at the teleported positions.
+                for agent in self.possible_agents:
+                    drone = self.drones[agent]
+
+                    spawn_position = [
+                        self.reset_positions[agent][0],
+                        self.reset_positions[agent][1],
+                        0.02,
+                    ]
+
+                    self._reset_ekf(
+                        drone,
+                        spawn_position,
+                    )
+
+                time.sleep(0.5)
+
+                # Take off.
+                for agent in self.possible_agents:
+                    drone = self.drones[agent]
+
+                    if not drone.is_flying_event.is_set():
+                        print(f"[{agent}] " "Taking off before reset...")
+
+                        drone.take_off()
+
+                for agent in self.possible_agents:
+                    drone = self.drones[agent]
+
+                    if not drone.wait_for_takeoff_confirmation(
+                        minimum_height=0.2,
+                        timeout=10.0,
+                    ):
+                        raise RuntimeError(
+                            f"{agent} failed functional " "take-off verification."
+                        )
+
+                # Send all drones to their actual reset positions.
+                for agent in self.possible_agents:
+                    self.drones[agent].set_target_position(*self.reset_positions[agent])
+
+                time.sleep(0.1)
+
+                for agent in self.possible_agents:
+                    self.drones[agent].start_position_control()
+
+                reset_success = self._wait_for_all_reset_events(timeout=20)
+                if not reset_success:
+                    if attempt < self.max_sim_reset_attempts:
+                        # The default implementation returns None; task-specific
+                        # environments may override it with a retry layout.
+                        retry_positions = (  # pylint: disable=assignment-from-none
+                            self._generate_sim_reset_retry_positions()
+                        )
+
+                        if retry_positions is not None:
+                            self.reset_positions = retry_positions
+
+                            print(
+                                "[SIM RESET] Drones timed out reaching their reset positions "
+                                "after successful take-off."
+                            )
+                            print(
+                                "[SIM RESET] Generated new reset positions for the next attempt: "
+                                f"{self.reset_positions}"
+                            )
+
+                            continue
+
+                    raise RuntimeError(
+                        "Not all drones reached their reset positions before timeout."
+                    )
+
+                time.sleep(1.0)
+                self._switch_to_velocity_control()
+
+                for agent in self.possible_agents:
+                    drone = self.drones[agent]
+
+                    initial_position = drone.get_position()
+
+                    print(
+                        f"[{agent}] Current position "
+                        f"after reset: {initial_position}"
+                    )
+
+                    print(
+                        f"[{agent}] Desired reset target: "
+                        f"{self.reset_positions[agent]}"
+                    )
+
+                    self.episode_positions[agent].append(initial_position)
+
+                if self._all_drones_safe():
+                    print("[SIM RESET] All drones safe after reset.")
+
+                    return
+
+                unsafe = self._unsafe_agents()
+
+                raise RuntimeError("Drones unsafe after reset: " f"{unsafe}")
+
+            except Exception as exc:
+                print(
+                    f"[SIM RESET] Attempt "
+                    f"{attempt}/"
+                    f"{self.max_sim_reset_attempts} "
+                    f"failed: {exc}."
+                )
+
+                if attempt >= self.max_sim_reset_attempts:
+                    raise RuntimeError(
+                        "Sim reset failed after "
+                        f"{self.max_sim_reset_attempts} "
+                        "attempts."
+                    ) from exc
+
+                print("[SIM RESET] Retrying...")
+                time.sleep(5.0)
+
+    def _generate_sim_reset_retry_positions(
+        self,
+    ) -> dict[str, list[float]] | None:
+        """
+        Optionally generate a new reset layout after simulated drones
+        time out while moving to their reset positions. Tasks can
+        override this method to generate new positions. Returning
+        None keeps the existing reset positions.
+        """
+        return None
+
+    def _reset_all_physical_drones(
+        self,
+    ) -> None:
+        """
+        Run the physical reset sequence for all drones.
+
+        Batteries are checked before the reset for enough charge to
+        complete the reset, and again after the reset for enough charge
+        to complete the next episode.
+
+        If a post-reset battery change occurs, the entire physical reset
+        is repeated.
+        """
+
+        self.reset_planner.validate_reset_positions(self.reset_positions)
+
+        interventions = 0
+
+        while True:
+            # Ensure sufficient battery to complete potentially
+            # lengthy reset movement.
+            self._change_batteries_if_needed(margin=self.battery_reset_margin)
+
+            while True:
+                try:
+                    # Keep this inside the try because preparation itself
+                    # can raise InterventionRequired.
+                    self._prepare_drones_for_physical_reset()
+
+                    outcome = self.reset_planner.execute(self.reset_positions)
+
+                    break
+
+                except ResetPlanner.InterventionRequired as escalation:
+                    print("[RESET] Automatic reset requires manual intervention.")
+
+                    print(f"[RESET] Affected drones: {escalation.agents}")
+
+                    print(f"[RESET] Reason: {escalation.reason}")
+
+                    if not self._land_all_drones(label="RESET"):
+                        raise RuntimeError(
+                            "Could not safely land all drones "
+                            "for manual reset intervention."
+                        ) from escalation
+
+                    if interventions >= self.max_manual_interventions:
+                        raise RuntimeError(
+                            f"Reset failed after {interventions} interventions: {escalation}"
+                        ) from escalation
+
+                    if not self._manual_reset_intervention(
+                        escalation.agents,
+                        escalation.reason,
+                    ):
+                        raise RuntimeError(
+                            "Manual reset recovery failed."
+                        ) from escalation
+
+                    interventions += 1
+
+                    # Manual handling changes physical geometry.
+                    # Restart planning from the beginning.
+                    continue
+
+                except Exception:
+                    self._land_all_drones(label="RESET")
+
+                    raise
+
+            # Preserve slot assignment before any battery service.
+            self.reset_positions = outcome["assigned_positions"]
+
+            # Reset movement may have consumed significant battery.
+            # Before an episode starts, ensure enough remains for the
+            # complete episode.
+            battery_changed = self._change_batteries_if_needed(
+                margin=self.battery_episode_margin
+            )
+
+            if battery_changed:
+                print(
+                    "[RESET] Battery changed after reset. "
+                    "Restarting the full physical reset before "
+                    "starting the episode."
+                )
+
+                # Battery replacement landed/disarmed the fleet and
+                # may have physically moved serviced drones.
+                continue
+
+            print(f"Reset: {ResetPlanner.summarise(outcome)}")
+
+            self._log_initial_state_error(outcome)
+
+            self._switch_to_velocity_control()
+
+            return
+
+    def _log_initial_state_error(self, outcome: dict) -> None:
+        """
+        Track how far off each episode actually starts from
+        desired reset position."""
+        for agent, error in sorted(outcome["final_errors"].items()):
+            self.episode_positions[agent].append(self.drones[agent].get_position())
+            if error > self.reset_planner.hold_error * 2:
+                print(f"{agent} started {error:.3f}m from its reset slot")
+
+    def _unsafe_agents(self) -> list[str]:
+        """Which drones are in a fault state."""
+        unsafe = []
+
+        for agent in self.possible_agents:
+            drone = self.drones[agent]
+
+            if drone.emergency_event.is_set():
+                unsafe.append(agent)
+            if isinstance(drone, DroneSim) and drone.fatal_error_event.is_set():
+                unsafe.append(agent)
+
+        return unsafe
+
+    def _all_drones_safe(self) -> bool:
+        return not self._unsafe_agents()
+
+    def _change_batteries_if_needed(
+        self,
+        margin: float = 0.0,
+    ) -> bool:
+        """
+        Replace batteries below the required operating voltage.
+
+        Returns:
+            True if one or more batteries were changed.
+            False otherwise.
+        """
+        if self.use_simulator:
+            return False
+
+        minimum_voltage = self.battery_threshold + margin
+        battery_levels = self._get_battery_levels()
+
+        low_battery_agents = [
+            agent
+            for agent, battery_level in battery_levels.items()
+            if battery_level <= minimum_voltage
+        ]
+
+        if not low_battery_agents:
+            return False
+
+        print(
+            "[BATTERY] Drones below required voltage "
+            f"({minimum_voltage:.2f} V): "
+            f"{low_battery_agents}"
+        )
+
+        if not self.change_battery(
+            low_battery_agents,
+            minimum_voltage=minimum_voltage,
+        ):
+            raise RuntimeError("Battery change failed for " f"{low_battery_agents}")
+
+        return True
+
+    def _recover_sim_if_fatal(self) -> None:
+        """Restart the simulator if any DroneSim has a fatal error."""
+        fatal = self._get_fatal_sim_drone_agents()
+        if not fatal:
+            return
+
+        print(f"Fatal simulator error for: {fatal}")
+
+        if not self._recover_from_fatal_sim_error(max_attempts=3, retry_delay=10.0):
+            raise RuntimeError("Failed to recover the simulator after all retries")
+
+    def _prepare_drones_for_physical_reset(self) -> None:
+        """Prepare the drones for a ResetPlanner reset.
+
+        Stop active controllers, ensure every drone is airborne, and command a hold
+        pose before planning begins.
+
+        Raises:
+            ResetPlanner.InterventionRequired: If any drone cannot confirm take-off
+                or the required reset-ready state.
+        """
         for agent in self.possible_agents:
             drone = self.drones[agent]
 
             if drone.velocity_controller_active:
                 drone.stop_velocity_control()
+            if drone.position_controller_active:
+                drone.stop_position_control()
 
-            time.sleep(0.5)
             self._reset_control_properties(agent)
-            drone.set_velocity_vector(0, 0, 0)
-
-            if isinstance(drone, DroneSim):
-                drone.land()
+            drone.set_velocity_vector(0.0, 0.0, 0.0)
 
         for agent in self.possible_agents:
             drone = self.drones[agent]
-            if isinstance(drone, DroneSim):
-                drone.is_landed_event.wait(timeout=10)
-
-                if drone.emergency_event.is_set():
-                    drone.emergency_event.clear()
-                    if drone.safety_thread_active:
-                        drone.stop_boundary_monitoring()
-                        time.sleep(0.2)
-                        drone.start_boundary_monitoring()
-
-                self.sim_manager.set_drone_pose(
-                    drone_id=self.possible_agents.index(agent),
-                    x=self.reset_positions[agent][0],
-                    y=self.reset_positions[agent][1],
-                    z=0.02,
-                    orientation=(0.0, 0.0, 0.0),
-                )
-
-        time.sleep(0.3)  # let physics settle models onto the floor
-
-        for agent in self.possible_agents:
-            drone = self.drones[agent]
-            if isinstance(drone, DroneSim):
-                spawn_pos = [
-                    self.reset_positions[agent][0],
-                    self.reset_positions[agent][1],
-                    0.02,
-                ]
-                self._reset_ekf(drone, spawn_pos)
-
-        time.sleep(0.5)  # give estimators time to converge at spawns before takeoff
-
-        for agent in self.possible_agents:
-            drone = self.drones[agent]
-
             if not drone.is_flying_event.is_set():
-                print(f"[{agent}] Taking off before reset...")
+                print(f"{agent} taking off before reset")
                 drone.take_off()
 
-        time.sleep(1)
+        grounded = [
+            agent
+            for agent in self.possible_agents
+            if not self.drones[agent].is_flying_event.wait(timeout=15)
+        ]
+        if grounded:
+            raise ResetPlanner.InterventionRequired(
+                grounded, "failed to confirm take-off"
+            )
+
+        # Hold where they are. The planner assumes nothing is drifting under a
+        # stale command before it starts planning.
+        for agent in self.possible_agents:
+            drone = self.drones[agent]
+            drone.set_target_position(*drone.get_position())
+
+        for agent in self.possible_agents:
+            self.drones[agent].start_position_control()
+
+        time.sleep(1.0)
+
+    def _land_all_drones(
+        self,
+        timeout: float = 15.0,
+        label: str = "",
+    ) -> bool:
+        """Land all drones and return whether all confirmed landing."""
+
+        success = True
 
         for agent in self.possible_agents:
             drone = self.drones[agent]
 
-            if not drone.is_flying_event.wait(timeout=15):
-                if isinstance(drone, Drone):
-                    raise RuntimeError(f"[{agent}] Failed to confirm take-off during reset.")
-                else:
-                    print(f"[{agent}] Failed to confirm take-off during reset.")
+            try:
+                drone.clear_command_queue()
+                if drone.position_controller_active:
+                    drone.stop_position_control()
+                if drone.velocity_controller_active:
+                    drone.stop_velocity_control()
+                drone.set_velocity_vector(0.0, 0.0, 0.0)
+                drone.land()
+
+            except Exception as exc:
+                print(f"[{label}] Failed to request landing for {agent}: {exc}")
+                success = False
 
         for agent in self.possible_agents:
-            drone = self.drones[agent]
+            try:
+                if not self.drones[agent].is_landed_event.wait(timeout=timeout):
+                    print(f"[{label}] {agent} did not confirm landing.")
+                    success = False
 
-            reset_pos = self.reset_positions[agent]
-            drone.set_target_position(*reset_pos)
+            except Exception as exc:
+                print(f"[{label}] Error waiting for {agent} to land: {exc}")
+                success = False
 
-        time.sleep(0.1)
+        return success
 
-        for agent in self.possible_agents:
-            drone = self.drones[agent]
-
-            drone.start_position_control()
-        
-        reset_success = self._wait_for_all_reset_events(timeout=10)
-
-        if not reset_success:
-            print("[ERROR] Not all drones reached reset positions in time. Check drone states and reset position configuration.")
-
-        time.sleep(1)
-
+    def _switch_to_velocity_control(self) -> None:
         for agent in self.possible_agents:
             drone = self.drones[agent]
 
             drone.stop_position_control()
             drone.clear_reset_position_event()
             drone.set_velocity_vector(0.0, 0.0, 0.0)
+            drone.start_velocity_control()
 
+    def _manual_reset_intervention(
+        self,
+        failed_agents: list[str],
+        reason: str | None = None,
+    ) -> bool:
+        """
+        Allow manual repositioning when automatic physical reset fails.
+
+        All drones are landed and disarmed so the flight area can be entered
+        safely. Failed drones are powered down and disconnected using the same
+        cleanup process as a battery change. Other drones remain connected.
+
+        After the user repositions and powers the failed drones back on, they
+        are reinitialised and all drones are re-armed. The normal physical reset
+        should then be restarted from the beginning.
+        """
+        if self.use_simulator:
+            return False
+
+        if not failed_agents:
+            return True
+
+        print("\n[RESET RECOVERY] Manual intervention required.")
+        print(f"[RESET RECOVERY] Automatic reset failed for: " f"{failed_agents}")
+        if reason is not None:
+            print(f"[RESET RECOVERY] Reason: {reason}")
+
+        for agent in failed_agents:
+            print(
+                f"[RESET RECOVERY] {agent} reset target: "
+                f"{self.reset_positions[agent]}"
+            )
+
+        if not self._land_all_drones_and_disable_safety(label="RESET RECOVERY"):
+            return False
+
+        # Only failed drones are powered down/disconnected.
+        for agent in failed_agents:
+            try:
+                self.drones[agent].pre_battery_change_cleanup()
+                print(f"[RESET RECOVERY] {agent} powered down.")
+            except Exception as exc:
+                print(f"[RESET RECOVERY] Failed to prepare {agent}: {exc}")
+                return False
+        print("\n[RESET RECOVERY] It is now safe to enter the flight area.")
+
+        # Wait for user confirmation that the failed drones have been repositioned
+        # and powered back on.
+        if not self._recover_service_drones(
+            drones_to_service=failed_agents,
+            label="RESET RECOVERY",
+            prompt_text="Please reposition and power on the failed drones, "
+            "then confirm when done.",
+        ):
+            self._land_all_drones_and_disable_safety(label="RESET RECOVERY")
+            return False
+
+        print(
+            "[RESET RECOVERY] Manual intervention complete. "
+            "Restarting automatic reset."
+        )
         for agent in self.possible_agents:
             drone = self.drones[agent]
 
-            initial_position = drone.get_position()
-            print(f"[{agent}] Current position after reset: {initial_position}")
-            print(f"[{agent}] Desired reset target: {self.reset_positions[agent]}")
-            self.episode_positions[agent].append(initial_position)
+            if not drone.safety_thread_active:
+                drone.start_boundary_monitoring()
 
-            drone.start_velocity_control()
+        return True
 
     def _reset_control_properties(self, agent: str) -> None:
         """
@@ -663,9 +1441,7 @@ class MarlDroneEnvironment(ParallelEnv):
                 return True
 
             waiting_agents = [
-                agent
-                for agent in self.possible_agents
-                if agent not in reached_agents
+                agent for agent in self.possible_agents if agent not in reached_agents
             ]
 
             print(
@@ -683,7 +1459,7 @@ class MarlDroneEnvironment(ParallelEnv):
 
         print(f"[RESET] Timeout waiting for drones: {timed_out_agents}")
         return False
-    
+
     def _reset_ekf(self, drone: DroneSim, position: list[float] | None = None) -> None:
         """Seed the Kalman filter with the drone's true position and reset it.
 
@@ -701,31 +1477,14 @@ class MarlDroneEnvironment(ParallelEnv):
                     drone.cf.param.set_value("kalman.initialY", f"{float(position[1])}")
                     drone.cf.param.set_value("kalman.initialZ", f"{float(position[2])}")
                 except Exception as exc:
-                    print(f"[{getattr(drone, 'agent_id', '?')}] EKF seed warning (continuing with plain reset): {exc}")
+                    print(
+                        f"[{getattr(drone, 'agent_id', '?')}] EKF seed warning "
+                        f"(continuing with plain reset): {exc}"
+                    )
             drone.cf.param.set_value("kalman.resetEstimation", "1")
             time.sleep(0.4)
         except Exception as exc:
             print(f"[{getattr(drone, 'agent_id', '?')}] EKF reset warning: {exc}")
-
-    def _all_drones_safe(self) -> bool:
-        """
-        Check if all drones are currently in a safe state (i.e., no emergency events).
-
-        This could be used apart of battery checks or other safety-related terminations in the future.
-        """
-        for agent in self.possible_agents:
-            drone = self.drones[agent]
-
-            if drone.emergency_event.is_set():
-                return False
-
-            if (
-                isinstance(drone, DroneSim)
-                and drone.fatal_error_event.is_set()
-            ):
-                return False
-
-        return True
 
     def _get_fatal_sim_drone_agents(self) -> list[str]:
         """Return simulated agents whose drone interface has a fatal error."""
@@ -735,18 +1494,16 @@ class MarlDroneEnvironment(ParallelEnv):
         return [
             agent
             for agent, drone in self.drones.items()
-            if (
-                isinstance(drone, DroneSim)
-                and drone.fatal_error_event.is_set()
-            )
+            if (isinstance(drone, DroneSim) and drone.fatal_error_event.is_set())
         ]
 
     def _clear_all_drones_instances(self) -> None:
         """
         Shuts down drone interfaces and clears drone objects
-        
+
         IMPORTANT: Does not land drones
         """
+        self._stop_collision_monitor()
         for agent, drone in list(self.drones.items()):
             try:
                 print(f"[MARL] Stopping old interface for {agent}...")
@@ -777,16 +1534,14 @@ class MarlDroneEnvironment(ParallelEnv):
                 "Fatal simulated-drone error detected, but no SimManager exists."
             )
 
+        self.sim_full_restart_count += 1
         print("[SIM RECOVERY] Preparing to restart the simulation...")
 
         # The current objects refer to the old SITL processes and cannot be reused.
         self._clear_all_drones_instances()
 
         for attempt in range(1, max_attempts + 1):
-            print(
-                f"[SIM RECOVERY] Recovery attempt "
-                f"{attempt}/{max_attempts}..."
-            )
+            print(f"[SIM RECOVERY] Recovery attempt " f"{attempt}/{max_attempts}...")
 
             try:
                 sim_restarted = self.sim_manager.restart_sim()
@@ -816,9 +1571,7 @@ class MarlDroneEnvironment(ParallelEnv):
                             or not self.drones[agent].is_running()
                             or (
                                 isinstance(self.drones[agent], DroneSim)
-                                and self.drones[
-                                    agent
-                                ].fatal_error_event.is_set()
+                                and self.drones[agent].fatal_error_event.is_set()
                             )
                         )
                     ]
@@ -846,10 +1599,7 @@ class MarlDroneEnvironment(ParallelEnv):
                 self._clear_all_drones_instances()
 
             if attempt < max_attempts:
-                print(
-                    f"[SIM RECOVERY] Retrying in "
-                    f"{retry_delay} seconds..."
-                )
+                print(f"[SIM RECOVERY] Retrying in " f"{retry_delay} seconds...")
                 time.sleep(retry_delay)
 
         print(
@@ -858,19 +1608,23 @@ class MarlDroneEnvironment(ParallelEnv):
         )
         return False
 
-    def _denormalize_action(self, action: np.ndarray) -> tuple[float, float, float]:
+    def _denormalise_action(
+        self, agent: str, action: np.ndarray
+    ) -> tuple[float, float, float]:
         """
-        Convert a normalized action into velocity commands.
+        Convert a normalised action into velocity commands.
 
         The x and y velocity components are scaled by `max_velocity`, while the z
         velocity component is scaled by `max_velocity_z`.
         """
-        vx = float(action[0]) * self.max_velocity
-        vy = float(action[1]) * self.max_velocity
+        max_velocity = self._get_agent_max_velocity(agent)
+
+        vx = float(action[0]) * max_velocity
+        vy = float(action[1]) * max_velocity
         vz = float(action[2]) * self.max_velocity_z
 
         return vx, vy, vz
-    
+
     def _apply_task_action_processing(
         self,
         agent: str,
@@ -884,8 +1638,8 @@ class MarlDroneEnvironment(ParallelEnv):
 
         This hook allows task environments to modify, filter, or annotate the
         velocity commands produced from the policy action before they are sent to
-        the drone. 
-        
+        the drone.
+
         The default implementation returns the commands unchanged.
 
         Task environments can override this to implement behaviours such as:
@@ -896,23 +1650,24 @@ class MarlDroneEnvironment(ParallelEnv):
 
         Args:
             agent: Agent whose action is being processed.
-            vx: Desired x-axis velocity command.
-            vy: Desired y-axis velocity command.
-            vz: Desired z-axis velocity command.
+            vx, vy, vz: Velocity commands derived from the policy action.
             current_position: Current position of the agent's drone.
 
         Returns:
             A tuple containing:
 
-            - vx: Processed x-axis velocity command.
-            - vy: Processed y-axis velocity command.
-            - vz: Processed z-axis velocity command.
+            - vx, vy, vz: Processed velocity commands after task-specific modifications.
             - action_info: Additional task-specific action metadata.
         """
         return vx, vy, vz, {}
 
-    def _normalize_position(self, position: list[float]) -> np.ndarray:
-        """Normalize a 3D position based on environment boundaries."""
+    def _get_agent_max_velocity(self, agent: str) -> float:
+        """Return the maximum XY velocity for an agent.
+        Can be overridden by task environments to provide agent-specific limits."""
+        return self.max_velocity
+
+    def _normalise_pos(self, position: list[float]) -> np.ndarray:
+        """Normalise a 3D position based on environment boundaries."""
         x, y, z = position
 
         x_norm = x / self.xy_limit
@@ -924,31 +1679,49 @@ class MarlDroneEnvironment(ParallelEnv):
 
         return np.array([x_norm, y_norm, z_norm], dtype=np.float32)
 
-    def _normalize_velocity(self, velocity_xyz: list[float]) -> np.ndarray:
-        """Normalize a velocity vector based on maximum velocity limits."""
+    def _normalise_vel(
+        self, velocity_xyz: list[float], agent: str | None = None
+    ) -> np.ndarray:
+        """Normalise a velocity vector based on maximum velocity limits."""
         vx, vy, vz = velocity_xyz
+
+        max_velocity = (
+            self._get_agent_max_velocity(agent)
+            if agent is not None
+            else self.max_velocity
+        )
 
         return np.array(
             [
-                vx / self.max_velocity,
-                vy / self.max_velocity,
+                vx / max_velocity,
+                vy / max_velocity,
                 vz / self.max_velocity_z,
             ],
             dtype=np.float32,
         )
 
-    def _normalize_relative_position(self, rel_xyz: list[float]) -> np.ndarray:
-        """Normalize a relative position vector based on maximum possible distances."""
+    def _normalise_relative_pos(self, rel_xyz: list[float]) -> np.ndarray:
+        """Normalise a relative position vector based on maximum possible distances."""
         rx, ry, rz = rel_xyz
 
         return np.array(
             [
-                np.clip(rx / self.max_xy_range, -1.0, 1.0),
-                np.clip(ry / self.max_xy_range, -1.0, 1.0),
-                np.clip(rz / self.max_z_range, -1.0, 1.0),
+                rx / self.max_xy_range,
+                ry / self.max_xy_range,
+                rz / self.max_z_range,
             ],
             dtype=np.float32,
         )
+
+    def _relative_position(
+        self, position: list[float], reference: list[float]
+    ) -> list[float]:
+        """Calculate the relative position of a point with respect to a reference."""
+        return [
+            position[0] - reference[0],
+            position[1] - reference[1],
+            position[2] - reference[2],
+        ]
 
     def _generate_state_dicts(
         self,
@@ -969,7 +1742,9 @@ class MarlDroneEnvironment(ParallelEnv):
         return state_dicts
 
     def is_in_boundaries(self, position: list[float]) -> bool:
-        """Check if a given position is within the defined flight boundaries (xy range and z range)."""
+        """
+        Check if a given position is within the defined flight
+        boundaries (xy range and z range)."""
         x, y, z = position
 
         in_xy_range = abs(x) <= self.xy_limit and abs(y) <= self.xy_limit
@@ -1023,7 +1798,7 @@ class MarlDroneEnvironment(ParallelEnv):
     def _update_visual_boundaries(self) -> None:
         """
         For simulation only:
-        
+
         Draw or update the shared MARL flight boundary.
         """
         if self.sim_manager is None:
@@ -1034,20 +1809,13 @@ class MarlDroneEnvironment(ParallelEnv):
             z_level=float(self.reset_height),
         )
 
-    # TODO Add support for real drones regarding battery changes  
-    
-    def _stop_drones(
+    def _stop_drones_motion(
         self,
         agents: list[str] | None = None,
         reason: str = "",
     ) -> None:
         """
         Send zero velocity commands to selected drones.
-
-        This does not stop, land, disconnect, or clean up the underlying DroneSim or
-        Drone objects. It only cancels the currently commanded motion so drones do
-        not continue flying with their last velocity after an episode terminates or
-        truncates.
 
         Args:
             agents: Agents whose drones should be stopped. If None, all possible
@@ -1069,6 +1837,124 @@ class MarlDroneEnvironment(ParallelEnv):
             except Exception as e:
                 print(f"[{agent}] Failed to send zero velocity command: {e}")
 
+    def _clear_collision_safety_state(self) -> None:
+        """Clear collision-safety state for a new episode."""
+        self._collision_safety_event.clear()
+        self._collision_safety_pairs = ()
+
+    def _start_collision_monitor(self) -> None:
+        """Start the inter-drone proximity monitor if configured."""
+        if self.collision_safety_distance is None:
+            return
+
+        if (
+            self._collision_monitor_thread is not None
+            and self._collision_monitor_thread.is_alive()
+        ):
+            return
+
+        self._collision_monitor_stop_event.clear()
+
+        self._collision_monitor_thread = threading.Thread(
+            target=self._collision_monitor_loop,
+            name="MARLCollisionMonitor",
+        )
+        self._collision_monitor_thread.start()
+
+    def _stop_collision_monitor(self) -> None:
+        """Stop the inter-drone proximity monitor."""
+        self._collision_monitor_stop_event.set()
+
+        thread = self._collision_monitor_thread
+
+        if (
+            thread is not None
+            and thread.is_alive()
+            and thread is not threading.current_thread()
+        ):
+            thread.join(timeout=2.0)
+        self._collision_monitor_thread = None
+
+    def _collision_monitor_loop(self) -> None:
+        """Monitor all drone pairs for unsafe proximity.
+
+        When one or more pairs are within ``collision_safety_distance``,
+        immediately command all drones to stop and latch the triggering
+        pair information.
+
+        The monitor does not decide whether the event represents task
+        termination or truncation. That remains the responsibility of
+        the concrete task.
+        """
+        if self.collision_safety_distance is None:
+            return
+
+        period = 1.0 / self.collision_monitor_hz
+
+        while not self._collision_monitor_stop_event.is_set():
+
+            if self._collision_safety_event.is_set():
+                return
+
+            positions = {
+                agent: self.drones[agent].get_position()
+                for agent in self.possible_agents
+            }
+
+            unsafe_pairs: list[tuple[str, str, float]] = []
+
+            for agent_a, agent_b in combinations(positions, 2):
+                pos_a = np.asarray(
+                    positions[agent_a],
+                    dtype=np.float64,
+                )
+                pos_b = np.asarray(
+                    positions[agent_b],
+                    dtype=np.float64,
+                )
+
+                distance = float(np.linalg.norm(pos_a - pos_b))
+
+                if distance <= self.collision_safety_distance:
+                    unsafe_pairs.append((agent_a, agent_b, distance))
+
+            if unsafe_pairs:
+                self._collision_safety_pairs = tuple(unsafe_pairs)
+
+                # Latch first so step() knows not to send another
+                # normal action batch.
+                self._collision_safety_event.set()
+
+                with self._motion_command_lock:
+                    self._stop_drones_motion(
+                        agents=list(self.drones),
+                        reason="collision safety monitor",
+                    )
+
+                pairs_text = ", ".join(
+                    f"{agent_a}<->{agent_b}: {distance:.3f} m"
+                    for agent_a, agent_b, distance in unsafe_pairs
+                )
+
+                print(
+                    "[MARL COLLISION SAFETY] "
+                    f"Minimum separation violated: {pairs_text}"
+                )
+
+                return
+
+            self._collision_monitor_stop_event.wait(period)
+
+    def _collision_safety_triggered(self) -> bool:
+        """Whether the inter-drone safety monitor has triggered."""
+        return self._collision_safety_event.is_set()
+
+    def _get_collision_safety_pairs(
+        self,
+    ) -> tuple[tuple[str, str, float], ...]:
+        """Return the pairs that triggered collision safety."""
+        return self._collision_safety_pairs
+
     # Abstract methods to be implemented by task-specific environments
 
     @abstractmethod
@@ -1077,8 +1963,7 @@ class MarlDroneEnvironment(ParallelEnv):
 
     @abstractmethod
     def _get_observations(self) -> dict[str, np.ndarray]:
-        """Return one normalized observation vector per active agent."""
-        pass
+        """Return one normalised observation vector per active agent."""
 
     @abstractmethod
     def _calculate_rewards(
@@ -1105,8 +1990,8 @@ class MarlDroneEnvironment(ParallelEnv):
     def _get_infos(
         self,
         state_dicts: dict[str, dict[str, Any]] | None = None,
-        denormalized_actions: dict[str, list[float]] | None = None,
-        normalized_actions: dict[str, np.ndarray] | None = None,
+        denormalised_actions: dict[str, list[float]] | None = None,
+        normalised_actions: dict[str, np.ndarray] | None = None,
         old_positions: dict[str, list[float]] | None = None,
         new_positions: dict[str, list[float]] | None = None,
         action_filter_infos: dict[str, dict[str, Any]] | None = None,
@@ -1120,7 +2005,6 @@ class MarlDroneEnvironment(ParallelEnv):
     @abstractmethod
     def _get_global_state(self) -> np.ndarray:
         """Generate a global state representation for centralized training."""
-        pass
 
     @abstractmethod
     def _render_task_specific_info(self) -> None:
