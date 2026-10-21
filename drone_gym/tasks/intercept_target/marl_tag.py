@@ -58,13 +58,20 @@ class MarlTag(MarlDroneEnvironment):
         else:
             boundaries = {"x": 2.5, "y": 2.5, "z_min": 0.1, "z_max": 1.5}
 
+        # Height range the policies were trained with (sim). Observations are scaled with it,
+        # so real drones keep it too; a different range makes a sim-trained policy see wrong heights.
         if z_min is None:
-            # Real-drone task floor stays well above the ground for safety margin.
-            z_min = 0.4 if use_simulator else 0.6
+            z_min = 0.4
 
         if z_max is None:
-            # Real-drone task ceiling stays under the 1.5m hard safety boundary above.
-            z_max = 2.5 if use_simulator else 1.1
+            z_max = 2.5
+
+        # Height band real drones actually fly in: floor well above the ground, ceiling under the
+        # 1.5 m hard boundary above (the arena is 2.1 m high). Goals, spawns, truncation and the
+        # boundary guard use it. In sim it is the full task range.
+        self.flight_z_min, self.flight_z_max = (z_min, z_max) if use_simulator else (0.6, 1.1)
+        # Real drones: the guard stops this far inside the flight band.
+        self.guard_margin = 0.05
 
         super().__init__(
             use_simulator=use_simulator,
@@ -393,8 +400,8 @@ class MarlTag(MarlDroneEnvironment):
     def _sample_random_position(self) -> list[float]:
         """Sample a random position within the usable xy area and z limits."""
         xy = self.reset_planner.usable_xy_limit
-        z_lo = self.z_min + self.z_margin
-        z_hi = self.z_max - self.z_margin
+        z_lo = self.flight_z_min + self.z_margin
+        z_hi = self.flight_z_max - self.z_margin
 
         return [
             float(np.random.uniform(-xy, xy)),
@@ -493,14 +500,46 @@ class MarlTag(MarlDroneEnvironment):
             vy *= self.curriculum_interceptor_vel_factor
             vz *= self.curriculum_interceptor_vel_factor
 
+        blocked_axes = []
+        if not self.use_simulator:
+            vx, vy, vz, blocked_axes = self._boundary_guard(current_position, vx, vy, vz)
+
         sent = [vx, vy, vz]
 
         info = {
             "requested_velocity": requested,
             "sent_velocity": sent,
+            "boundary_guard_axes": blocked_axes,
         }
 
         return vx, vy, vz, info
+
+    def _boundary_guard(
+        self,
+        position: list[float],
+        vx: float,
+        vy: float,
+        vz: float,
+    ) -> tuple[float, float, float, list[str]]:
+        """Zero any velocity component that would carry the drone out of the safe box within one step.
+
+        The box is +/- xy_limit in x and y, and the flight band (less guard_margin) in z.
+        Movement back towards the box is never blocked.
+        """
+        lower = (-self.xy_limit, -self.xy_limit, self.flight_z_min + self.guard_margin)
+        upper = (self.xy_limit, self.xy_limit, self.flight_z_max - self.guard_margin)
+        velocity = [vx, vy, vz]
+        blocked_axes = []
+
+        for axis, name in enumerate("xyz"):
+            next_value = position[axis] + velocity[axis] * self.step_time
+            leaving_high = velocity[axis] > 0 and next_value > upper[axis]
+            leaving_low = velocity[axis] < 0 and next_value < lower[axis]
+            if leaving_high or leaving_low:
+                velocity[axis] = 0.0
+                blocked_axes.append(name)
+
+        return velocity[0], velocity[1], velocity[2], blocked_axes
 
     # ------------------------------------------------------------------
     # Observations and global state
@@ -812,11 +851,11 @@ class MarlTag(MarlDroneEnvironment):
         if any_low_battery:
             print("[MarlTag] low battery — truncating episode")
 
-        z_max = self.z_max + 1 if self.use_simulator else self.z_max
+        z_max = self.z_max + 1 if self.use_simulator else self.flight_z_max
         z_violation = [
             agent
             for agent in self.agents
-            if not (self.z_min <= state_dicts[agent]["position"][2] <= z_max)
+            if not (self.flight_z_min <= state_dicts[agent]["position"][2] <= z_max)
         ]
         if z_violation:
             print(f"[MarlTag] z-boundary violation {z_violation} — truncating episode")

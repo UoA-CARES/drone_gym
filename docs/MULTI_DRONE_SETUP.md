@@ -178,35 +178,52 @@ EOF
 
 ❌ **A drone doesn't lift**: switch it off and on, wait ~15 seconds, and run the test again.
 
+### 4. Both Drones with Vicon Control
+
+This uses the lab script, which steers the drones with Vicon positions. **Ctrl+C here lands both drones.**
+
+First, connect without taking off:
+
+```bash
+python drone_gym/tests/multi_drone_lab.py ground --drones 0 1
+```
+
+✅ **Pass**: both drones connect, positions print every half second, and it ends with `PASS`.
+
+Then hover:
+
+```bash
+python drone_gym/tests/multi_drone_lab.py hover --drones 0 1 --seconds 15
+```
+
+The drone with the lower x flies to (−1, 0, 1) and the other to (1, 0, 1), so their paths never cross. Make sure the boards cover x from −1.5 to +1.5 m.
+
+✅ **Pass**: both hold within about ±0.1 m of their targets, land, and it prints `PASS`.
+
+> **Note**: `PASS` only means no emergency stop fired. Read the printed positions to check the drones actually reached their targets.
+
 ## Running `marl_tag` with Two Drones
 
-### 1. Apply the Code Fixes
+### 1. Use the `Multiple_Drone_Testing` Branch
 
-⚠️ **Important**: In `drone_gym/drone.py`, the real-drone position mode is hard-coded to `legacy_vicon`. With two drones, the second one crashes with `OSError: [Errno 98] Address already in use`. Change it to `source_vicon`:
-
-```bash
-sed -i 's/self.position_tracking_mode: str = "legacy_vicon"/self.position_tracking_mode: str = "source_vicon"/' drone_gym/drone.py
-```
-
-Check it worked. It should show `"source_vicon"`:
+This branch has the real-drone fixes built in:
+- **Position mode**: `drone.py` defaults to `source_vicon`, so both drones share one Vicon connection. On other branches it is hard-coded to `legacy_vicon`, and the second drone crashes with `OSError: [Errno 98] Address already in use`.
+- **Boundary guard**: on real drones, `marl_tag` stops any velocity that would carry a drone outside ±2.0 m in x/y or 0.65–1.05 m in height within the next step.
+- **Height inputs**: the policy's height inputs use the same range it was trained with (0.4–2.5 m). The drones still fly in a 0.6–1.1 m band.
 
 ```bash
-grep -n 'position_tracking_mode: str' drone_gym/drone.py
-```
-
-**Only on `main` (commit `704a13a`)**: the height limits (task 2.5 m, emergency stop 3.0 m) are above the lab ceiling. Lower them:
-
-```bash
-sed -i 's/"z_min": 0.1, "z_max": 3.0}/"z_min": 0.1, "z_max": 2.0}/' drone_gym/tasks/intercept_target/marl_tag.py
+git checkout Multiple_Drone_Testing
 ```
 
 ```bash
-sed -i 's/z_hi = self.z_max - self.z_margin/z_hi = min(self.z_max - self.z_margin, 1.8)/' drone_gym/tasks/intercept_target/marl_tag.py
+git pull
 ```
 
-Check which commit you're on with `git log -1 --oneline`. The `fixing_graph_bug` branch (`aa35c40`) already has lower limits (1.5 m), so skip those two commands there.
+Check the guard is there. It should print the `_boundary_guard` line:
 
-> **Note**: `git pull` and `git checkout` undo these edits. Re-check them before every session.
+```bash
+grep -n "def _boundary_guard" drone_gym/tasks/intercept_target/marl_tag.py
+```
 
 ### 2. Point the Trained Run at the Real Drones
 
@@ -253,30 +270,27 @@ Use the seed the run was trained with for `--eval_seed`.
 
 ⚠️ **Ctrl+C does not land the drones** during `cares-rl test`. They keep flying their last command until they cross the safety boundary. **The kill switch is the only reliable stop.**
 
-### After the Session
-
-Undo the local code edits before your next `git pull`:
-
-```bash
-git checkout -- drone_gym/drone.py drone_gym/tasks/intercept_target/marl_tag.py
-```
-
 ## Safety Reference
 
 | Action | Does it land the drones? |
 |--------|--------------------------|
 | Ctrl+C during the two-drone hover test | ❌ No, the drones drop |
 | Ctrl+C during `cares-rl test` | ❌ No, they keep flying until the safety boundary |
+| Ctrl+C during `multi_drone_lab.py` | ✅ Yes, both drones land |
 | Drone crosses the safety boundary | ✅ That drone lands |
 | Kill switch | ✅ Always |
 
-| Safety limit (real drones) | `main` (`704a13a`) | `fixing_graph_bug` (`aa35c40`) |
-|----------------------------|--------------------|--------------------------------|
-| x, y emergency boundary | ±2.5 m | ±2.5 m |
-| Height emergency boundary | 3.0 m | 1.5 m |
-| Task height range | 0.4 – 2.5 m | 0.6 – 1.1 m |
+| Safety limit (real drones) | `Multiple_Drone_Testing` | `fixing_graph_bug` (`aa35c40`) | `main` (`704a13a`) |
+|----------------------------|--------------------------|--------------------------------|--------------------|
+| Boundary guard (stops outward moves) | ±2.0 m x/y, 0.65 – 1.05 m height | none | none |
+| Task height range (episode ends outside) | 0.6 – 1.1 m | 0.6 – 1.1 m | 0.4 – 2.5 m |
+| Height range for policy inputs | 0.4 – 2.5 m (as trained) | 0.6 – 1.1 m | 0.4 – 2.5 m |
+| x, y emergency boundary | ±2.5 m | ±2.5 m | ±2.5 m |
+| Height emergency boundary | 1.5 m | 1.5 m | 3.0 m |
 
-> **Note**: The minimum height in the boundary is **not** checked by the code. Only the maximum height and the x/y limits trigger an emergency landing.
+> **Note**: The minimum height in the emergency boundary is **not** checked by the code. Only the maximum height and the x/y limits trigger an emergency landing. On `Multiple_Drone_Testing` the boundary guard also stops drones diving below 0.65 m.
+
+> **Note**: The guard can't stop a drone whose flow deck has lost track. That drift isn't caused by the commands, so keep marker boards under the whole flight area.
 
 ## Troubleshooting
 
@@ -284,14 +298,14 @@ git checkout -- drone_gym/drone.py drone_gym/tasks/intercept_target/marl_tag.py
 
 | Problem | Symptoms | Cause | Solution |
 |---------|----------|-------|----------|
-| **Second drone crashes** | `OSError: [Errno 98] Address already in use` | `drone.py` is in `legacy_vicon` mode | Apply the [code fix](#1-apply-the-code-fixes) again. A `git pull` or `git checkout` undoes it |
+| **Second drone crashes** | `OSError: [Errno 98] Address already in use` | `drone.py` is in `legacy_vicon` mode (any branch except `Multiple_Drone_Testing`) | [Use the `Multiple_Drone_Testing` branch](#1-use-the-multiple_drone_testing-branch) |
 | **Radio scan finds nothing** | Scan prints `[]` | Drone off, or wrong address | Check the address with the [radio address script](#drone-addresses-and-vicon-names) |
 | **Drone fails to connect** | `Hardware failed to initialize in time` | The first connection downloads the drone's settings and is slow | Run it again from the same folder |
 | **No Vicon positions** | `NO VICON DATA` or `no Vicon position received` | UDP stream settings | Check [Vicon Settings for Two Drones](#vicon-settings-for-two-drones) |
 | **Logs say take-off, drone stays down** | `Take-off successful` but motors don't spin | Drone refused to arm (just switched on, moved, or locked after a crash) | Switch it off and on, and leave it still for ~15 s |
 | **Drones spiral away** | Drones curve around their targets instead of flying straight | Drones not facing +x | Turn both fronts to the positive x-direction |
 | **Drone drifts or flies off** | Slides away at speed, even while landing | Flow deck lost track over plain floor | Put marker boards under the whole flight area |
-| **Drone climbs to the ceiling** | Drone keeps climbing | Height limits above the ceiling (`main`) | Apply the [height edits](#1-apply-the-code-fixes) |
+| **Drone climbs to the ceiling or leaves the arena** | Drone keeps climbing or flies past the edge | No boundary guard (any branch except `Multiple_Drone_Testing`), or flow deck drift | [Use the `Multiple_Drone_Testing` branch](#1-use-the-multiple_drone_testing-branch), and check the marker boards |
 | **Positions swap between drones** | One drone briefly shows the other's position | Both drones have the same marker layout | Move one marker on one drone and recreate its Vicon object |
 | **Pasted command fails** | `invalid non-printable character U+200B` | Invisible characters copied from a web page or chat | Use the blocks above (the first line strips them), or retype the command |
 | **Vicon check fails** | `Address already in use` | Another drone script is still running | Close it and try again |
