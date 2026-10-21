@@ -7,12 +7,13 @@
 from __future__ import annotations
 
 import argparse
+import inspect
 import sys
 import threading
 import time
 
 from drone_gym.drone import Drone
-from drone_gym.utils.vicon_position_source import ViconInterface
+from drone_gym.utils.vicon_position_source import ViconInterface, ViconPositionSource
 
 HOVER_HEIGHT = 1.0
 HOVER_SPREAD = 1.0  # drones spaced evenly on x in [-HOVER_SPREAD, HOVER_SPREAD]
@@ -20,7 +21,8 @@ PRINT_PERIOD = 0.5
 
 
 def drone_uri(index: int) -> str:
-    return f"radio://0/100/2M/E7E7E7E7{0xE7 + index:02X}"
+    # Same addresses as main's MarlDroneEnvironment: drone 0 -> E7E7E7E700, drone 1 -> E7E7E7E701.
+    return f"radio://0/100/2M/E7E7E7E7{index:02X}"
 
 
 def hover_targets(count: int) -> list[tuple[float, float, float]]:
@@ -62,11 +64,14 @@ def create_drones(args: argparse.Namespace, drones: dict[str, Drone]) -> bool:
     """Fill drones in place so the caller can clean up a partial set."""
     for index, name in zip(args.drones, args.names):
         print(f"Connecting drone {index}: {drone_uri(index)} / Vicon {name!r} / {args.mode}")
+        # main's Drone takes only position_source; this branch's also takes a mode and name.
+        accepted = inspect.signature(Drone).parameters
+        extra = {"position_tracking_mode": args.mode, "vicon_object_name": name}
         drone = Drone(
             agent_id=f"drone_{index}",
             uri=drone_uri(index),
-            position_tracking_mode=args.mode,
-            vicon_object_name=name,
+            position_source=ViconPositionSource(object_name=name, label=f"drone_{index}"),
+            **{key: value for key, value in extra.items() if key in accepted},
         )
         drones[name] = drone
         if not drone.is_running():
@@ -174,8 +179,8 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
 
     if len(set(args.drones)) != len(args.drones):
         parser.error("--drones must not repeat")
-    if any(not 0 <= i <= 0xFF - 0xE7 for i in args.drones):
-        parser.error(f"--drones must be in 0..{0xFF - 0xE7}")
+    if any(not 0 <= i <= 0xFF for i in args.drones):
+        parser.error("--drones must be in 0..255")
     if args.names is None:
         args.names = [f"Crzayme_{i}" for i in args.drones]
     elif len(args.names) != len(args.drones):
