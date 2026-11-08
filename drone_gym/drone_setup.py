@@ -17,6 +17,7 @@ from drone_gym.utils.position_source import (
     PositionSource,
 )
 from drone_gym.utils.flight_debug import diag, FlightDebugMonitor
+from drone_gym.utils.flight_telemetry import FlightTelemetryRecorder
 
 
 class DroneSetup:
@@ -168,6 +169,13 @@ class DroneSetup:
         self._diag_last_queue_lag_s = 0.0
         self._diag_last_mc_update = None
         self._diag_battery_at = None
+
+        self.flight_telemetry = (
+            FlightTelemetryRecorder(self.agent_id)
+            if self.URI.startswith("radio://") else None
+        )
+        self._last_vicon_csv_mono = float("-inf")
+        self.flight_extra_log_config = None
 
         # Start threads in coordinated sequence
         self.thread = threading.Thread(target=self._run)
@@ -353,6 +361,15 @@ class DroneSetup:
 
             self.last_position_update_time = sample.timestamp
 
+        # Record actual accepted Vicon samples at up to 10 Hz.
+        if (self.flight_telemetry is not None and
+                sample.timestamp - self._last_vicon_csv_mono >= 0.10):
+            self._last_vicon_csv_mono = sample.timestamp
+            self.flight_telemetry.record(
+                "vicon", sample_mono_s=sample.timestamp,
+                x_m=sample.x, y_m=sample.y, z_m=sample.z,
+            )
+
         if not self.position_ready_event.is_set():
             self.position_ready_event.set()
 
@@ -373,6 +390,16 @@ class DroneSetup:
         ):
             self._calculate_velocity()
             self.last_velocity_calculation_time = sample.timestamp
+
+    def _on_cf_log_started(self, config, started):
+        diag("CF_LOG_STATE", agent=self.agent_id,
+            name=getattr(config, "name", "unknown"),
+            started=started,
+            err_no=getattr(config, "err_no", None))
+
+    def _on_cf_log_error(self, config, message):
+        diag("CF_LOG_ERROR", agent=self.agent_id,
+            name=getattr(config, "name", "unknown"), error=repr(message))
 
     def _start_position_tracking(self) -> bool:
         """
@@ -635,6 +662,9 @@ class DroneSetup:
                 self.scf.close_link()
                 self.scf = None
 
+            if self.flight_telemetry is not None:
+                self.flight_telemetry.close()
+                
             self.set_running(False)
             print(f"[{self.agent_id}] Shutdown complete")
 
@@ -1158,38 +1188,20 @@ class DroneSetup:
                 break
 
     def _setup_battery_logging(self) -> None:
-        # Check if Crazyflie object is available
-        if self.cf is None:
-            print(
-                f"[{self.agent_id}] Could not start battery logging, Crazyflie object not available."
-            )
-            return
-
-        # Check if log interface is available
-        if not hasattr(self.cf, "log") or self.cf.log is None:
-            print(
-                f"[{self.agent_id}] Could not start battery logging, log interface not available."
-            )
-            return
-
-        try:
-            self.battery_log_config = LogConfig(name="Battery", period_in_ms=1000)
-            self.battery_log_config.add_variable("pm.vbat", "float")
-
-            self.cf.log.add_config(self.battery_log_config)
-            # Register the callback function that will receive the data
-            self.battery_log_config.data_received_cb.add_callback(
-                self._battery_callback
-            )
-            # Start the logging
-            self.battery_log_config.start()
-            print(f"[{self.agent_id}] Battery logging started.")
-        except KeyError as e:
-            print(f"[{self.agent_id}] Could not start battery logging: {e}")
-        except AttributeError:
-            print(
-                f"[{self.agent_id}] Could not start battery logging, Crazyflie object not available."
-            )
+        self.battery_ready_event.clear()
+        self._diag_battery_at = None
+        cfg = LogConfig(name="Battery", period_in_ms=200)
+        cfg.add_variable("pm.vbat", "float")
+        cfg.data_received_cb.add_callback(self._battery_callback)
+        cfg.started_cb.add_callback(self._on_cf_log_started)
+        cfg.error_cb.add_callback(self._on_cf_log_error)
+        self.cf.log.add_config(cfg)
+        if not cfg.valid:
+            raise RuntimeError("Battery log block invalid")
+        self.battery_log_config = cfg
+        cfg.start()
+        diag("CF_LOG_REQUEST", agent=self.agent_id, name="Battery",
+            period_ms=200)
 
     def _battery_callback(
         self, timestamp: int, data: dict[str, Any], logconf: Any
@@ -1200,6 +1212,10 @@ class DroneSetup:
             self.battery_level = voltage
         self.battery_ready_event.set()
         self._diag_battery_at = time.monotonic()
+        if self.flight_telemetry is not None:
+            self.flight_telemetry.record(
+                "battery", cf_timestamp_ms=timestamp, battery_v=voltage,
+            )
 
     def _setup_velocity_logging(self) -> None:
         if self.cf is None:
@@ -1215,10 +1231,12 @@ class DroneSetup:
             return
 
         try:
-            self.velocity_log_config = LogConfig(name="Velocity", period_in_ms=100)
-            self.velocity_log_config.add_variable("stateEstimate.vx", "float")
-            self.velocity_log_config.add_variable("stateEstimate.vy", "float")
-            self.velocity_log_config.add_variable("stateEstimate.vz", "float")
+            self.velocity_log_config = LogConfig(name="StateEstimate", period_in_ms=100)
+            for name in (
+                "stateEstimate.x", "stateEstimate.y", "stateEstimate.z",
+                "stateEstimate.vx", "stateEstimate.vy", "stateEstimate.vz",
+            ):
+                self.velocity_log_config.add_variable(name, "float")
 
             self.cf.log.add_config(self.velocity_log_config)
             self.velocity_log_config.data_received_cb.add_callback(
@@ -1241,6 +1259,43 @@ class DroneSetup:
             self.internal_vx = data["stateEstimate.vx"]
             self.internal_vy = data["stateEstimate.vy"]
             self.internal_vz = data["stateEstimate.vz"]
+            if self.flight_telemetry is not None:
+                self.flight_telemetry.record(
+                    "estimate", cf_timestamp_ms=timestamp,
+                    x_m=data["stateEstimate.x"],
+                    y_m=data["stateEstimate.y"],
+                    z_m=data["stateEstimate.z"],
+                    vx_m_s=data["stateEstimate.vx"],
+                    vy_m_s=data["stateEstimate.vy"],
+                    vz_m_s=data["stateEstimate.vz"],
+                )
+
+    def _setup_flight_extra_logging(self) -> None:
+        cfg = LogConfig(name="FlightExtra", period_in_ms=200)
+        cfg.add_variable("stateEstimate.yaw", "float")
+        cfg.add_variable("ctrltarget.z", "float")
+        cfg.add_variable("range.zrange", "uint16_t")
+        cfg.add_variable("stabilizer.thrust", "float")
+        cfg.data_received_cb.add_callback(self._flight_extra_callback)
+        cfg.started_cb.add_callback(self._on_cf_log_started)
+        cfg.error_cb.add_callback(self._on_cf_log_error)
+        self.cf.log.add_config(cfg)
+        if not cfg.valid:
+            raise RuntimeError("FlightExtra log block invalid")
+        self.flight_extra_log_config = cfg
+        cfg.start()
+        diag("CF_LOG_REQUEST", agent=self.agent_id, name="FlightExtra",
+            period_ms=200)
+
+    def _flight_extra_callback(self, timestamp, data, logconf) -> None:
+        if self.flight_telemetry is not None:
+            self.flight_telemetry.record(
+                "extra", cf_timestamp_ms=timestamp,
+                yaw_deg=data["stateEstimate.yaw"],
+                target_z_m=data["ctrltarget.z"],
+                range_z_m=data["range.zrange"] / 1000.0,
+                thrust=data["stabilizer.thrust"],
+            )
 
     def get_motion_commander_setpoint(self) -> list[float]:
         """Get the current hover setpoint from MotionCommander's internal thread"""

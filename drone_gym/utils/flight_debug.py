@@ -160,6 +160,14 @@ class FlightDebugMonitor:
                 "vicon_send_age_s": details.get("last_sent_age"),
             }
 
+        battery_age = _age(now, getattr(drone, "_diag_battery_at", None))
+        if (drone.is_flying_event.is_set() and
+                (battery_age is None or battery_age > 2.0)):
+            diag("BATTERY_TELEMETRY_STALE", agent=drone.agent_id,
+                age_s=battery_age,
+                log_started=getattr(drone.battery_log_config, "started", None),
+                log_err_no=getattr(drone.battery_log_config, "err_no", None))
+        
         diag(
             "STATUS", agent=drone.agent_id,
             flying=drone.is_flying_event.is_set(),

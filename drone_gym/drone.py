@@ -181,6 +181,10 @@ class Drone(DroneSetup):
             self.cf.param.set_value("kalman.resetEstimation", "1")
             time.sleep(0.1)
 
+            self._setup_battery_logging()
+            if not self.battery_ready_event.wait(timeout=5.0):
+                raise RuntimeError("No pm.vbat sample within 5 seconds: do not arm")
+
             # Arm the drone
             print(f"[{self.agent_id}] Arming Crazyflie...")
             self.cf.platform.send_arming_request(True)
@@ -188,9 +192,9 @@ class Drone(DroneSetup):
             self.armed = True
             print(f"[{self.agent_id}] Crazyflie armed.")
 
-            self._setup_battery_logging()
             self._setup_velocity_logging()
-
+            self._setup_flight_extra_logging()
+            
             # Signal that hardware is ready
             self.hardware_ready_event.set()
             print(
@@ -200,6 +204,12 @@ class Drone(DroneSetup):
 
         except Exception as e:
             print(f"[{self.agent_id}] Failed to initialize Crazyflie: {str(e)}")
+
+            try:
+                if self.scf is not None:
+                    self.scf.close_link()
+            except Exception:
+                pass
             return False
 
     def _param_deck_flow(self, _, value_str) -> None:
