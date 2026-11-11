@@ -8,7 +8,6 @@ from cflib.utils import uri_helper
 from cflib.utils.power_switch import PowerSwitch
 
 from drone_gym.drone_setup import DroneSetup
-from drone_gym.utils.vicon_connection_class import ViconInterface as vi
 from drone_gym.utils.position_source import PositionSource
 from drone_gym.utils.vicon_position_source import (
     ViconPositionSource,
@@ -33,124 +32,16 @@ class Drone(DroneSetup):
         boundaries: dict[str, float] | None = None,
         uri: str = "radio://0/100/2M/E7E7E7E700",
     ) -> None:
-        # Use either legacy_vicon or source_vicon
-        # source_vicon is the new implementation that abstracts position source
-        self.position_tracking_mode: str = "legacy_vicon"
-
-        if self.position_tracking_mode == "legacy_vicon":
-            position_source = None
-            self.vicon = vi()
-        elif self.position_tracking_mode == "source_vicon":
-            self.vicon = None
-        else:
-            raise ValueError(
-                f"Invalid position_tracking_mode: {self.position_tracking_mode}. "
-                "Must be either 'legacy_vicon' or 'source_vicon'."
-            )
-
-        # Vicon Integration
-        # self.drone_name = f"Crzayme_{agent_id}"
-        # TODO: After testing, this can be removed
-        self.drone_name = (
-            "Crzayme_0"  # Hardcoded for now, only for vicon legacy testing
-        )
-
         super().__init__(
             boundaries=boundaries,
             agent_id=agent_id,
             uri=uri,
             position_source=position_source,
+            simulation=False,
         )
 
         # Drone Properties
         self.ps = PowerSwitch(self.URI)
-
-        self.agent_id = agent_id
-
-    def _update_position(self) -> None:
-        vicon_thread = None
-        try:
-            while not hasattr(self, "vicon"):
-                print("Waiting for vicon initialization...")
-            # It takes some time for the vicon to get values
-            vicon_thread = threading.Thread(target=self.vicon.main_loop)
-            vicon_thread.start()
-            print(
-                f"[{self.agent_id}] Vicon thread started, waiting for position data..."
-            )
-            time.sleep(4)
-
-            # Wait for first valid position reading before signaling ready
-            position_ready = False
-            ready_timeout = time.monotonic() + 6  # 6 second timeout for first position
-            self.last_velocity_calculation_time = time.monotonic()
-
-            while self.is_running() and not self.emergency_event.is_set():
-                try:
-                    position_array = self.vicon.getPos(self.drone_name)
-
-                    if position_array is None:
-                        print(
-                            f"[{self.agent_id}] Waiting for Vicon position "
-                            f"for {self.drone_name!r}..."
-                        )
-                        time.sleep(self.position_update_rate)
-                        continue
-
-                    if position_array is not None:
-                        current_time = time.monotonic()
-
-                        with self.position_lock:
-                            self.position = {
-                                "x": position_array[0],
-                                "y": position_array[1],
-                                "z": position_array[2],
-                            }
-                            current_pos = self.position.copy()
-
-                        # Store position with timestamp for velocity calculation
-                        self.position_history.append((current_time, current_pos))
-                        self.last_position_update_time = current_time
-
-                        # Calculate velocity at 20Hz (every 0.05s)
-                        if (
-                            current_time - self.last_velocity_calculation_time
-                        ) >= self.velocity_update_rate:
-                            if len(self.position_history) >= 2:
-                                self._calculate_velocity()
-                            self.last_velocity_calculation_time = current_time
-
-                        # Signal ready on first successful position read
-                        if not position_ready:
-                            self.position_ready_event.set()
-                            position_ready = True
-                            print(
-                                f"[{self.agent_id}] First position acquired: {self.position}"
-                            )
-
-                    else:
-                        print(f"[{self.agent_id}] Drone position is not being updated")
-                        # If timeout reached without position, signal anyway to prevent deadlock
-                        if not position_ready and time.monotonic() > ready_timeout:
-                            print(
-                                f"[{self.agent_id}] WARNING: Position timeout - signaling ready anyway"
-                            )
-                            self.position_ready_event.set()
-                            position_ready = True
-
-                    time.sleep(self.position_update_rate)  # 60 Hz
-                except Exception as e:
-                    print(
-                        f"[{self.agent_id}] Error: Position data could not be parsed correctly - {str(e)}"
-                    )
-
-        except Exception as e:
-            print(f"[{self.agent_id}] Critical error in position thread:", e)
-        finally:
-            # Signal the vicon thread to join
-            self.vicon.run_interface = False
-            if vicon_thread is not None:
-                vicon_thread.join()
 
     def initialise_crazyflie(self) -> bool:
         """Initialise Crazyflie connection and setup"""
@@ -226,37 +117,12 @@ class Drone(DroneSetup):
         )
 
     def stop(self) -> None:
-        """
-        Fully stop the drone and optionally prepare for a clean restart.
-
-        Args
-
-        """
-        print(f"[{self.agent_id}] In the new stop function")
+        """Fully stop the drone and optionally prepare for a clean restart."""
+        print(f"[{self.agent_id}] Stopping...")
         self._signal_stop_to_all_threads()
-        self._close_vicon()
         self._join_all_threads()
         self._reset_shared_state()
         self._final_cleanup()
-
-    def _close_vicon(self) -> None:
-        """Tell the Vicon interface to stop its background thread."""
-        if self.vicon is None:
-            print(
-                f"[{self.agent_id}] Exiting close_vicon() - vicon object is None, no action needed"
-            )
-            return
-        if self.position_tracking_mode != "legacy_vicon":
-            print(
-                f"[{self.agent_id}] Exiting close_vicon() - not in legacy_vicon mode, no action needed"
-            )
-            return
-        try:
-            self.vicon.run_interface = False
-            # Give Vicon a moment to shut down its socket
-            time.sleep(0.2)
-        except Exception as e:
-            print(f"[{self.agent_id}] Error while closing Vicon: {e}")
 
     def reboot(self) -> bool:
         print(f"[{self.agent_id}] Initiating remote reboot sequence...")
