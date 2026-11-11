@@ -22,9 +22,9 @@ class DroneSetup:
     def __init__(
         self,
         uri: str,
+        position_source: PositionSource,
         agent_id: str = "Drone",
         boundaries: dict[str, float] | None = None,
-        position_source: PositionSource | None = None,
         simulation: bool = True,
     ) -> None:
 
@@ -126,7 +126,6 @@ class DroneSetup:
         self._position_source_lock = threading.Lock()
         # Vicon Integration
         self.position = {"x": 0.0, "y": 0.0, "z": 0.0}
-        self.position_thread = None
         self.position_lock = threading.Lock()
 
         # Velocity calculation (from position differentiation)
@@ -136,7 +135,6 @@ class DroneSetup:
             maxlen=15
         )  # Store last 15 positions for moving average
         self.velocity_update_rate = 0.20  # 20Hz velocity calculation rate
-        self.position_update_rate = 1 / 60  # 60Hz position update rate
         self.last_velocity_calculation_time = 0.0
 
         # Drone Safety
@@ -299,12 +297,6 @@ class DroneSetup:
         with self.running_lock:
             self.running = value
 
-    def _update_position(self) -> None:
-        """
-        This method is meant to be overridden by any child classes.
-        """
-        pass
-
     def _handle_position_sample(
         self,
         sample: PositionSample,
@@ -367,29 +359,10 @@ class DroneSetup:
             self.last_velocity_calculation_time = sample.timestamp
 
     def _start_position_tracking(self) -> bool:
-        """
-        Start the configured position source.
-
-        If no PositionSource has been supplied, temporarily fall back to the
-        existing subclass _update_position() implementation.
-        """
-
+        """Start the configured position source."""
         self.position_ready_event.clear()
         self.last_position_update_time = None
         self.last_velocity_calculation_time = 0.0
-
-        if self.position_source is None:
-            print(
-                f"[{self.agent_id}] No PositionSource configured. "
-                "Using legacy _update_position() implementation."
-            )
-
-            self.position_thread = threading.Thread(
-                target=self._update_position,
-                name=f"{self.agent_id}-legacy-position",
-            )
-            self.position_thread.start()
-            return True
 
         with self._position_source_lock:
             if self._position_source_started:
@@ -398,7 +371,6 @@ class DroneSetup:
                     f"{self.position_source.name} is already running"
                 )
                 return True
-
             try:
                 print(
                     f"[{self.agent_id}] Starting position source: "
@@ -420,26 +392,15 @@ class DroneSetup:
                 return False
 
     def _stop_position_tracking(self) -> None:
-        """
-        Stop the configured PositionSource.
-
-        Legacy _update_position() threads are stopped through self.running and
-        joined by _join_all_threads().
-        """
-
-        if self.position_source is None:
-            return
-
+        """Stop the configured PositionSource."""
         with self._position_source_lock:
             if not self._position_source_started:
                 return
-
             try:
                 print(
                     f"[{self.agent_id}] Stopping position source: "
                     f"{self.position_source.name}"
                 )
-
                 self.position_source.stop()
 
             except Exception as exc:
@@ -1231,7 +1192,6 @@ class DroneSetup:
     def _join_all_threads(self) -> None:
         """Wait until every managed thread has exited."""
         threads_to_join = [
-            ("position", self.position_thread),
             ("safety", self.safety_thread),
             ("controller", self.controller_thread),
             ("velocity_controller", self.velocity_controller_thread),
