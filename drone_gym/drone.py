@@ -1,17 +1,12 @@
-import threading
 import time
 
 import cflib.crtp
 from cflib.crazyflie import Crazyflie
 from cflib.crazyflie.syncCrazyflie import SyncCrazyflie
-from cflib.utils import uri_helper
 from cflib.utils.power_switch import PowerSwitch
 
 from drone_gym.drone_setup import DroneSetup
 from drone_gym.utils.position_source import PositionSource
-from drone_gym.utils.vicon_position_source import (
-    ViconPositionSource,
-)
 
 
 class Drone(DroneSetup):

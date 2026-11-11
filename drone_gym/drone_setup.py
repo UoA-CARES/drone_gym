@@ -258,8 +258,7 @@ class DroneSetup:
                     )
                     self._execute_emergency_stop()
                     break
-                else:
-                    self.in_boundaries = True
+                self.in_boundaries = True
 
                 time.sleep(0.01)
             except Exception as e:
@@ -413,7 +412,10 @@ class DroneSetup:
                 self._position_source_started = False
 
     def _calculate_velocity(self) -> None:
-        """Calculate velocity using moving average filter over position history with additional low-pass filtering"""
+        """
+        Calculate velocity using moving average filter over position history
+        with additional low-pass filtering
+        """
 
         with self.position_lock:
             position_history = list(self.position_history)
@@ -465,7 +467,8 @@ class DroneSetup:
         if not self.initialise_crazyflie():
             self.set_running(False)
             print(f"[{self.agent_id}] Hardware Initialisation failed...")
-            self.hardware_ready_event.set()  # Even though the hardware did not initialise set to prevent deadlock
+            # Even though the hardware did not initialise set to prevent deadlock
+            self.hardware_ready_event.set()
             return
 
         try:
@@ -474,7 +477,8 @@ class DroneSetup:
                 try:
                     if self.emergency_event.is_set() and not self.simulation:
                         print(
-                            f"[{self.agent_id} - Drone Setup] Emergency event detected in _run thread. Exiting main loop."
+                            f"[{self.agent_id} - Drone Setup] Emergency event detected "
+                            f"in _run thread. Exiting main loop."
                         )
                         self._handle_command({"land": True})
                         self.is_landed_event.wait(timeout=10)
@@ -595,7 +599,8 @@ class DroneSetup:
                     # Check if the radio link is still alive and connected
                     if not self.mc._cf.is_connected():
                         print(
-                            f"[{self.agent_id}] Error: The Crazyflie instance is disconnected or invalid!"
+                            f"[{self.agent_id}] Error: The Crazyflie "
+                            f"instance is disconnected or invalid!"
                         )
                     print(f"[{self.agent_id}] Take-off successful")
                 else:
