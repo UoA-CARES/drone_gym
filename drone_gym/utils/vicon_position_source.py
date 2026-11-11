@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import datetime
 import math
 import socket
 import threading
@@ -283,7 +282,7 @@ class ViconInterface:
         """
         Return a thread-safe snapshot of one object's latest position.
 
-        The datetime indicates when that Vicon measurement was received.
+        The reception_time indicates when that Vicon measurement was received.
         It lets ViconPositionSource avoid repeatedly publishing an old value.
         """
 
@@ -302,38 +301,6 @@ class ViconInterface:
             reception_time = object_data[12]
 
         return position, reception_time
-
-    def getPos(
-        self,
-        name: str,
-    ) -> list[float] | None:
-        """
-        Return position and attitude for backwards compatibility.
-
-        This method can be removed after all old callers are migrated.
-        """
-
-        with self.tracked_object_lock:
-            object_data = self.tracked_object.get(name)
-
-            if object_data is None:
-                return None
-
-            return list(object_data[0:6])
-
-    def getVel(
-        self,
-        name: str,
-    ) -> list[float] | None:
-        """Return linear and angular velocities."""
-
-        with self.tracked_object_lock:
-            object_data = self.tracked_object.get(name)
-
-            if object_data is None:
-                return None
-
-            return list(object_data[6:12])
 
     def end(self) -> None:
         """
