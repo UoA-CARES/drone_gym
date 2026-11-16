@@ -276,23 +276,18 @@ class DroneSetup:
         print(f"[{self.agent_id}] Boundary monitoring thread stopped")
 
     def _execute_emergency_stop(self) -> None:
-        if not self.emergency_event.is_set():
-            self.emergency_event.set()
-            print(f"[{self.agent_id}] Emergency stop event triggered!!!")
+        """Signal an emergency; the main thread handles landing."""
+        if self.emergency_event.is_set():
+            return
 
-        if self.mc:
-            self.mc.land()
-            time.sleep(1)
+        # Signal immediately so other control loops stop.
+        self.emergency_event.set()
 
+        print(f"[{self.agent_id}] Emergency stop event triggered!!!")
+
+        # Prevent controllers from producing new motion commands.
         self.position_controller_active = False
-
-        if self.armed and self.cf:
-            # self.cf.platform.send_arming_request(False)
-            self.cf.supervisor.send_arming_request(False)
-            self.armed = False
-
-        self.command_queue.put("exit")
-        self.stop()
+        self.velocity_controller_active = False
 
     def is_running(self) -> bool:
         """Check if the drone is running"""
@@ -486,36 +481,44 @@ class DroneSetup:
                 try:
                     if self.emergency_event.is_set() and not self.simulation:
                         print(
-                            f"[{self.agent_id} - Drone Setup] Emergency event detected "
-                            f"in _run thread. Exiting main loop."
+                            f"[{self.agent_id}] Emergency detected. Initiating emergency landing."
                         )
-                        self._handle_command({"land": True})
-                        self.is_landed_event.wait(timeout=10)
+
+                        # Disable movement controllers before landing.
+                        self.position_controller_active = False
+                        self.velocity_controller_active = False
+
+                        # Only one thread should command the landing.
+                        if self.is_flying_event.is_set() and self.mc:
+                            self._handle_command({"land": True})
+                            if not self.is_landed_event.is_set():
+                                print(
+                                    f"[{self.agent_id}] WARNING: Emergency landing "
+                                    "did not complete successfully."
+                                )
+                        self.set_running(False)
+                        print(f"[{self.agent_id}] Emergency shutdown initiated.")
                         break
+
                     # Get command with timeout
                     command = self.command_queue.get(timeout=0.1)
+
+                    # An emergency may have occurred while waiting for a command.
+                    if self.emergency_event.is_set() and not self.simulation:
+                        self.command_queue.task_done()
+                        continue
+
                     if command == "exit":
                         self.set_running(False)
                         print(f"[{self.agent_id}] Shutting down.")
                         break
                     if command == "emergency_stop":
-                        if self.position_controller_active:
-                            self.stop_position_control()
-
-                        if self.is_flying_event.is_set() and self.mc:
-                            print(
-                                f"[{self.agent_id}] EMERGENCY STOP: Landing and Stopping."
-                            )
-                            self._handle_command({"land": True})
-
-                        self.set_running(False)
-                        print(f"[{self.agent_id}] EMERGENCY STOP initiated.")
-                        break
+                        self.emergency_event.set()
+                        self.command_queue.task_done()
+                        continue
 
                     self._handle_command(command)
-
                     self.command_queue.task_done()
-
                 except queue.Empty:
                     pass  # No command received; continue
 
@@ -539,7 +542,11 @@ class DroneSetup:
                 self.set_running(False)
                 self.hardware_ready_event.set()
 
-            self._shutdown_crazyflie()
+            try:
+                self._shutdown_crazyflie()
+            finally:
+                if self.emergency_event.is_set() and not self.simulation:
+                    self._signal_stop_to_all_threads()
 
     # minorly modified from cearlier drone
     def _shutdown_crazyflie(self) -> None:
