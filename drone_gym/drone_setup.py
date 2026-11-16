@@ -815,7 +815,11 @@ class DroneSetup:
                 velocity = self._calculate_pid_velocity(error, control_rate)
 
                 # Apply velocity command if flying
-                if self.is_flying_event.is_set() and self.mc:
+                if (
+                    self.is_flying_event.is_set()
+                    and self.mc
+                    and not self.emergency_event.is_set()
+                ):
                     # Change velocity to be handled by the main thread
                     self.set_velocity_vector(
                         velocity["x"], velocity["y"], velocity["z"]
@@ -869,7 +873,11 @@ class DroneSetup:
                 #     f"Ramped: ({ramped_velocity['x']:.3f}, {ramped_velocity['y']:.3f})")
 
                 # Apply ramped velocity command if flying
-                if self.is_flying_event.is_set() and self.mc:
+                if (
+                    self.is_flying_event.is_set()
+                    and self.mc
+                    and not self.emergency_event.is_set()
+                ):
                     # Send ramped velocity to MotionCommander
                     self.mc.start_linear_motion(
                         ramped_velocity["x"],
