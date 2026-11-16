@@ -498,19 +498,21 @@ class DroneSetup:
                         self.set_running(False)
                         print(f"[{self.agent_id}] Shutting down.")
                         break
-                    elif command == "emergency_stop":
+                    if command == "emergency_stop":
                         if self.position_controller_active:
                             self.stop_position_control()
+
                         if self.is_flying_event.is_set() and self.mc:
                             print(
                                 f"[{self.agent_id}] EMERGENCY STOP: Landing and Stopping."
                             )
-                            self.land_and_stop()
+                            self._handle_command({"land": True})
+
                         self.set_running(False)
                         print(f"[{self.agent_id}] EMERGENCY STOP initiated.")
                         break
-                    else:
-                        self._handle_command(command)
+
+                    self._handle_command(command)
 
                     self.command_queue.task_done()
 
@@ -1170,14 +1172,6 @@ class DroneSetup:
                 )
                 return [0.0, 0.0, 0.0]
         return [0.0, 0.0, 0.0]
-
-    def land_and_stop(self) -> None:
-        self.land()
-        self.is_landed_event.wait(timeout=10)
-        if not self.is_landed_event.is_set():
-            print(f"[{self.agent_id}] Drone is failing to land....")
-            print(f"[{self.agent_id}] Forcing stop")
-        self.stop()
 
     def get_battery(self) -> float:
         with self.battery_lock:
