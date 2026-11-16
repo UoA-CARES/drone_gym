@@ -181,6 +181,14 @@ class DroneSetup:
             self.set_running(False)
             return
 
+        # The event may have been signalled to unblock startup after hardware initialization failed.
+        if not self.is_running():
+            print(
+                f"[{self.agent_id}] ERROR: Hardware initialization failed. "
+                "Position tracking will not be started."
+            )
+            return
+
         print(f"[{self.agent_id}] Hardware ready, starting position tracking...")
 
         # Start position tracking after hardware is ready
@@ -464,14 +472,15 @@ class DroneSetup:
 
     def _run(self, display: bool = False) -> None:
         """Main drone control loop"""
-        if not self.initialise_crazyflie():
-            self.set_running(False)
-            print(f"[{self.agent_id}] Hardware Initialisation failed...")
-            # Even though the hardware did not initialise set to prevent deadlock
-            self.hardware_ready_event.set()
-            return
 
         try:
+            if not self.initialise_crazyflie():
+                self.set_running(False)
+                print(f"[{self.agent_id}] Hardware Initialisation failed...")
+                # Even though the hardware did not initialise set to prevent deadlock
+                self.hardware_ready_event.set()
+                return
+
             # Main command processing loop
             while self.is_running():
                 try:
@@ -522,6 +531,12 @@ class DroneSetup:
                 time.sleep(0.05)  # Shorter sleep for more responsive command processing
 
         finally:
+            # Unblock startup if initialization failed before
+            # the hardware readiness event was signalled.
+            if not self.hardware_ready_event.is_set():
+                self.set_running(False)
+                self.hardware_ready_event.set()
+
             self._shutdown_crazyflie()
 
     # minorly modified from cearlier drone
@@ -1203,8 +1218,13 @@ class DroneSetup:
             ("main", self.thread),
         ]
 
+        current_thread = threading.current_thread()
+
         for name, thr in threads_to_join:
             if thr and thr.is_alive():
+                if thr is current_thread:
+                    print(f"[{self.agent_id}] Skipping join of current thread: {name}")
+                    continue
                 if name == "main":
                     thr.join(timeout=10.0)
                 else:

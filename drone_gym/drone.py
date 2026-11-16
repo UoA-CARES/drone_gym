@@ -56,7 +56,6 @@ class Drone(DroneSetup):
 
             if not self.deck_attached_event.wait(timeout=5):
                 print(f"[{self.agent_id}] No flow deck is detected! Exiting....")
-                self.stop()
                 return False
 
             print(f"[{self.agent_id}] Resetting all log configurations")
