@@ -24,9 +24,9 @@ class DroneSetup:
     def __init__(
         self,
         uri: str,
+        position_source: PositionSource,
         agent_id: str = "Drone",
         boundaries: dict[str, float] | None = None,
-        position_source: PositionSource | None = None,
         simulation: bool = True,
     ) -> None:
 
@@ -128,7 +128,6 @@ class DroneSetup:
         self._position_source_lock = threading.Lock()
         # Vicon Integration
         self.position = {"x": 0.0, "y": 0.0, "z": 0.0}
-        self.position_thread = None
         self.position_lock = threading.Lock()
 
         # Velocity calculation (from position differentiation)
@@ -138,7 +137,6 @@ class DroneSetup:
             maxlen=15
         )  # Store last 15 positions for moving average
         self.velocity_update_rate = 0.20  # 20Hz velocity calculation rate
-        self.position_update_rate = 1 / 60  # 60Hz position update rate
         self.last_velocity_calculation_time = 0.0
 
         # Drone Safety
@@ -197,6 +195,14 @@ class DroneSetup:
                 f"[{self.agent_id}] IF SIM: Make sure Gazebo is running and the drone model is loaded"
             )
             self.set_running(False)
+            return
+
+        # The event may have been signalled to unblock startup after hardware initialization failed.
+        if not self.is_running():
+            print(
+                f"[{self.agent_id}] ERROR: Hardware initialization failed. "
+                "Position tracking will not be started."
+            )
             return
 
         print(f"[{self.agent_id}] Hardware ready, starting position tracking...")
@@ -276,8 +282,7 @@ class DroneSetup:
                     )
                     self._execute_emergency_stop()
                     break
-                else:
-                    self.in_boundaries = True
+                self.in_boundaries = True
 
                 time.sleep(0.01)
             except Exception as e:
@@ -287,23 +292,18 @@ class DroneSetup:
         print(f"[{self.agent_id}] Boundary monitoring thread stopped")
 
     def _execute_emergency_stop(self) -> None:
-        if not self.emergency_event.is_set():
-            self.emergency_event.set()
-            print(f"[{self.agent_id}] Emergency stop event triggered!!!")
+        """Signal an emergency; the main thread handles landing."""
+        if self.emergency_event.is_set():
+            return
 
-        if self.mc:
-            self.mc.land()
-            time.sleep(1)
+        # Signal immediately so other control loops stop.
+        self.emergency_event.set()
 
+        print(f"[{self.agent_id}] Emergency stop event triggered!!!")
+
+        # Prevent controllers from producing new motion commands.
         self.position_controller_active = False
-
-        if self.armed and self.cf:
-            # self.cf.platform.send_arming_request(False)
-            self.cf.supervisor.send_arming_request(False)
-            self.armed = False
-
-        self.command_queue.put("exit")
-        self.stop()
+        self.velocity_controller_active = False
 
     def is_running(self) -> bool:
         """Check if the drone is running"""
@@ -314,12 +314,6 @@ class DroneSetup:
         """Set the running state"""
         with self.running_lock:
             self.running = value
-
-    def _update_position(self) -> None:
-        """
-        This method is meant to be overridden by any child classes.
-        """
-        pass
 
     def _handle_position_sample(
         self,
@@ -402,29 +396,10 @@ class DroneSetup:
             name=getattr(config, "name", "unknown"), error=repr(message))
 
     def _start_position_tracking(self) -> bool:
-        """
-        Start the configured position source.
-
-        If no PositionSource has been supplied, temporarily fall back to the
-        existing subclass _update_position() implementation.
-        """
-
+        """Start the configured position source."""
         self.position_ready_event.clear()
         self.last_position_update_time = None
         self.last_velocity_calculation_time = 0.0
-
-        if self.position_source is None:
-            print(
-                f"[{self.agent_id}] No PositionSource configured. "
-                "Using legacy _update_position() implementation."
-            )
-
-            self.position_thread = threading.Thread(
-                target=self._update_position,
-                name=f"{self.agent_id}-legacy-position",
-            )
-            self.position_thread.start()
-            return True
 
         with self._position_source_lock:
             if self._position_source_started:
@@ -433,7 +408,6 @@ class DroneSetup:
                     f"{self.position_source.name} is already running"
                 )
                 return True
-
             try:
                 print(
                     f"[{self.agent_id}] Starting position source: "
@@ -455,26 +429,15 @@ class DroneSetup:
                 return False
 
     def _stop_position_tracking(self) -> None:
-        """
-        Stop the configured PositionSource.
-
-        Legacy _update_position() threads are stopped through self.running and
-        joined by _join_all_threads().
-        """
-
-        if self.position_source is None:
-            return
-
+        """Stop the configured PositionSource."""
         with self._position_source_lock:
             if not self._position_source_started:
                 return
-
             try:
                 print(
                     f"[{self.agent_id}] Stopping position source: "
                     f"{self.position_source.name}"
                 )
-
                 self.position_source.stop()
 
             except Exception as exc:
@@ -487,7 +450,10 @@ class DroneSetup:
                 self._position_source_started = False
 
     def _calculate_velocity(self) -> None:
-        """Calculate velocity using moving average filter over position history with additional low-pass filtering"""
+        """
+        Calculate velocity using moving average filter over position history
+        with additional low-pass filtering
+        """
 
         with self.position_lock:
             position_history = list(self.position_history)
@@ -536,28 +502,45 @@ class DroneSetup:
 
     def _run(self, display: bool = False) -> None:
         """Main drone control loop"""
-        if not self.initialise_crazyflie():
-            self.set_running(False)
-            print(f"[{self.agent_id}] Hardware Initialisation failed...")
-            self.hardware_ready_event.set()  # Even though the hardware did not initialise set to prevent deadlock
-            return
+
         # The main branch's Drone may have simulation=True despite a radio URI;
         # choose the actual transport instead of the simulation flag.
         if self.URI.startswith("radio://") and self.cf is not None:
             self.flight_debug = FlightDebugMonitor(self)
             self.flight_debug.start()
+
         try:
+            if not self.initialise_crazyflie():
+                self.set_running(False)
+                print(f"[{self.agent_id}] Hardware Initialisation failed...")
+                # Even though the hardware did not initialise set to prevent deadlock
+                self.hardware_ready_event.set()
+                return
             # Main command processing loop
             while self.is_running():
                 self._diag_last_run_tick = time.monotonic()
                 try:
                     if self.emergency_event.is_set() and not self.simulation:
                         print(
-                            f"[{self.agent_id} - Drone Setup] Emergency event detected in _run thread. Exiting main loop."
+                            f"[{self.agent_id}] Emergency detected. Initiating emergency landing."
                         )
-                        self._handle_command({"land": True})
-                        self.is_landed_event.wait(timeout=10)
+
+                        # Disable movement controllers before landing.
+                        self.position_controller_active = False
+                        self.velocity_controller_active = False
+
+                        # Only one thread should command the landing.
+                        if self.is_flying_event.is_set() and self.mc:
+                            self._handle_command({"land": True})
+                            if not self.is_landed_event.is_set():
+                                print(
+                                    f"[{self.agent_id}] WARNING: Emergency landing "
+                                    "did not complete successfully."
+                                )
+                        self.set_running(False)
+                        print(f"[{self.agent_id}] Emergency shutdown initiated.")
                         break
+
                     # Get command with timeout
                     command = self.command_queue.get(timeout=0.1)
                     if isinstance(command, dict):
@@ -571,36 +554,33 @@ class DroneSetup:
                                     lag_ms=round(1000 * self._diag_last_queue_lag_s, 1),
                                     queue_size=self.command_queue.qsize(),
                                     command_type=next(iter(command), "empty"))
+
+                    # An emergency may have occurred while waiting for a command.
+                    if self.emergency_event.is_set() and not self.simulation:
+                        self.command_queue.task_done()
+                        continue
+
                     if command == "exit":
                         self.set_running(False)
                         print(f"[{self.agent_id}] Shutting down.")
                         break
-                    elif command == "emergency_stop":
-                        if self.position_controller_active:
-                            self.stop_position_control()
-                        if self.is_flying_event.is_set() and self.mc:
-                            print(
-                                f"[{self.agent_id}] EMERGENCY STOP: Landing and Stopping."
-                            )
-                            self.land_and_stop()
-                        self.set_running(False)
-                        print(f"[{self.agent_id}] EMERGENCY STOP initiated.")
-                        break
-                    else:
-                        started_handling = time.monotonic()
-                        self._handle_command(command)
-                        handling_ms = (time.monotonic() - started_handling) * 1000
-                        if handling_ms > 150 and not (
-                            isinstance(command, dict) and
-                            ("take_off" in command or "land" in command)
-                        ):
-                            diag("SLOW_COMMAND", agent=self.agent_id,
-                                duration_ms=round(handling_ms, 1),
-                                command_type=next(iter(command), "unknown")
-                                if isinstance(command, dict) else str(command))
+                    if command == "emergency_stop":
+                        self.emergency_event.set()
+                        self.command_queue.task_done()
+                        continue
 
+                    started_handling = time.monotonic()
+                    self._handle_command(command)
+                    handling_ms = (time.monotonic() - started_handling) * 1000
+                    if handling_ms > 150 and not (
+                        isinstance(command, dict) and
+                        ("take_off" in command or "land" in command)
+                    ):
+                        diag("SLOW_COMMAND", agent=self.agent_id,
+                            duration_ms=round(handling_ms, 1),
+                            command_type=next(iter(command), "unknown")
+                            if isinstance(command, dict) else str(command))
                     self.command_queue.task_done()
-
                 except queue.Empty:
                     pass  # No command received; continue
 
@@ -618,7 +598,17 @@ class DroneSetup:
                 time.sleep(0.05)  # Shorter sleep for more responsive command processing
 
         finally:
-            self._shutdown_crazyflie()
+            # Unblock startup if initialization failed before
+            # the hardware readiness event was signalled.
+            if not self.hardware_ready_event.is_set():
+                self.set_running(False)
+                self.hardware_ready_event.set()
+
+            try:
+                self._shutdown_crazyflie()
+            finally:
+                if self.emergency_event.is_set() and not self.simulation:
+                    self._signal_stop_to_all_threads()
 
     # minorly modified from cearlier drone
     def _shutdown_crazyflie(self) -> None:
@@ -698,7 +688,8 @@ class DroneSetup:
                     # Check if the radio link is still alive and connected
                     if not self.mc._cf.is_connected():
                         print(
-                            f"[{self.agent_id}] Error: The Crazyflie instance is disconnected or invalid!"
+                            f"[{self.agent_id}] Error: The Crazyflie "
+                            f"instance is disconnected or invalid!"
                         )
                     print(f"[{self.agent_id}] Take-off successful")
                 else:
@@ -908,7 +899,11 @@ class DroneSetup:
                     last_pid_report = now
 
                 # Apply velocity command if flying
-                if self.is_flying_event.is_set() and self.mc:
+                if (
+                    self.is_flying_event.is_set()
+                    and self.mc
+                    and not self.emergency_event.is_set()
+                ):
                     # Change velocity to be handled by the main thread
                     self.set_velocity_vector(
                         velocity["x"], velocity["y"], velocity["z"]
@@ -962,7 +957,11 @@ class DroneSetup:
                 #     f"Ramped: ({ramped_velocity['x']:.3f}, {ramped_velocity['y']:.3f})")
 
                 # Apply ramped velocity command if flying
-                if self.is_flying_event.is_set() and self.mc:
+                if (
+                    self.is_flying_event.is_set()
+                    and self.mc
+                    and not self.emergency_event.is_set()
+                ):
                     # Send ramped velocity to MotionCommander
                     self.mc.start_linear_motion(
                         ramped_velocity["x"],
@@ -1312,14 +1311,6 @@ class DroneSetup:
                 return [0.0, 0.0, 0.0]
         return [0.0, 0.0, 0.0]
 
-    def land_and_stop(self) -> None:
-        self.land()
-        self.is_landed_event.wait(timeout=10)
-        if not self.is_landed_event.is_set():
-            print(f"[{self.agent_id}] Drone is failing to land....")
-            print(f"[{self.agent_id}] Forcing stop")
-        self.stop()
-
     def get_battery(self) -> float:
         with self.battery_lock:
             return self.battery_level
@@ -1353,15 +1344,19 @@ class DroneSetup:
     def _join_all_threads(self) -> None:
         """Wait until every managed thread has exited."""
         threads_to_join = [
-            ("position", self.position_thread),
             ("safety", self.safety_thread),
             ("controller", self.controller_thread),
             ("velocity_controller", self.velocity_controller_thread),
             ("main", self.thread),
         ]
 
+        current_thread = threading.current_thread()
+
         for name, thr in threads_to_join:
             if thr and thr.is_alive():
+                if thr is current_thread:
+                    print(f"[{self.agent_id}] Skipping join of current thread: {name}")
+                    continue
                 if name == "main":
                     thr.join(timeout=10.0)
                 else:
