@@ -33,10 +33,10 @@ class Drone(DroneSetup):
         uri: str = "radio://0/100/2M/E7E7E7E700",
     ) -> None:
 
-        # To provide positions to the EKF estimator, we can either use the flow deck or the Vicon system. 
+        # To provide positions to the EKF estimator, we can either use the flow deck or the Vicon system.
         # When using the flow deck, the Crazyflie can estimate its position based on optical flow and altitude measurements.
         # When using the Vicon system, the Crazyflie receives position updates from an external motion capture system and these values need to be possibly processed and sent to the EKF.
-        self.using_flow_deck = True 
+        self.using_flow_deck = True
 
         # Vicon positions for crazyflie EKF
         self.vicon_counts = Counter()
@@ -77,8 +77,11 @@ class Drone(DroneSetup):
             print(f"[{self.agent_id}] Connecting to Crazyflie...")
 
             self.scf = SyncCrazyflie(self.URI, cf=Crazyflie(rw_cache="./cache"))
-            self.scf.open_link()
             self.cf = self.scf.cf
+            if self.flight_debug is not None:
+                self.flight_debug.attach_to(self.cf)
+
+            self.scf.open_link()
 
             if self.using_flow_deck:
                 # Setup deck detection
@@ -116,7 +119,7 @@ class Drone(DroneSetup):
 
             self._setup_velocity_logging()
             self._setup_flight_extra_logging()
-            
+
             # Signal that hardware is ready
             self.hardware_ready_event.set()
             print(
@@ -125,13 +128,23 @@ class Drone(DroneSetup):
             return True
 
         except Exception as e:
-            print(f"[{self.agent_id}] Failed to initialize Crazyflie: {str(e)}")
+            print(f"[{self.agent_id}] Failed to initialize Crazyflie: {e}")
 
             try:
                 if self.scf is not None:
                     self.scf.close_link()
-            except Exception:
-                pass
+            except Exception as close_exc:
+                print(
+                    f"[{self.agent_id}] Error closing failed "
+                    f"connection: {close_exc}"
+                )
+            finally:
+                if self.flight_debug is not None:
+                    self.flight_debug.detach()
+
+                self.cf = None
+                self.scf = None
+
             return False
 
     def _param_deck_flow(self, _, value_str) -> None:

@@ -161,7 +161,7 @@ class DroneSetup:
         # Debugging parameters
         self.control_target_velocities = [0, 0, 0]
         self.control_target_lock = threading.Lock()
-            
+
         self.flight_debug = None
         self._diag_last_run_tick = None
         self._diag_last_pid_tick = None
@@ -171,7 +171,8 @@ class DroneSetup:
 
         self.flight_telemetry = (
             FlightTelemetryRecorder(self.agent_id)
-            if self.URI.startswith("radio://") else None
+            if self.URI.startswith("radio://")
+            else None
         )
         self._last_vicon_csv_mono = float("-inf")
         self.flight_extra_log_config = None
@@ -358,12 +359,17 @@ class DroneSetup:
             self.last_position_update_time = sample.timestamp
 
         # Record actual accepted Vicon samples at up to 10 Hz.
-        if (self.flight_telemetry is not None and
-                sample.timestamp - self._last_vicon_csv_mono >= 0.10):
+        if (
+            self.flight_telemetry is not None
+            and sample.timestamp - self._last_vicon_csv_mono >= 0.10
+        ):
             self._last_vicon_csv_mono = sample.timestamp
             self.flight_telemetry.record(
-                "vicon", sample_mono_s=sample.timestamp,
-                x_m=sample.x, y_m=sample.y, z_m=sample.z,
+                "vicon",
+                sample_mono_s=sample.timestamp,
+                x_m=sample.x,
+                y_m=sample.y,
+                z_m=sample.z,
             )
 
         if not self.position_ready_event.is_set():
@@ -390,14 +396,21 @@ class DroneSetup:
         return True
 
     def _on_cf_log_started(self, config, started):
-        diag("CF_LOG_STATE", agent=self.agent_id,
+        diag(
+            "CF_LOG_STATE",
+            agent=self.agent_id,
             name=getattr(config, "name", "unknown"),
             started=started,
-            err_no=getattr(config, "err_no", None))
+            err_no=getattr(config, "err_no", None),
+        )
 
     def _on_cf_log_error(self, config, message):
-        diag("CF_LOG_ERROR", agent=self.agent_id,
-            name=getattr(config, "name", "unknown"), error=repr(message))
+        diag(
+            "CF_LOG_ERROR",
+            agent=self.agent_id,
+            name=getattr(config, "name", "unknown"),
+            error=repr(message),
+        )
 
     def _start_position_tracking(self) -> bool:
         """Start the configured position source."""
@@ -552,13 +565,20 @@ class DroneSetup:
                         enqueued = command.pop("_diag_queued_at", None)
                         if enqueued is not None:
                             self._diag_last_queue_lag_s = time.monotonic() - enqueued
-                            if (self._diag_last_queue_lag_s > 0.2 and
-                                    time.monotonic() - getattr(self, "_diag_last_lag_warn", 0) > 1.0):
+                            if (
+                                self._diag_last_queue_lag_s > 0.2
+                                and time.monotonic()
+                                - getattr(self, "_diag_last_lag_warn", 0)
+                                > 1.0
+                            ):
                                 self._diag_last_lag_warn = time.monotonic()
-                                diag("COMMAND_DELAY", agent=self.agent_id,
+                                diag(
+                                    "COMMAND_DELAY",
+                                    agent=self.agent_id,
                                     lag_ms=round(1000 * self._diag_last_queue_lag_s, 1),
                                     queue_size=self.command_queue.qsize(),
-                                    command_type=next(iter(command), "empty"))
+                                    command_type=next(iter(command), "empty"),
+                                )
 
                     # An emergency may have occurred while waiting for a command.
                     if self.emergency_event.is_set() and not self.simulation:
@@ -578,13 +598,19 @@ class DroneSetup:
                     self._handle_command(command)
                     handling_ms = (time.monotonic() - started_handling) * 1000
                     if handling_ms > 150 and not (
-                        isinstance(command, dict) and
-                        ("take_off" in command or "land" in command)
+                        isinstance(command, dict)
+                        and ("take_off" in command or "land" in command)
                     ):
-                        diag("SLOW_COMMAND", agent=self.agent_id,
+                        diag(
+                            "SLOW_COMMAND",
+                            agent=self.agent_id,
                             duration_ms=round(handling_ms, 1),
-                            command_type=next(iter(command), "unknown")
-                            if isinstance(command, dict) else str(command))
+                            command_type=(
+                                next(iter(command), "unknown")
+                                if isinstance(command, dict)
+                                else str(command)
+                            ),
+                        )
                     self.command_queue.task_done()
                 except queue.Empty:
                     pass  # No command received; continue
@@ -603,17 +629,43 @@ class DroneSetup:
                 time.sleep(0.05)  # Shorter sleep for more responsive command processing
 
         finally:
-            # Unblock startup if initialization failed before
-            # the hardware readiness event was signalled.
+            # Unblock startup if hardware initialization failed.
             if not self.hardware_ready_event.is_set():
                 self.set_running(False)
                 self.hardware_ready_event.set()
 
+            # Record the final state before shutting down the Crazyflie.
+            if self.flight_debug is not None:
+                diag("DRONE_SHUTDOWN_BEGIN", agent=self.agent_id)
+                try:
+                    self.flight_debug.snapshot()
+                except Exception as exc:
+                    diag("FINAL_SNAPSHOT_ERROR", agent=self.agent_id, error=repr(exc))
+
             try:
                 self._shutdown_crazyflie()
             finally:
-                if self.emergency_event.is_set() and not self.simulation:
-                    self._signal_stop_to_all_threads()
+                try:
+                    if self.emergency_event.is_set() and not self.simulation:
+                        self._signal_stop_to_all_threads()
+
+                finally:
+                    # Allow time for the Crazyflie to properly disconnect before
+                    # exiting the thread and for debugging logs.
+                    time.sleep(5.0)
+                    if self.flight_debug is not None:
+                        # Capture the state after shutdown and cleanup.
+                        try:
+                            self.flight_debug.snapshot()
+                        except Exception as exc:
+                            diag(
+                                "FINAL_SNAPSHOT_ERROR",
+                                agent=self.agent_id,
+                                error=repr(exc),
+                            )
+
+                        diag("DRONE_SHUTDOWN_END", agent=self.agent_id)
+                        self.flight_debug.stop()
 
     # minorly modified from cearlier drone
     def _shutdown_crazyflie(self) -> None:
@@ -654,12 +706,17 @@ class DroneSetup:
                 self.velocity_log_config = None
 
             if self.scf:
-                self.scf.close_link()
+                try:
+                    self.scf.close_link()
+                finally:
+                    if self.flight_debug is not None:
+                        self.flight_debug.detach()
+
                 self.scf = None
 
             if self.flight_telemetry is not None:
                 self.flight_telemetry.close()
-                
+
             self.set_running(False)
             print(f"[{self.agent_id}] Shutdown complete")
 
@@ -858,8 +915,11 @@ class DroneSetup:
             last_pid_tick = now
             self._diag_last_pid_tick = now
             if loop_gap > 0.15:
-                diag("PID_LOOP_GAP", agent=self.agent_id,
-                    elapsed_ms=round(loop_gap * 1000, 1))
+                diag(
+                    "PID_LOOP_GAP",
+                    agent=self.agent_id,
+                    elapsed_ms=round(loop_gap * 1000, 1),
+                )
             try:
                 # Get current and target positions
                 current_pos = self.get_position_dict()
@@ -895,12 +955,19 @@ class DroneSetup:
                 # Calculate velocity command using PID control
                 velocity = self._calculate_pid_velocity(error, control_rate)
                 if now - last_pid_report >= 1.0:
-                    diag("PID", agent=self.agent_id,
-                        position=tuple(round(current_pos[a], 3) for a in ("x", "y", "z")),
+                    diag(
+                        "PID",
+                        agent=self.agent_id,
+                        position=tuple(
+                            round(current_pos[a], 3) for a in ("x", "y", "z")
+                        ),
                         target=tuple(round(target_pos[a], 3) for a in ("x", "y", "z")),
                         error_m=round(error_magnitude, 3),
-                        requested_velocity=tuple(round(velocity[a], 3) for a in ("x", "y", "z")),
-                        loop_gap_ms=round(loop_gap * 1000, 1))
+                        requested_velocity=tuple(
+                            round(velocity[a], 3) for a in ("x", "y", "z")
+                        ),
+                        loop_gap_ms=round(loop_gap * 1000, 1),
+                    )
                     last_pid_report = now
 
                 # Apply velocity command if flying
@@ -974,7 +1041,6 @@ class DroneSetup:
                         ramped_velocity["z"],
                     )
                     self._diag_last_mc_update = time.monotonic()
-
 
                 # Sleep to maintain control rate
                 time.sleep(self.velocity_control_rate)
@@ -1151,8 +1217,12 @@ class DroneSetup:
             self.target_position = {"x": x, "y": y, "z": z}
             self.at_reset_position.clear()
         if waited_ms > 20:
-            diag("POSITION_LOCK_WAIT", agent=self.agent_id,
-                caller="set_target_position", waited_ms=round(waited_ms, 1))
+            diag(
+                "POSITION_LOCK_WAIT",
+                agent=self.agent_id,
+                caller="set_target_position",
+                waited_ms=round(waited_ms, 1),
+            )
 
         print(f"[{self.agent_id}] Target position set: x={x}, y={y}, z={z}")
 
@@ -1167,8 +1237,12 @@ class DroneSetup:
             waited_ms = (time.monotonic() - requested_at) * 1000
             current = self.position.copy()
         if waited_ms > 20:
-            diag("POSITION_LOCK_WAIT", agent=self.agent_id,
-                caller="get_position_dict", waited_ms=round(waited_ms, 1))
+            diag(
+                "POSITION_LOCK_WAIT",
+                agent=self.agent_id,
+                caller="get_position_dict",
+                waited_ms=round(waited_ms, 1),
+            )
         return current
 
     def get_internal_velocity(self) -> tuple[float, float, float]:
@@ -1204,8 +1278,7 @@ class DroneSetup:
             raise RuntimeError("Battery log block invalid")
         self.battery_log_config = cfg
         cfg.start()
-        diag("CF_LOG_REQUEST", agent=self.agent_id, name="Battery",
-            period_ms=200)
+        diag("CF_LOG_REQUEST", agent=self.agent_id, name="Battery", period_ms=200)
 
     def _battery_callback(
         self, timestamp: int, data: dict[str, Any], logconf: Any
@@ -1218,7 +1291,9 @@ class DroneSetup:
         self._diag_battery_at = time.monotonic()
         if self.flight_telemetry is not None:
             self.flight_telemetry.record(
-                "battery", cf_timestamp_ms=timestamp, battery_v=voltage,
+                "battery",
+                cf_timestamp_ms=timestamp,
+                battery_v=voltage,
             )
 
     def _setup_velocity_logging(self) -> None:
@@ -1237,8 +1312,12 @@ class DroneSetup:
         try:
             self.velocity_log_config = LogConfig(name="StateEstimate", period_in_ms=100)
             for name in (
-                "stateEstimate.x", "stateEstimate.y", "stateEstimate.z",
-                "stateEstimate.vx", "stateEstimate.vy", "stateEstimate.vz",
+                "stateEstimate.x",
+                "stateEstimate.y",
+                "stateEstimate.z",
+                "stateEstimate.vx",
+                "stateEstimate.vy",
+                "stateEstimate.vz",
             ):
                 self.velocity_log_config.add_variable(name, "float")
 
@@ -1265,7 +1344,8 @@ class DroneSetup:
             self.internal_vz = data["stateEstimate.vz"]
             if self.flight_telemetry is not None:
                 self.flight_telemetry.record(
-                    "estimate", cf_timestamp_ms=timestamp,
+                    "estimate",
+                    cf_timestamp_ms=timestamp,
                     x_m=data["stateEstimate.x"],
                     y_m=data["stateEstimate.y"],
                     z_m=data["stateEstimate.z"],
@@ -1288,13 +1368,13 @@ class DroneSetup:
             raise RuntimeError("FlightExtra log block invalid")
         self.flight_extra_log_config = cfg
         cfg.start()
-        diag("CF_LOG_REQUEST", agent=self.agent_id, name="FlightExtra",
-            period_ms=200)
+        diag("CF_LOG_REQUEST", agent=self.agent_id, name="FlightExtra", period_ms=200)
 
     def _flight_extra_callback(self, timestamp, data, logconf) -> None:
         if self.flight_telemetry is not None:
             self.flight_telemetry.record(
-                "extra", cf_timestamp_ms=timestamp,
+                "extra",
+                cf_timestamp_ms=timestamp,
                 yaw_deg=data["stateEstimate.yaw"],
                 target_z_m=data["ctrltarget.z"],
                 range_z_m=data["range.zrange"] / 1000.0,
@@ -1454,6 +1534,8 @@ class DroneSetup:
             except Exception as exc:
                 print(f"[{self.agent_id}] Warning while closing link: {exc}")
 
+        if self.flight_debug is not None:
+            self.flight_debug.detach()
         self.cf = None
         self.scf = None
         self.mc = None
