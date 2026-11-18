@@ -13,12 +13,26 @@ from queue import Empty, Full, Queue
 import threading
 import time
 
-
 FIELDS = (
-    "utc_received", "host_mono_s", "sample_mono_s", "stream", "agent",
-    "cf_timestamp_ms", "x_m", "y_m", "z_m", "vx_m_s", "vy_m_s",
-    "vz_m_s", "yaw_deg", "target_z_m", "range_z_m", "thrust",
-    "battery_v", "detail",
+    "utc_received",
+    "host_mono_s",
+    "sample_mono_s",
+    "stream",
+    "agent",
+    "cf_timestamp_ms",
+    "x_m",
+    "y_m",
+    "z_m",
+    "vx_m_s",
+    "vy_m_s",
+    "vz_m_s",
+    "yaw_deg",
+    "target_z_m",
+    "range_z_m",
+    "thrust",
+    "battery_v",
+    "locsrv_rx_tick",
+    "detail",
 )
 
 
@@ -35,9 +49,9 @@ class FlightTelemetryRecorder:
         self._closed = False
         self._close_lock = threading.Lock()
         self._stop = object()
-        self._thread = threading.Thread(target=self._write_loop,
-                                        name=f"{agent_id}-telemetry-writer",
-                                        daemon=True)
+        self._thread = threading.Thread(
+            target=self._write_loop, name=f"{agent_id}-telemetry-writer", daemon=True
+        )
         self._thread.start()
         atexit.register(self.close)
 
@@ -62,7 +76,9 @@ class FlightTelemetryRecorder:
     def _write_loop(self):
         try:
             with self.path.open("w", newline="", encoding="utf-8") as handle:
-                writer = csv.DictWriter(handle, fieldnames=FIELDS, extrasaction="ignore")
+                writer = csv.DictWriter(
+                    handle, fieldnames=FIELDS, extrasaction="ignore"
+                )
                 writer.writeheader()
                 last_flush = time.monotonic()
                 while True:

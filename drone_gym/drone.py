@@ -119,6 +119,8 @@ class Drone(DroneSetup):
 
             self._setup_velocity_logging()
             self._setup_flight_extra_logging()
+            if not self.using_flow_deck:
+                self._setup_extpos_rx_logging()
 
             # Signal that hardware is ready
             self.hardware_ready_event.set()
@@ -237,6 +239,14 @@ class Drone(DroneSetup):
                 return
 
             self.cf.extpos.send_extpos(*position)
+            if self.flight_telemetry is not None:
+                self.flight_telemetry.record(
+                    "extpos_tx",
+                    sample_mono_s=timestamp,
+                    x_m=position[0],
+                    y_m=position[1],
+                    z_m=position[2],
+                )
 
         except Exception as exc:
             self.vicon_counts["send_error"] += 1

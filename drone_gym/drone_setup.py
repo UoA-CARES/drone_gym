@@ -169,6 +169,13 @@ class DroneSetup:
         self._diag_last_mc_update = None
         self._diag_battery_at = None
 
+        self.extpos_rx_log_config = None
+
+        # Firmware-side external-position reception diagnostics.
+        self._extpos_rx_last_tick = None
+        self._diag_extpos_rx_last_sample_at = None
+        self._diag_extpos_rx_last_change_at = None
+
         self.flight_telemetry = (
             FlightTelemetryRecorder(self.agent_id)
             if self.URI.startswith("radio://")
@@ -701,7 +708,7 @@ class DroneSetup:
                 except:
                     pass
                 self.velocity_log_config = None
-
+            self._stop_extpos_rx_logging()
             if self.scf:
                 try:
                     self.scf.close_link()
@@ -1378,6 +1385,86 @@ class DroneSetup:
                 thrust=data["stabilizer.thrust"],
             )
 
+    def _setup_extpos_rx_logging(self) -> None:
+        """Log the external positions received by Crazyflie firmware."""
+
+        self._extpos_rx_last_tick = None
+        self._diag_extpos_rx_last_sample_at = None
+        self._diag_extpos_rx_last_change_at = None
+
+        cfg = LogConfig(name="ExtPosRx", period_in_ms=100)
+
+        cfg.add_variable("locSrv.x", "float")
+        cfg.add_variable("locSrv.y", "float")
+        cfg.add_variable("locSrv.z", "float")
+        cfg.add_variable("locSrvZ.tick", "uint16_t")
+
+        cfg.data_received_cb.add_callback(self._extpos_rx_callback)
+        cfg.started_cb.add_callback(self._on_cf_log_started)
+        cfg.error_cb.add_callback(self._on_cf_log_error)
+
+        self.cf.log.add_config(cfg)
+
+        if not cfg.valid:
+            raise RuntimeError(
+                "ExtPosRx log block invalid. " "Check Crazyflie firmware logging TOC."
+            )
+
+        self.extpos_rx_log_config = cfg
+        cfg.start()
+
+        diag(
+            "CF_LOG_REQUEST",
+            agent=self.agent_id,
+            name="ExtPosRx",
+            period_ms=100,
+        )
+
+    def _extpos_rx_callback(self, timestamp, data, logconf) -> None:
+        """Record the latest position stored by the localization service."""
+
+        tick = int(data["locSrvZ.tick"])
+        now = time.monotonic()
+
+        self._diag_extpos_rx_last_sample_at = now
+
+        # The firmware tick changes when another external
+        # positioning packet is handled. A 16-bit tick wraps
+        # periodically, so compare it for change, not magnitude.
+        if tick != self._extpos_rx_last_tick:
+            self._extpos_rx_last_tick = tick
+            self._diag_extpos_rx_last_change_at = now
+
+        if self.flight_telemetry is not None:
+            self.flight_telemetry.record(
+                "extpos_rx",
+                cf_timestamp_ms=timestamp,
+                x_m=data["locSrv.x"],
+                y_m=data["locSrv.y"],
+                z_m=data["locSrv.z"],
+                locsrv_rx_tick=tick,
+            )
+
+    def _stop_extpos_rx_logging(self) -> None:
+        """Clean up the onboard receiver log before disconnection."""
+
+        cfg = self.extpos_rx_log_config
+        self.extpos_rx_log_config = None
+
+        if cfg is None:
+            return
+
+        try:
+            cfg.stop()
+            cfg.delete()
+        except Exception as exc:
+            diag(
+                "CF_LOG_CLEANUP_ERROR",
+                agent=self.agent_id,
+                name="ExtPosRx",
+                error=repr(exc),
+            )
+
     def get_motion_commander_setpoint(self) -> list[float]:
         """Get the current hover setpoint from MotionCommander's internal thread"""
         if self.mc and hasattr(self.mc, "_thread") and self.mc._thread:
@@ -1514,7 +1601,7 @@ class DroneSetup:
                 pass
 
             self.velocity_log_config = None
-
+        self._stop_extpos_rx_logging()
         # Power down the physical Crazyflie
         if self.ps is not None:
             try:

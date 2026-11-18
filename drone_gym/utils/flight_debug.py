@@ -277,6 +277,21 @@ class FlightDebugMonitor:
                 log_err_no=getattr(drone.battery_log_config, "err_no", None),
             )
 
+        if not getattr(drone, "using_flow_deck", True):
+            last_tx = getattr(drone, "vicon_last_sent_time", None)
+            last_rx = getattr(drone, "_diag_extpos_rx_last_change_at", None)
+
+            tx_is_recent = last_tx is not None and now - last_tx < 0.3
+            rx_is_stale = last_rx is None or now - last_rx > 0.5
+
+            if tx_is_recent and rx_is_stale:
+                diag(
+                    "EXTPOS_RX_STALE",
+                    agent=drone.agent_id,
+                    tx_age_s=_age(now, last_tx),
+                    rx_change_age_s=_age(now, last_rx),
+                    rx_tick=getattr(drone, "_extpos_rx_last_tick", None),
+                )
         diag(
             "STATUS",
             agent=drone.agent_id,
@@ -309,5 +324,12 @@ class FlightDebugMonitor:
             quality_age_s=_age(now, self._quality_at),
             voltage=round(voltage, 3) if voltage is not None else None,
             voltage_sample_age_s=_age(now, getattr(drone, "_diag_battery_at", None)),
+            extpos_rx_tick=getattr(drone, "_extpos_rx_last_tick", None),
+            extpos_rx_log_age_s=_age(
+                now, getattr(drone, "_diag_extpos_rx_last_sample_at", None)
+            ),
+            extpos_rx_change_age_s=_age(
+                now, getattr(drone, "_diag_extpos_rx_last_change_at", None)
+            ),
             **extra,
         )
