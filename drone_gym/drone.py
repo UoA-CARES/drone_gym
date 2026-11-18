@@ -9,7 +9,10 @@ from cflib.utils import reset_estimator
 from cflib.utils.power_switch import PowerSwitch
 
 from drone_gym.drone_setup import DroneSetup
-from drone_gym.utils.position_source import PositionSource
+from drone_gym.utils.position_source import (
+    PositionSample,
+    PositionSource,
+)
 
 
 class Drone(DroneSetup):
@@ -43,7 +46,7 @@ class Drone(DroneSetup):
         self.vicon_timeout = 0.25
         # NOTE: This needs to be configured with the Vicon position update rate, number of drones
         # and the rate at which the Crazyradio can handle the EKF updates.
-        self.vicon_send_period = 1.0 / 50.0
+        self.vicon_send_period = 1.0 / 40.0
 
         # EKF transmission bookkeeping
         self.vicon_last_sent_time = None
@@ -151,7 +154,7 @@ class Drone(DroneSetup):
     ) -> None:
         """Validate, store and forward Vicon position to the EKF."""
 
-        if self.position_tracking_mode == "legacy_vicon":
+        if self.using_flow_deck:
             super()._handle_position_sample(sample)
             return
 
