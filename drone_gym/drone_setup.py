@@ -510,7 +510,7 @@ class DroneSetup:
 
     def _run(self, display: bool = False) -> None:
         """Main drone control loop"""
-        if self.simulation:
+        if not self.simulation:
             self.flight_debug = FlightDebugMonitor(self)
             self.flight_debug.start()
 

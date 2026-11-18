@@ -139,6 +139,7 @@ class FlightDebugMonitor:
         radio_thread = getattr(link, "_thread", None)
 
         extra = {}
+        vicon_frame_age = None
         if hasattr(drone, "get_vicon_diagnostics"):
             details = drone.get_vicon_diagnostics()
             extra = {
