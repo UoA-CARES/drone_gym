@@ -138,19 +138,6 @@ class FlightDebugMonitor:
         link = getattr(cf, "link", None) if cf is not None else None
         radio_thread = getattr(link, "_thread", None)
 
-        # In legacy Vicon mode, last_position_update_time is the age of the
-        # polling loop, NOT necessarily the age of the actual Vicon frame.
-        vicon_frame_age = None
-        vicon = getattr(drone, "vicon", None)
-        objects = getattr(vicon, "tracked_object", None)
-        drone_name = getattr(drone, "drone_name", None)
-        if isinstance(objects, dict) and drone_name in objects:
-            frame = objects[drone_name]
-            if len(frame) > 12:
-                vicon_frame_age = round(
-                    (datetime.now() - frame[12]).total_seconds(), 3
-                )
-
         extra = {}
         if hasattr(drone, "get_vicon_diagnostics"):
             details = drone.get_vicon_diagnostics()
@@ -159,6 +146,7 @@ class FlightDebugMonitor:
                 "vicon_issue": details.get("last_issue"),
                 "vicon_send_age_s": details.get("last_sent_age"),
             }
+            vicon_frame_age = details.get("position_age")
 
         battery_age = _age(now, getattr(drone, "_diag_battery_at", None))
         if (drone.is_flying_event.is_set() and

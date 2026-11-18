@@ -510,10 +510,7 @@ class DroneSetup:
 
     def _run(self, display: bool = False) -> None:
         """Main drone control loop"""
-
-        # The main branch's Drone may have simulation=True despite a radio URI;
-        # choose the actual transport instead of the simulation flag.
-        if self.URI.startswith("radio://") and self.cf is not None:
+        if self.simulation:
             self.flight_debug = FlightDebugMonitor(self)
             self.flight_debug.start()
 

@@ -5,7 +5,6 @@ from collections import Counter
 import cflib.crtp
 from cflib.crazyflie import Crazyflie
 from cflib.crazyflie.syncCrazyflie import SyncCrazyflie
-from cflib.utils import reset_estimator
 from cflib.utils.power_switch import PowerSwitch
 
 from drone_gym.drone_setup import DroneSetup
@@ -60,12 +59,13 @@ class Drone(DroneSetup):
             simulation=False,
         )
 
-        print(f"[{self.agent_id}] Resetting state estimation (EKF)...")
-        if self.position_source is None:
-            self.cf.param.set_value("kalman.resetEstimation", "1")
-            time.sleep(0.1)
-        else:
-            reset_estimator(self.cf)
+        # Not correctly implemented yet and may not be needed
+        # print(f"[{self.agent_id}] Resetting state estimation (EKF)...")
+        # if self.position_source is None:
+        #     self.cf.param.set_value("kalman.resetEstimation", "1")
+        #     time.sleep(0.1)
+        # else:
+        #     reset_estimator(self.cf)
 
         # Drone Properties
         self.ps = PowerSwitch(self.URI)
