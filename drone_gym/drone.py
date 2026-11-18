@@ -1,12 +1,18 @@
 import time
+import math
+from collections import Counter
 
 import cflib.crtp
 from cflib.crazyflie import Crazyflie
 from cflib.crazyflie.syncCrazyflie import SyncCrazyflie
+from cflib.utils import reset_estimator
 from cflib.utils.power_switch import PowerSwitch
 
 from drone_gym.drone_setup import DroneSetup
-from drone_gym.utils.position_source import PositionSource
+from drone_gym.utils.position_source import (
+    PositionSample,
+    PositionSource,
+)
 
 
 class Drone(DroneSetup):
@@ -27,6 +33,25 @@ class Drone(DroneSetup):
         boundaries: dict[str, float] | None = None,
         uri: str = "radio://0/100/2M/E7E7E7E700",
     ) -> None:
+
+        # To provide positions to the EKF estimator, we can either use the flow deck or the Vicon system. 
+        # When using the flow deck, the Crazyflie can estimate its position based on optical flow and altitude measurements.
+        # When using the Vicon system, the Crazyflie receives position updates from an external motion capture system and these values need to be possibly processed and sent to the EKF.
+        self.using_flow_deck = True 
+
+        # Vicon positions for crazyflie EKF
+        self.vicon_counts = Counter()
+        self.vicon_last_issue = None
+        self.vicon_stale = True
+        self.vicon_timeout = 0.25
+        # NOTE: This needs to be configured with the Vicon position update rate, number of drones
+        # and the rate at which the Crazyradio can handle the EKF updates.
+        self.vicon_send_period = 1.0 / 40.0
+
+        # EKF transmission bookkeeping
+        self.vicon_last_sent_time = None
+        self.vicon_last_send_attempt = None
+
         super().__init__(
             boundaries=boundaries,
             agent_id=agent_id,
@@ -34,6 +59,13 @@ class Drone(DroneSetup):
             position_source=position_source,
             simulation=False,
         )
+
+        print(f"[{self.agent_id}] Resetting state estimation (EKF)...")
+        if self.position_source is None:
+            self.cf.param.set_value("kalman.resetEstimation", "1")
+            time.sleep(0.1)
+        else:
+            reset_estimator(self.cf)
 
         # Drone Properties
         self.ps = PowerSwitch(self.URI)
@@ -48,15 +80,20 @@ class Drone(DroneSetup):
             self.scf.open_link()
             self.cf = self.scf.cf
 
-            # Setup deck detection
-            self.cf.param.add_update_callback(
-                group="deck", name="bcFlow2", cb=self._param_deck_flow
-            )
-            time.sleep(1)
+            if self.using_flow_deck:
+                # Setup deck detection
+                self.cf.param.add_update_callback(
+                    group="deck", name="bcFlow2", cb=self._param_deck_flow
+                )
+                time.sleep(1)
 
-            if not self.deck_attached_event.wait(timeout=5):
-                print(f"[{self.agent_id}] No flow deck is detected! Exiting....")
-                return False
+                if not self.deck_attached_event.wait(timeout=5):
+                    print(f"[{self.agent_id}] No flow deck is detected! Exiting....")
+                    self.stop()
+                    return False
+
+            # Set the estimator to EKF2 (value 2) for better state estimation
+            self.cf.param.set_value("stabilizer.estimator", "2")
 
             print(f"[{self.agent_id}] Resetting all log configurations")
             self.cf.log.reset()
@@ -119,6 +156,130 @@ class Drone(DroneSetup):
         self.set_velocity_vector(
             velocity_vector[0], velocity_vector[1], velocity_vector[2]
         )
+
+    def _record_vicon_issue(self, reason: str) -> None:
+        """Record a rejected Vicon measurement without raising."""
+        self.vicon_counts[reason] += 1
+        self.vicon_last_issue = reason
+
+    def _handle_position_sample(
+        self,
+        sample: PositionSample,
+    ) -> None:
+        """Validate, store and forward Vicon position to the EKF."""
+
+        if self.using_flow_deck:
+            super()._handle_position_sample(sample)
+            return
+
+        self.vicon_counts["received"] += 1
+
+        # Validate the measurement.
+        try:
+            position = (
+                float(sample.x),
+                float(sample.y),
+                float(sample.z),
+            )
+            timestamp = float(sample.timestamp)
+
+        except (TypeError, ValueError, OverflowError, AttributeError):
+            self._record_vicon_issue("malformed")
+            return
+
+        if not all(math.isfinite(v) for v in (*position, timestamp)):
+            self._record_vicon_issue("non_finite")
+            return
+
+        previous_time = self.last_position_update_time
+        if previous_time is not None:
+            dt = timestamp - previous_time
+
+            if dt <= 0:
+                self._record_vicon_issue("non_monotonic")
+                return
+
+        # Update the drone_gym position.
+        if not super()._handle_position_sample(sample):
+            self._record_vicon_issue("rejected")
+            return
+
+        self.vicon_counts["accepted"] += 1
+
+        # Limit EKF transmissions to the configured rate.
+        now = time.monotonic()
+
+        if (
+            self.vicon_last_send_attempt is not None
+            and now - self.vicon_last_send_attempt < self.vicon_send_period
+        ):
+            return
+
+        self.vicon_last_send_attempt = now
+
+        # Forward the accepted measurement to the EKF.
+        try:
+            if self.cf is None or not self.cf.is_connected():
+                self._record_vicon_issue("radio_unavailable")
+                return
+
+            self.cf.extpos.send_extpos(*position)
+
+        except Exception as exc:
+            self.vicon_counts["send_error"] += 1
+            self.vicon_last_issue = f"send_error: {type(exc).__name__}: {exc}"
+            return
+
+        self.vicon_counts["sent"] += 1
+        self.vicon_last_sent_time = time.monotonic()
+
+    def _monitor_position_source(self) -> None:
+        """Record Vicon dropouts and recoveries."""
+
+        with self.position_lock:
+            last_update = self.last_position_update_time
+
+        now = time.monotonic()
+
+        stale = last_update is None or now - last_update > self.vicon_timeout
+
+        # Only act on a state transition.
+        if stale == self.vicon_stale:
+            return
+
+        self.vicon_stale = stale
+
+        if stale:
+            self.vicon_counts["dropouts"] += 1
+            self.vicon_last_issue = "vicon_stale"
+
+            print(f"[{self.agent_id}] WARNING: " "Vicon position is stale")
+
+        else:
+            self.vicon_counts["recoveries"] += 1
+
+            print(f"[{self.agent_id}] " "Vicon position updates resumed")
+
+    def get_vicon_diagnostics(self) -> dict:
+        """Return the current Vicon positioning diagnostics."""
+
+        with self.position_lock:
+            last_update = self.last_position_update_time
+
+        now = time.monotonic()
+        age = None if last_update is None else now - last_update
+
+        return {
+            "position_age": age,
+            "position_stale": (age is None or age > self.vicon_timeout),
+            "last_sent_age": (
+                None
+                if self.vicon_last_sent_time is None
+                else now - self.vicon_last_sent_time
+            ),
+            "last_issue": self.vicon_last_issue,
+            "counts": dict(self.vicon_counts),
+        }
 
     def stop(self) -> None:
         """Fully stop the drone and optionally prepare for a clean restart."""

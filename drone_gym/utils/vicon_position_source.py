@@ -35,7 +35,7 @@ class ViconInterface:
         self.udp_ip = udp_ip
         self.udp_port = udp_port
 
-        print(f"[ViconInterface] Connecting to " f"{self.udp_ip}:{self.udp_port}")
+        print(f"[ViconInterface] Connecting to {self.udp_ip}:{self.udp_port}")
 
         self.sock = socket.socket(
             socket.AF_INET,
@@ -87,14 +87,14 @@ class ViconInterface:
                     # Closing the socket during normal shutdown interrupts
                     # recvfrom(). Do not report that as an error.
                     if not self.stop_event.is_set():
-                        print("[ViconInterface] Socket error: " f"{exc}")
+                        print(f"[ViconInterface] Socket error: {exc}")
                     break
 
                 try:
                     self._process_packet(packet)
 
                 except Exception as exc:
-                    print("[ViconInterface] Could not parse packet: " f"{exc}")
+                    print(f"[ViconInterface] Could not parse packet: {exc}")
 
         finally:
             try:
@@ -393,7 +393,9 @@ class ViconProvider:
             receiver_thread.join(timeout=2.0)
 
             if receiver_thread.is_alive():
-                print("[ViconProvider] WARNING: receiver thread did not stop in time")
+                print(
+                    "[ViconProvider] WARNING: " "receiver thread did not stop in time"
+                )
 
     def get_position_snapshot(
         self,
@@ -498,7 +500,7 @@ class ViconPositionSource(PositionSource):
 
                 worker_thread = threading.Thread(
                     target=self._run,
-                    name=("vicon-position-source-" f"{self._object_name}"),
+                    name=(f"vicon-position-source-{self._object_name}"),
                     daemon=True,
                 )
 
@@ -506,7 +508,7 @@ class ViconPositionSource(PositionSource):
 
             worker_thread.start()
 
-            print(f"[{self._label}] Vicon source started for " f"{self._object_name!r}")
+            print(f"[{self._label}] Vicon source started for {self._object_name!r}")
 
         except Exception:
             self.stop()
@@ -582,10 +584,11 @@ class ViconPositionSource(PositionSource):
                     if callback is not None:
                         try:
                             callback(
-                                PositionSample.now(
+                                PositionSample(
                                     x=position[0],
                                     y=position[1],
                                     z=position[2],
+                                    timestamp=reception_time,
                                 )
                             )
 
