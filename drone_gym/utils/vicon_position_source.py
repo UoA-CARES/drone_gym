@@ -11,6 +11,7 @@ from drone_gym.utils.position_source import (
     PositionSample,
     PositionSource,
 )
+from drone_gym.utils.vicon_packet_capture import ViconPacketCapture
 
 ViconSnapshot = tuple[list[float], float]
 
@@ -70,6 +71,9 @@ class ViconInterface:
         self.stop_event = threading.Event()
         self.have_recv_packet = False
 
+        # One recorder per shared Vicon UDP connection, not one per drone.
+        self.capture = ViconPacketCapture(directory="flight_debug_logs")
+
     def main_loop(self) -> None:
         """Receive and process Vicon packets until end() is called."""
 
@@ -78,7 +82,18 @@ class ViconInterface:
         try:
             while not self.stop_event.is_set():
                 try:
-                    packet, _ = self.sock.recvfrom(4096)
+                    packet, sender = self.sock.recvfrom(65535)
+                    recv_mono_ns = time.monotonic_ns()
+                    recv_wall_ns = time.time_ns()
+
+                    # This only puts the datagram into a bounded queue. No file writing,
+                    # CSV formatting, or Vicon decoding happens on this receiver path.
+                    self.capture.record(
+                        packet=packet,
+                        sender=sender,
+                        recv_mono_ns=recv_mono_ns,
+                        recv_wall_ns=recv_wall_ns,
+                    )
 
                 except socket.timeout:
                     continue
@@ -91,7 +106,7 @@ class ViconInterface:
                     break
 
                 try:
-                    self._process_packet(packet)
+                    self._process_packet(packet, reception_time=recv_mono_ns / 1e9)
 
                 except Exception as exc:
                     print(f"[ViconInterface] Could not parse packet: {exc}")
@@ -101,10 +116,13 @@ class ViconInterface:
                 self.sock.close()
             except OSError:
                 pass
-
+            # The UDP receive loop has stopped; drain the recorder queue and close files.
+            self.capture.close()
             print("[ViconInterface] Receiver loop stopped")
 
-    def _process_packet(self, packet: bytes) -> None:
+    def _process_packet(
+        self, packet: bytes, reception_time: float | None = None
+    ) -> None:
         """Extract every tracked object contained in one Vicon packet."""
 
         if len(packet) < 5:
@@ -137,11 +155,12 @@ class ViconInterface:
 
             # Item ID zero represents a tracked object.
             if item_id == 0:
-                self._process_tracked_object(item_data)
+                self._process_tracked_object(item_data, reception_time=reception_time)
 
     def _process_tracked_object(
         self,
         item_data: bytes,
+        reception_time: float | None = None,
     ) -> None:
         """Parse and store one tracked-object item."""
 
@@ -173,7 +192,8 @@ class ViconInterface:
         y = raw_y / 1000.0
         z = raw_z / 1000.0
 
-        reception_time = time.monotonic()
+        if reception_time is None:
+            reception_time = time.monotonic()
 
         with self.tracked_object_lock:
             previous_data = self.tracked_object.get(name)
@@ -354,7 +374,7 @@ class ViconProvider:
             except Exception:
                 self._interface = None
                 self._receiver_thread = None
-
+                interface.capture.close()
                 interface.end()
                 raise
 

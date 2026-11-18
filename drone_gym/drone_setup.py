@@ -174,7 +174,6 @@ class DroneSetup:
             if self.URI.startswith("radio://")
             else None
         )
-        self._last_vicon_csv_mono = float("-inf")
         self.flight_extra_log_config = None
 
         # Start threads in coordinated sequence
@@ -358,12 +357,10 @@ class DroneSetup:
 
             self.last_position_update_time = sample.timestamp
 
-        # Record actual accepted Vicon samples at up to 10 Hz.
-        if (
-            self.flight_telemetry is not None
-            and sample.timestamp - self._last_vicon_csv_mono >= 0.10
-        ):
-            self._last_vicon_csv_mono = sample.timestamp
+        # Every position sample that reaches the drone's PositionSource callback.
+        # The receiver-level capture independently retains *all* UDP packets,
+        # even if the latest-only per-drone worker skips one.
+        if self.flight_telemetry is not None:
             self.flight_telemetry.record(
                 "vicon",
                 sample_mono_s=sample.timestamp,
