@@ -136,6 +136,10 @@ class MarlDroneEnvironment(ParallelEnv):
         }
         self.team_success_count = 0
 
+        # Bookkeeping: number of times a fatal simulator error has forced a
+        # full simulator restart (across the environment's whole lifetime).
+        self.sim_full_restart_count = 0
+
         # Action:
         # [vx, vy, vz]
         self._action_space = spaces.Box(
@@ -958,11 +962,30 @@ class MarlDroneEnvironment(ParallelEnv):
                     self.drones[agent].start_position_control()
 
                 reset_success = self._wait_for_all_reset_events(timeout=20)
-
                 if not reset_success:
+                    if attempt < self.max_sim_reset_attempts:
+                        # The default implementation returns None; task-specific
+                        # environments may override it with a retry layout.
+                        retry_positions = (  # pylint: disable=assignment-from-none
+                            self._generate_sim_reset_retry_positions()
+                        )
+
+                        if retry_positions is not None:
+                            self.reset_positions = retry_positions
+
+                            print(
+                                "[SIM RESET] Drones timed out reaching their reset positions "
+                                "after successful take-off."
+                            )
+                            print(
+                                "[SIM RESET] Generated new reset positions for the next attempt: "
+                                f"{self.reset_positions}"
+                            )
+
+                            continue
+
                     raise RuntimeError(
-                        "Not all drones reached their reset "
-                        "positions before timeout."
+                        "Not all drones reached their reset positions before timeout."
                     )
 
                 time.sleep(1.0)
@@ -1011,6 +1034,17 @@ class MarlDroneEnvironment(ParallelEnv):
 
                 print("[SIM RESET] Retrying...")
                 time.sleep(5.0)
+
+    def _generate_sim_reset_retry_positions(
+        self,
+    ) -> dict[str, list[float]] | None:
+        """
+        Optionally generate a new reset layout after simulated drones
+        time out while moving to their reset positions. Tasks can
+        override this method to generate new positions. Returning
+        None keeps the existing reset positions.
+        """
+        return None
 
     def _reset_all_physical_drones(
         self,
@@ -1490,6 +1524,7 @@ class MarlDroneEnvironment(ParallelEnv):
                 "Fatal simulated-drone error detected, but no SimManager exists."
             )
 
+        self.sim_full_restart_count += 1
         print("[SIM RECOVERY] Preparing to restart the simulation...")
 
         # The current objects refer to the old SITL processes and cannot be reused.
@@ -1661,9 +1696,9 @@ class MarlDroneEnvironment(ParallelEnv):
 
         return np.array(
             [
-                np.clip(rx / self.max_xy_range, -1.0, 1.0),
-                np.clip(ry / self.max_xy_range, -1.0, 1.0),
-                np.clip(rz / self.max_z_range, -1.0, 1.0),
+                rx / self.max_xy_range,
+                ry / self.max_xy_range,
+                rz / self.max_z_range,
             ],
             dtype=np.float32,
         )

@@ -9,7 +9,7 @@ CrazyFlie or a virtual particle.
 """
 
 from dataclasses import dataclass, field
-from typing import Any, Dict, List
+from typing import Any
 
 from drone_gym.agents.bodies import AgentBody
 from drone_gym.agents.policies import BasePolicy
@@ -21,9 +21,9 @@ class AgentState:
 
     agent_id: int
     role: str
-    position: List[float]
-    velocity: List[float]
-    extra: Dict[str, Any] = field(default_factory=dict)
+    position: list[float]
+    velocity: list[float]
+    extra: dict[str, Any] = field(default_factory=dict)
 
 
 class SimAgent:
@@ -39,14 +39,15 @@ class SimAgent:
       commanded velocity — exactly what the observation needs.
     """
 
-    def __init__(self, agent_id: int, body: AgentBody, policy: BasePolicy,
-                 role: str = "agent"):
+    def __init__(
+        self, agent_id: int, body: AgentBody, policy: BasePolicy, role: str = "agent"
+    ):
         self.agent_id = agent_id
         self.body = body
         self.policy = policy
         self.role = role
-        self.position: List[float] = body.get_position()
-        self.velocity: List[float] = [0.0, 0.0, 0.0]
+        self.position: list[float] = body.get_position()
+        self.velocity: list[float] = [0.0, 0.0, 0.0]
 
     @property
     def needs_ticking(self) -> bool:
@@ -54,10 +55,12 @@ class SimAgent:
         return self.body.is_software_integrated
 
     def state(self) -> AgentState:
-        return AgentState(self.agent_id, self.role, list(self.position), list(self.velocity))
+        return AgentState(
+            self.agent_id, self.role, list(self.position), list(self.velocity)
+        )
 
     # --- lifecycle (delegated to the body, with policy reset) ---
-    def reset_policy(self, context: Dict[str, Any]) -> None:
+    def reset_policy(self, context: dict[str, Any]) -> None:
         self.policy.reset(self.state(), context)
 
     def ensure_airborne(self) -> None:
@@ -66,7 +69,7 @@ class SimAgent:
     def await_airborne(self, timeout: float) -> bool:
         return self.body.await_airborne(timeout)
 
-    def prepare_reset(self, position: List[float]) -> None:
+    def prepare_reset(self, position: list[float]) -> None:
         self.body.prepare_reset(position)
         self.position = [position[0], position[1], position[2]]
         self.velocity = [0.0, 0.0, 0.0]
@@ -78,13 +81,34 @@ class SimAgent:
         self.body.start_episode()
 
     # --- per-step ---
-    def act(self, context: Dict[str, Any]) -> List[float]:
-        """Compute the policy velocity from the live state and command it."""
+    def compute_velocity(self, context: dict[str, Any]) -> list[float]:
+        """Compute and cache the policy velocity without commanding the body."""
         self.position = self.body.get_position()
-        v = self.policy.compute(self.state(), context)
-        self.velocity = [v[0], v[1], v[2] if len(v) > 2 else 0.0]
-        self.body.apply_velocity(self.velocity[0], self.velocity[1], self.velocity[2])
-        return self.velocity
+
+        velocity = self.policy.compute(
+            self.state(),
+            context,
+        )
+
+        self.velocity = [
+            velocity[0],
+            velocity[1],
+            velocity[2] if len(velocity) > 2 else 0.0,
+        ]
+
+        return list(self.velocity)
+
+    def act(self, context: dict[str, Any]) -> list[float]:
+        """Compute the policy velocity and command the body."""
+        velocity = self.compute_velocity(context)
+
+        self.body.apply_velocity(
+            velocity[0],
+            velocity[1],
+            velocity[2],
+        )
+
+        return velocity
 
     def tick(self, dt: float) -> None:
         self.body.integrate(dt)

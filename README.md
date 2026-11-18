@@ -42,7 +42,9 @@ drone_gym/
 │   ├── drone_setup.py        # Base DroneSetup class for drone setup and control
 │   ├── drone.py              # Additional functions with PID control and Crazyflie integration
 │   ├── drone_sim.py          # Additional functions needed for running in simulation
-│   ├── drone_environment.py  # Base DroneEnvironment class for RL tasks
+│   ├── drone_environment.py  # Base Single-agent class for RL tasks
+│   ├── marl_drone_environment.py   # Base Multi-agent class for RL tasks
+│   ├── sim_manager.py              # CrazySim/Gazebo management
 │   ├── task_factory.py       # Selects appropriate task
 │   ├── tasks/                # Task examples
 │   │   ├── move_to_2d_position.py           # Example: Move to specific 2D position
@@ -56,8 +58,10 @@ drone_gym/
 │   │   ├── sim_functionality_tests.py       # Testing utilities in simulation
 │   │   └── move_to_position.py              # Testing movement of drone to position 
 │   ├── utils/                # Utility modules
-│       ├── vicon_connection_class.py        # Vicon motion capture interface
-│       └── test_grab_frame.py               # Frame capture testing
+│   │   ├── position_source.py                  # PositionSource interface
+│   │   ├── vicon_position_source.py            # Vicon receiver, shared provider, and position source
+│   │   ├── crazyflie_log_position_source.py    # Crazyflie onboard position logging source
+│   │   └── test_grab_frame.py                  # Frame capture testing
 ├── Dockerfile                # Setting up Docker
 ├── requirements.txt          # Python dependencies
 ├── setup.py                  # Package installation configuration
@@ -67,15 +71,17 @@ drone_gym/
 
 ### Key Components
 
-- **`drone_setup.py`**: Base class for implementing the shared low-level drone setup and control.
-- **`drone.py`**: Child class of `drone_setup.py` for real Crazyflie drones, with physical drone connection handling, Vicon-based position tracking, PID velocity/position controllers, and hardware safety behaviour.
-- **`drone_sim.py`**: Child class of `drone_setup.py` for CrazySim/Gazebo drones, with simulated Crazyflie connection handling, simulator position updates, simulated safety behaviour, and integration with `SimManager`.
-- **`drone_environment.py`**: Abstract base class for single-agent RL environments following the Gymnasium API.
+
+- **`drone_setup.py`**: Base class for shared drone control, including position processing, velocity calculation, safety monitoring, and position-source lifecycle management.
+- **`drone.py`**: Physical Crazyflie implementation, responsible for hardware communication, initialization, and flight control. Position tracking is provided through a `PositionSource`.
+- **`drone_sim.py`**: Simulated Crazyflie implementation using CrazySim/Gazebo and onboard position logging. Position tracking is provided through a `PositionSource`.
+- **`utils/position_source.py`**: Defines the common `PositionSource` interface and `PositionSample` structure used by physical and simulated drones.
+- **`utils/vicon_position_source.py`**: Provides Vicon position tracking through `ViconInterface`, `ViconProvider`, and `ViconPositionSource`. Multiple drones can share one Vicon UDP receiver.
+- **`utils/crazyflie_log_position_source.py`**: Supplies drone positions using Crazyflie `stateEstimate` logging, primarily for simulation.
+ - **`drone_environment.py`**: Abstract base class for single-agent RL environments following the Gymnasium API.
 - **`marl_drone_environment.py`**: Abstract base class for multi-agent RL environments following the PettingZoo parallel API.
 - **`sim_manager.py`**: Manages CrazySim/Gazebo at the world level, including simulator auto-launch, readiness checks, Gazebo drone pose access, and Gazebo objects.
-- **`utils/position_source.py`**: Defines the common interface for drone position sources so real and simulated position providers can be swapped more cleanly.
-- **`utils/vicon_position_source.py`**: Provides the newer Vicon position-source implementation, including shared Vicon packet receiving through `ViconProvider` and per-drone position tracking through `ViconPositionSource`.
-- **`utils/vicon_connection_class.py`**: Handles UDP communication with Vicon motion capture system for precise position tracking
+
 
 
 ## Usage
@@ -176,10 +182,20 @@ Position Based PID Control:
 
 ```python
 from drone_gym.drone import Drone
+from drone_gym.utils.vicon_position_source import ViconPositionSource
 import time
 
-# Initialize the drone
-drone = Drone()
+# Configure the Vicon position source for this drone
+position_source = ViconPositionSource(
+    object_name="Crzayme_0",
+    label="drone_0",
+)
+
+# Initialize the physical drone
+drone = Drone(
+    agent_id="drone_0",
+    position_source=position_source,
+)
 
 # Take off
 drone.take_off()
@@ -198,6 +214,10 @@ drone.land()
 drone.is_landed_event.wait(timeout=15)
 drone.stop()
 ```
+
+Physical drones require a `PositionSource` to provide their position measurements. The Vicon object name must match the corresponding tracked object in Vicon Tracker.
+
+When using `DroneEnvironment` or `MarlDroneEnvironment`, position sources are created automatically for each physical drone. Multiple `ViconPositionSource` instances can share a single Vicon receiver through `ViconProvider`.
 
 ### Creating Custom RL Tasks
 

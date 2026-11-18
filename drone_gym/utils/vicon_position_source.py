@@ -35,7 +35,7 @@ class ViconInterface:
         self.udp_ip = udp_ip
         self.udp_port = udp_port
 
-        print(f"[ViconInterface] Connecting to " f"{self.udp_ip}:{self.udp_port}")
+        print(f"[ViconInterface] Connecting to {self.udp_ip}:{self.udp_port}")
 
         self.sock = socket.socket(
             socket.AF_INET,
@@ -87,14 +87,14 @@ class ViconInterface:
                     # Closing the socket during normal shutdown interrupts
                     # recvfrom(). Do not report that as an error.
                     if not self.stop_event.is_set():
-                        print("[ViconInterface] Socket error: " f"{exc}")
+                        print(f"[ViconInterface] Socket error: {exc}")
                     break
 
                 try:
                     self._process_packet(packet)
 
                 except Exception as exc:
-                    print("[ViconInterface] Could not parse packet: " f"{exc}")
+                    print(f"[ViconInterface] Could not parse packet: {exc}")
 
         finally:
             try:
@@ -261,7 +261,7 @@ class ViconInterface:
         """
         Return a thread-safe snapshot of one object's latest position.
 
-        The datetime indicates when that Vicon measurement was received.
+        The reception_time indicates when that Vicon measurement was received.
         It lets ViconPositionSource avoid repeatedly publishing an old value.
         """
 
@@ -280,38 +280,6 @@ class ViconInterface:
             reception_time = object_data[12]
 
         return position, reception_time
-
-    def getPos(
-        self,
-        name: str,
-    ) -> list[float] | None:
-        """
-        Return position and attitude for backwards compatibility.
-
-        This method can be removed after all old callers are migrated.
-        """
-
-        with self.tracked_object_lock:
-            object_data = self.tracked_object.get(name)
-
-            if object_data is None:
-                return None
-
-            return list(object_data[0:6])
-
-    def getVel(
-        self,
-        name: str,
-    ) -> list[float] | None:
-        """Return linear and angular velocities."""
-
-        with self.tracked_object_lock:
-            object_data = self.tracked_object.get(name)
-
-            if object_data is None:
-                return None
-
-            return list(object_data[6:12])
 
     def end(self) -> None:
         """
@@ -532,7 +500,7 @@ class ViconPositionSource(PositionSource):
 
                 worker_thread = threading.Thread(
                     target=self._run,
-                    name=("vicon-position-source-" f"{self._object_name}"),
+                    name=(f"vicon-position-source-{self._object_name}"),
                     daemon=True,
                 )
 
@@ -540,7 +508,7 @@ class ViconPositionSource(PositionSource):
 
             worker_thread.start()
 
-            print(f"[{self._label}] Vicon source started for " f"{self._object_name!r}")
+            print(f"[{self._label}] Vicon source started for {self._object_name!r}")
 
         except Exception:
             self.stop()
